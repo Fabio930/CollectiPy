@@ -98,7 +98,7 @@ class Agent(Entity):
     def get_random_generator(self):
         return self.random_generator
 
-    def run(self,tick,arena_shape,objects):
+    def run(self,tick,arena_shape,objects,agents):
         pass
 
 class StaticObject(Object):
@@ -296,6 +296,7 @@ class MovableAgent(StaticAgent):
             self.num_groups = self.spin_model_params.get("num_groups",32)
             self.num_spins_per_group = self.spin_model_params.get("num_spins_per_group",10)
             self.perception_global_inhibition = self.spin_model_params.get("perception_global_inhibition",0)
+            self.task = self.spin_model_params.get("task","selection")
             self.reference = self.spin_model_params.get("reference","egocentric")
             self.group_angles = np.linspace(0, 2 * _PI, self.num_groups, endpoint=False)
         else:
@@ -397,38 +398,57 @@ class MovableAgent(StaticAgent):
             self.shape.translate(self.position)
             self.shape.translate_attachments(self.orientation.z)
     
-    def spin_pre_run(self,objects):
+    def spin_pre_run(self,objects,agents):
         if self.pre_run:
-            self.update_detection(objects)
+            self.update_detection(objects,agents)
             for _ in range(self.spin_pre_run_steps):
                 self.spin_system.step(timedelay=False)
             self.spin_system.set_p_spin_up(np.mean(self.spin_system.get_states()))
             self.spin_system.reset_spins()
 
-    def update_detection(self, objects):
+    def update_detection(self, objects, agents):
         perception = np.zeros(self.num_groups * self.num_spins_per_group)
         sigma0 = self.perception_width
-        for _, (shapes, positions, strengths, uncertainties) in objects.items():
-            for n in range(len(shapes)):
-                dx = positions[n].x - self.position.x
-                dy = positions[n].y - self.position.y
-                angle_to_object = math.degrees(math.atan2(-dy, dx))
-                if self.reference == "egocentric":
-                    angle_to_object = angle_to_object - self.orientation.z
-                angle_to_object = normalize_angle(angle_to_object)
-                effective_width = sigma0 + uncertainties[n]
-                angle_diffs = np.abs(self.group_angles - math.radians(angle_to_object))
-                angle_diffs = np.minimum(angle_diffs, 2 * _PI - angle_diffs)
-                sigma = max(effective_width, 1e-6)
-                weights = (sigma0 / sigma) * np.exp(-(angle_diffs ** 2) / (2 * (sigma ** 2)))
-                weights *= strengths[n]
-                perception += np.repeat(weights, self.num_spins_per_group)
+        if self.task == "flocking":
+            for club, agent_shapes in agents.items():
+                for n in range(len(agent_shapes)):
+                    if club+"_"+str(n)==self.get_name(): continue
+                    agent_pos = agent_shapes[n].center_of_mass()
+                    dx = agent_pos.x - self.position.x
+                    dy = agent_pos.y - self.position.y
+                    angle_to_object = math.degrees(math.atan2(-dy, dx))
+                    if self.reference == "egocentric":
+                        angle_to_object = angle_to_object - self.orientation.z
+                    angle_to_object = normalize_angle(angle_to_object)
+                    effective_width = sigma0
+                    angle_diffs = np.abs(self.group_angles - math.radians(angle_to_object))
+                    angle_diffs = np.minimum(angle_diffs, 2 * _PI - angle_diffs)
+                    sigma = max(effective_width, 1e-6)
+                    weights = (sigma0 / sigma) * np.exp(-(angle_diffs ** 2) / (2 * (sigma ** 2)))
+                    weights *= 5
+                    perception += np.repeat(weights, self.num_spins_per_group)
+        elif self.task == "selection":
+            for _, (shapes, positions, strengths, uncertainties) in objects.items():
+                for n in range(len(shapes)):
+                    dx = positions[n].x - self.position.x
+                    dy = positions[n].y - self.position.y
+                    angle_to_object = math.degrees(math.atan2(-dy, dx))
+                    if self.reference == "egocentric":
+                        angle_to_object = angle_to_object - self.orientation.z
+                    angle_to_object = normalize_angle(angle_to_object)
+                    effective_width = sigma0 + uncertainties[n]
+                    angle_diffs = np.abs(self.group_angles - math.radians(angle_to_object))
+                    angle_diffs = np.minimum(angle_diffs, 2 * _PI - angle_diffs)
+                    sigma = max(effective_width, 1e-6)
+                    weights = (sigma0 / sigma) * np.exp(-(angle_diffs ** 2) / (2 * (sigma ** 2)))
+                    weights *= strengths[n]
+                    perception += np.repeat(weights, self.num_spins_per_group)
         perception -= self.perception_global_inhibition
         self.perception = perception
 
-    def run(self,tick,arena_shape,objects):
+    def run(self,tick,arena_shape,objects,agents):
         if self.detection == "visual":
-            self.spins_routine(objects)
+            self.spins_routine(objects,agents)
         elif self.detection == "GPS":
             self.GPS_routine(tick,arena_shape)
         self.position = self.position + self.forward_vector
@@ -436,10 +456,10 @@ class MovableAgent(StaticAgent):
         self.shape.translate(self.position)
         self.shape.translate_attachments(self.orientation.z)
 
-    def spins_routine(self, objects):
+    def spins_routine(self, objects, agents):
         self.prev_position = self.position
         self.prev_orientation = self.orientation
-        self.update_detection(objects)
+        self.update_detection(objects,agents)
         self.spin_system.update_external_field(self.perception)
         self.spin_system.run_spins(steps=self.spin_per_tick)
         angle_rad = self.spin_system.average_direction_of_activity()

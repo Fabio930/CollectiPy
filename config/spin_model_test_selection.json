@@ -1,0 +1,66 @@
+{
+    "environment":{
+        "collisions": false,
+        "ticks_per_second": 10,
+        "time_limit": 0,
+        "num_runs": 1,
+        "results":{
+            "model_specs": "spin_model"
+        },
+        "gui":{
+            "_id": "2D",
+            "on_click": "show_spins"
+        },
+        "arenas":{
+            "arena_0":{
+                "random_seed": 0,
+                "width": 1,
+                "depth": 1,
+                "_id": "rectangle",
+                "color": "gray"
+            }
+        },
+        "objects":{
+            "static_0":{
+                "number": [2],
+                "position": [[-0.4, -0.2, 0],[0.4, -0.2, 0]],
+                "_id": "idle",
+                "shape": "cylinder",
+                "height": 0.2,
+                "diameter": 0.05,
+                "color": "green",
+                "strength": [5, 5],
+                "uncertainty": [0]
+            }
+        },
+        "agents":{
+            "movable_0":{
+                "ticks_per_second": 15,
+                "number": [2],
+                "shape": "cylinder",
+                "linear_velocity": 0.02,
+                "angular_velocity": 45,
+                "height": 0.02,
+                "diameter": 0.033,
+                "color": "blue",
+                "detection": "visual",
+                "moving_behavior":"spin_model",
+                "spin_model":{
+                    "spin_per_tick": 10,
+                    "spin_pre_run_steps": 0,
+                    "perception_width": 0.2,
+                    "num_groups": 8,
+                    "num_spins_per_group": 10,
+                    "perception_global_inhibition": 0,
+                    "T": 0.3,
+                    "J": 30,
+                    "nu": 0.5,
+                    "p_spin_up": 0.5,
+                    "time_delay": 1,
+                    "reference": "allocentric",
+                    "dynamics": "metropolis"
+                }
+            }
+        }   
+    }
+}

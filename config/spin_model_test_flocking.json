@@ -21,24 +21,11 @@
             }
         },
         "objects":{
-            "static_0":{
-                "number": [2],
-                "position": [[-0.4, -0.2, 0],[0.4, -0.2, 0]],
-                "_id": "idle",
-                "shape": "cylinder",
-                "height": 0.2,
-                "diameter": 0.05,
-                "color": "green",
-                "strength": [5, 5],
-                "uncertainty": [0]
-            }
         },
         "agents":{
             "movable_0":{
                 "ticks_per_second": 15,
-                "number": [5],
-                "position": [[0, 0.4, 0]],
-                "orientation": [[0,0,90]],
+                "number": [4],
                 "shape": "cylinder",
                 "linear_velocity": 0.02,
                 "angular_velocity": 45,
@@ -51,7 +38,7 @@
                     "spin_per_tick": 10,
                     "spin_pre_run_steps": 0,
                     "perception_width": 0.2,
-                    "num_groups": 10,
+                    "num_groups": 8,
                     "num_spins_per_group": 10,
                     "perception_global_inhibition": 0,
                     "T": 0.3,
@@ -59,8 +46,9 @@
                     "nu": 0.5,
                     "p_spin_up": 0.5,
                     "time_delay": 1,
-                    "reference": "egocentric",
-                    "dynamics": "metropolis"
+                    "reference": "allocentric",
+                    "dynamics": "metropolis",
+                    "task": "flocking"
                 }
             }
         }   

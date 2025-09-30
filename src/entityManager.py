@@ -78,7 +78,7 @@ class EntityManager:
                     position = entity.get_start_position()
                     entity.set_start_position(Vector3D(position.x, position.y, abs(entity.get_shape().min_vert().z)))
                 entity.shape.translate_attachments(entity.orientation.z)
-                entity.spin_pre_run(objects)
+                entity.spin_pre_run(objects,self.get_agent_shapes())
 
     def close(self):
         for agent_type, (config,entities) in self.agents.items():
@@ -151,7 +151,7 @@ class EntityManager:
                     for entity in entities:
                         if getattr(entity, "msg_enable", False) and entity.message_bus:
                             entity.receive_messages()
-                        entity.run(t, self.arena_shape, data_in["objects"])
+                        entity.run(t, self.arena_shape, data_in["objects"],self.get_agent_shapes())
                 agents_data = {
                     "status": [t, ticks_per_second],
                     "agents_shapes": self.get_agent_shapes(),
