@@ -2,8 +2,8 @@
     "environment":{
         "collisions": true,
         "ticks_per_second": 3,
-        "time_limit": 80,
-        "num_runs": 2,
+        "time_limit": 200,
+        "num_runs": 1,
         "results":{
             "group_specs": ["graphs"],
             "snapshots_per_second": 1

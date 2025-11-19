@@ -5,7 +5,7 @@
     ],
     "environment": {
         "collisions": true,
-        "time_limit": 0,
+        "time_limit": 200,
         "num_runs": 1,
         "gui": {
             "_id": "2D",

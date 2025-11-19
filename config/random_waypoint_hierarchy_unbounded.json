@@ -2,7 +2,7 @@
     "plugins": [],
     "environment": {
         "collisions": true,
-        "time_limit": 120,
+        "time_limit": 200,
         "num_runs": 1,
         "results": {
             "group_specs": ["graphs"],

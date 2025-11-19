@@ -1,7 +1,7 @@
 {
     "environment": {
         "collisions": false,
-        "time_limit": 0,
+        "time_limit": 200,
         "num_runs": 1,
         "results": {},
         "gui": {

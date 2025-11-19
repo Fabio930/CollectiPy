@@ -2,7 +2,7 @@
     "environment":{
         "collisions": true,
         "ticks_per_second": 1,
-        "time_limit": 0,
+        "time_limit": 200,
         "num_runs": 1,
         "results":{
             "agent_specs": ["base", "spin_model"],
