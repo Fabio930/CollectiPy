@@ -79,10 +79,14 @@ class GUI_2D(QWidget):
         self.button_layout.addWidget(self.step_button)
         self.button_layout.addWidget(self.reset_button)
         self.view_mode_selector = None
+        self.view_mode_label = None
         if self.viewable_modes:
+            self.view_mode_label = QLabel("Graphs")
+            self.view_mode_label.setStyleSheet("font-weight: bold;")
             self.view_mode_selector = QComboBox()
             self.view_mode_selector.addItems(["Hide", "Static", "Dynamic"])
             self.view_mode_selector.currentIndexChanged.connect(self._handle_view_mode_change)
+            self.button_layout.addWidget(self.view_mode_label)
             self.button_layout.addWidget(self.view_mode_selector)
         self._left_layout.addLayout(self.button_layout)
         self.legend_widget = ConnectionLegendWidget()
@@ -147,6 +151,11 @@ class GUI_2D(QWidget):
         self.graph_filter_mode = "direct"
         self.graph_filter_selector = None
         self.graph_filter_widget = None
+        self._graph_filter_labels = {
+            "local": "I - Local",
+            "global": "Global",
+            "extended": "II - Extended"
+        }
         if self.viewable_modes:
             self.graph_container = QWidget()
             self.graph_container.setMinimumWidth(520)
@@ -176,6 +185,8 @@ class GUI_2D(QWidget):
             self.graph_filter_selector.addItems(["I - Local", "II - Extended"])
             self.graph_filter_selector.currentIndexChanged.connect(self._on_graph_filter_changed)
             self.graph_filter_selector.setEnabled(False)
+            self._set_graph_filter_label(global_mode=True)
+            self.graph_filter_selector.setCurrentIndex(0)
             self.graph_filter_selector.setStyleSheet(
                 "QComboBox { color: #161616; background-color: #f4f4f4; border: 1px solid #d0d0d0; "
                 "border-radius: 6px; padding: 2px 6px; }"
@@ -381,9 +392,22 @@ class GUI_2D(QWidget):
         if not has_selection:
             if self.graph_filter_mode != "direct":
                 self.graph_filter_mode = "direct"
-                self.graph_filter_selector.blockSignals(True)
-                self.graph_filter_selector.setCurrentIndex(0)
-                self.graph_filter_selector.blockSignals(False)
+            self._set_graph_filter_label(global_mode=True)
+            self.graph_filter_selector.blockSignals(True)
+            self.graph_filter_selector.setCurrentIndex(0)
+            self.graph_filter_selector.blockSignals(False)
+        else:
+            self._set_graph_filter_label(global_mode=False)
+            self.graph_filter_selector.blockSignals(True)
+            # Default to local view when a selection is made.
+            self.graph_filter_selector.setCurrentIndex(0)
+            self.graph_filter_selector.blockSignals(False)
+            if self.view_mode_selector and self.view_mode_selector.isEnabled():
+                # If the graphs were hidden, move to static view on selection.
+                if self.view_mode_selector.currentIndex() == 0:
+                    self.view_mode_selector.blockSignals(True)
+                    self.view_mode_selector.setCurrentIndex(1)
+                    self.view_mode_selector.blockSignals(False)
 
     def _update_side_container_visibility(self):
         """Update the visibility of the auxiliary side container."""
@@ -461,11 +485,21 @@ class GUI_2D(QWidget):
 
     def _on_graph_filter_changed(self, index):
         """Handle changes to the connection filter switch."""
-        mode = "direct" if index <= 0 else "indirect"
+        mode = "direct" if index == 0 else "indirect"
         if self.graph_filter_mode == mode:
             return
         self.graph_filter_mode = mode
         self._update_graph_views()
+
+    def _set_graph_filter_label(self, *, global_mode: bool) -> None:
+        """Adjust the visible label of the first filter option."""
+        if not self.graph_filter_selector:
+            return
+        label = self._graph_filter_labels["global" if global_mode else "local"]
+        if self.graph_filter_selector.itemText(0) != label:
+            self.graph_filter_selector.blockSignals(True)
+            self.graph_filter_selector.setItemText(0, label)
+            self.graph_filter_selector.blockSignals(False)
     def _recompute_graph_layout(self):
         """Rebuild the graph layout using the current mode."""
         if not self.connection_graphs or not self.connection_graphs.get("messages"):
