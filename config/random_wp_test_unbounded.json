@@ -2,14 +2,12 @@
     "environment":{
         "collisions": true,
         "ticks_per_second": 3,
-        "time_limit": 200,
+        "time_limit": 0,
         "num_runs": 1,
-        "results":{
-            "group_specs": ["graphs"],
-            "snapshots_per_second": 1
-        },
         "gui":{
-            "_id": "2D"
+            "_id": "2D",
+            "on_click": ["messages","detection"],
+            "view": ["messages","detection"]
         },
         "arenas":{
             "arena_0":{
@@ -40,7 +38,7 @@
                 "color": "blue",
                 "detection": {
                     "type": "GPS",
-                    "range": "inf",
+                    "range": 0.3,
                     "acquisition_per_second": "inf"
                 },
                 "moving_behavior":"random_way_point",

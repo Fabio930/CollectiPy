@@ -2,23 +2,20 @@
     "environment":{
         "collisions": false,
         "ticks_per_second": 1,
-        "time_limit": 200,
+        "time_limit": 0,
         "num_runs": 1,
         "results":{
-            "agent_specs": ["base", "spin_model"],
-            "group_specs": ["graphs"],
-            "snapshots_per_second": 1
         },
         "gui":{
             "_id": "2D",
-            "on_click": ["show_spins","messages","detection"],
-            "view": ["messages","detection"]
+            "on_click": ["show_spins","detection"],
+            "view": ["detection"]
         },
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "diameter": 0.3,
-                "_id": "sphere",
+                "diameter": 0.4,
+                "_id": "circle",
                 "color": "gray"
             }
         },
@@ -26,7 +23,7 @@
         },
         "agents":{
             "movable_0":{
-                "ticks_per_second": 2,
+                "ticks_per_second": 3,
                 "number": [7],
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
@@ -37,14 +34,7 @@
                 "detection": {
                     "type": "GPS",
                     "range": "inf",
-                    "acquisition_per_second": "inf"
-                },
-                "messages": {
-                    "tx_per_second": 2,
-                    "rx_per_second": 4,
-                    "comm_range": 0.1,
-                    "type": "broadcast",
-                    "kind": "anonymous"
+                    "acquisition_per_second": 1
                 },
                 "moving_behavior":"spin_model",
                 "fallback_moving_behavior":"random_way_point",
