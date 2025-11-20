@@ -8,7 +8,9 @@
         "time_limit": 0,
         "num_runs": 1,
         "gui": {
-            "_id": "2D"
+            "_id": "2D",
+            "on_click":["messages"],
+            "view":["messages"]
         },
         "arenas": {
             "arena_0": {
@@ -22,7 +24,7 @@
         "agents": {
             "movable_0": {
                 "ticks_per_second": 7,
-                "number": [50],
+                "number": [20],
                 "shape": "cylinder",
                 "height": 0.02,
                 "diameter": 0.04,
