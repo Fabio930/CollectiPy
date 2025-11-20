@@ -21,6 +21,10 @@ logger = logging.getLogger("sim.entity_manager")
 
 class EntityManager:
     """Entity manager."""
+
+    PLACEMENT_MAX_ATTEMPTS = 200
+    PLACEMENT_MARGIN_FACTOR = 1.3
+    PLACEMENT_MARGIN_EPS = 0.002
     def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None):
         """Initialize the instance."""
         self.agents = agents
@@ -84,10 +88,13 @@ class EntityManager:
                 if not entity.get_position_from_dict():
                     count = 0
                     done = False
-                    while not done and count < 500:
+                    shape_template = entity.get_shape()
+                    radius = self._estimate_entity_radius(shape_template)
+                    pad = radius * self.PLACEMENT_MARGIN_FACTOR + self.PLACEMENT_MARGIN_EPS
+                    bounds = self._get_entity_xy_bounds(entity, pad=pad)
+                    while not done and count < self.PLACEMENT_MAX_ATTEMPTS:
                         done = True
                         entity.to_origin()
-                        bounds = self._get_entity_xy_bounds(entity)
                         rand_pos = Vector3D(
                             Random.uniform(entity.get_random_generator(), bounds[0], bounds[2]),
                             Random.uniform(entity.get_random_generator(), bounds[1], bounds[3]),
@@ -281,25 +288,82 @@ class EntityManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("%s wrapped to %s", entity.get_name(), (wrapped.x, wrapped.y, wrapped.z))
 
-    def _get_entity_xy_bounds(self, entity):
-        """Return the entity xy bounds."""
+    def _get_entity_xy_bounds(self, entity, pad: float = 0.0):
+        """Return the entity xy bounds padded inward by `pad` to keep placements inside walls."""
         if not self.hierarchy:
-            return (self._global_min.x, self._global_min.y, self._global_max.x, self._global_max.y)
-        node_id = getattr(entity, "hierarchy_node", None)
-        if not node_id:
-            return (self._global_min.x, self._global_min.y, self._global_max.x, self._global_max.y)
-        node = self.hierarchy.get_node(node_id)
-        if not node or not node.bounds:
-            if node_id not in self._invalid_hierarchy_nodes:
-                self._invalid_hierarchy_nodes.add(node_id)
-                logger.warning(
-                    "%s references unknown hierarchy node '%s'; using arena bounds.",
-                    entity.get_name(),
-                    node_id
+            min_x, min_y, max_x, max_y = (
+                self._global_min.x,
+                self._global_min.y,
+                self._global_max.x,
+                self._global_max.y
+            )
+        else:
+            node_id = getattr(entity, "hierarchy_node", None)
+            if not node_id:
+                min_x, min_y, max_x, max_y = (
+                    self._global_min.x,
+                    self._global_min.y,
+                    self._global_max.x,
+                    self._global_max.y
                 )
-            return (self._global_min.x, self._global_min.y, self._global_max.x, self._global_max.y)
-        bounds = node.bounds
-        return (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y)
+            else:
+                node = self.hierarchy.get_node(node_id)
+                if not node or not node.bounds:
+                    if node_id not in self._invalid_hierarchy_nodes:
+                        self._invalid_hierarchy_nodes.add(node_id)
+                        logger.warning(
+                            "%s references unknown hierarchy node '%s'; using arena bounds.",
+                            entity.get_name(),
+                            node_id
+                        )
+                    min_x, min_y, max_x, max_y = (
+                        self._global_min.x,
+                        self._global_min.y,
+                        self._global_max.x,
+                        self._global_max.y
+                    )
+                else:
+                    bounds = node.bounds
+                    min_x, min_y, max_x, max_y = (
+                        bounds.min_x,
+                        bounds.min_y,
+                        bounds.max_x,
+                        bounds.max_y
+                    )
+        padded = (
+            min_x + pad,
+            min_y + pad,
+            max_x - pad,
+            max_y - pad
+        )
+        # Ensure the padded bounds remain valid; if not, fall back to the unpadded center point.
+        if padded[0] >= padded[2] or padded[1] >= padded[3]:
+            cx = (min_x + max_x) * 0.5
+            cy = (min_y + max_y) * 0.5
+            return (cx, cy, cx, cy)
+        return padded
+
+    @staticmethod
+    def _estimate_entity_radius(shape):
+        """Estimate a placement radius for the given shape."""
+        if not shape:
+            return 0.0
+        getter = getattr(shape, "get_radius", None)
+        if callable(getter):
+            try:
+                r = float(getter())
+                if r > 0:
+                    return r
+            except Exception:
+                pass
+        center = shape.center_of_mass()
+        try:
+            return max(
+                (Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude() for v in shape.vertices_list),
+                default=0.05
+            )
+        except Exception:
+            return 0.05
 
     def _clamp_vector_to_entity_bounds(self, entity, vector: Vector3D):
         """Clamp the vector to entity bounds."""

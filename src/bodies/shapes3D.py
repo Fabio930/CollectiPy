@@ -345,7 +345,8 @@ class Cylinder(Shape):
         """Set the vertices."""
         self.vertices_list = []
         if self._object == "arena":
-            num_vertices = 20
+            # Higher resolution keeps agents from spawning outside when density is high.
+            num_vertices = 64
             angle_increment = 2 * _PI / num_vertices
             cx, cy = self.center.x, self.center.y
             for i in range(num_vertices):

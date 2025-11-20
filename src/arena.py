@@ -177,6 +177,11 @@ class AbstractArena(Arena):
         """Close the component resources."""
         super().close()
 
+PLACEMENT_MAX_ATTEMPTS = 200
+PLACEMENT_MARGIN_FACTOR = 1.3
+PLACEMENT_MARGIN_EPS = 0.002
+
+
 class SolidArena(Arena):
     
     """Solid arena."""
@@ -295,10 +300,17 @@ class SolidArena(Arena):
         attempts = 0
         shape_n = entity.get_shape()
         min_vert_z = abs(shape_n.min_vert().z)
-        while attempts < 500:
+        effective_radius = radius * PLACEMENT_MARGIN_FACTOR + PLACEMENT_MARGIN_EPS
+        min_x = min_v.x + effective_radius
+        max_x = max_v.x - effective_radius
+        min_y = min_v.y + effective_radius
+        max_y = max_v.y - effective_radius
+        if min_x >= max_x or min_y >= max_y:
+            return False
+        while attempts < PLACEMENT_MAX_ATTEMPTS:
             rand_pos = Vector3D(
-                Random.uniform(rng, min_v.x, max_v.x),
-                Random.uniform(rng, min_v.y, max_v.y),
+                Random.uniform(rng, min_x, max_x),
+                Random.uniform(rng, min_y, max_y),
                 min_vert_z
             )
             entity.to_origin()
