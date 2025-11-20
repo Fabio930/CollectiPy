@@ -59,7 +59,7 @@
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,
-                "color": "orange",
+                "color": "blue",
                 "linear_velocity": 0.05,
                 "angular_velocity": 70,
                 "moving_behavior": "random_way_point",
