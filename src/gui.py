@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from config import Config
 from matplotlib.cm import coolwarm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame
 from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF
 from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent
 
@@ -64,11 +64,17 @@ class GUI_2D(QWidget):
         self.wrap_config = wrap_config
         self.hierarchy_overlay = hierarchy_overlay or []
         self.setWindowTitle("Arena GUI")
+        self.setFocusPolicy(Qt.StrongFocus)
 
         self._main_layout = QHBoxLayout()
         self._left_layout = QVBoxLayout()
+        self.header_container = QFrame()
+        self.header_container.setFrameShape(QFrame.NoFrame)
+        header_layout = QVBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
         self.data_label = QLabel("Waiting for data...")
-        self._left_layout.addWidget(self.data_label)
+        header_layout.addWidget(self.data_label)
         self.button_layout = QHBoxLayout()
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
@@ -88,7 +94,17 @@ class GUI_2D(QWidget):
             self.view_mode_selector.currentIndexChanged.connect(self._handle_view_mode_change)
             self.button_layout.addWidget(self.view_mode_label)
             self.button_layout.addWidget(self.view_mode_selector)
-        self._left_layout.addLayout(self.button_layout)
+        header_layout.addLayout(self.button_layout)
+        self.header_container.setLayout(header_layout)
+        self.header_collapsed = False
+        self.header_toggle = QToolButton()
+        self.header_toggle.setText("▲")
+        self.header_toggle.setToolTip("Collapse/expand controls")
+        self.header_toggle.setAutoRaise(True)
+        self.header_toggle.clicked.connect(self._toggle_header_visibility)
+        self.header_toggle.setStyleSheet("QToolButton { font-weight: bold; }")
+        self._left_layout.addWidget(self.header_container)
+        self._left_layout.addWidget(self.header_toggle, alignment=Qt.AlignHCenter)
         self.legend_widget = ConnectionLegendWidget()
         self.legend_widget.setVisible(False)
         self.start_button.clicked.connect(self.start_simulation)
@@ -500,6 +516,13 @@ class GUI_2D(QWidget):
             self.graph_filter_selector.blockSignals(True)
             self.graph_filter_selector.setItemText(0, label)
             self.graph_filter_selector.blockSignals(False)
+
+    def _toggle_header_visibility(self):
+        """Collapse/expand the top control bar leaving the toggle handle visible."""
+        self.header_collapsed = not self.header_collapsed
+        self.header_container.setVisible(not self.header_collapsed)
+        self.header_toggle.setText("▼" if self.header_collapsed else "▲")
+        self._main_layout.activate()
     def _recompute_graph_layout(self):
         """Rebuild the graph layout using the current mode."""
         if not self.connection_graphs or not self.connection_graphs.get("messages"):
@@ -661,6 +684,28 @@ class GUI_2D(QWidget):
             self.gui_control_queue.put("step")
             self.step_requested = True
             self.reset = False
+
+    # ----- Keyboard shortcuts -----------------------------------------------
+    def keyPressEvent(self, event):
+        """Handle basic keyboard shortcuts for simulation control."""
+        key = event.key()
+        if key == Qt.Key_Space:
+            if self.running:
+                self.stop_simulation()
+            else:
+                self.start_simulation()
+            event.accept()
+            return
+        if key == Qt.Key_R:
+            self.reset_simulation()
+            event.accept()
+            return
+        if key == Qt.Key_S:
+            if not self.running:
+                self.step_simulation()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def update_spins_plot(self):
         """Update spins plot."""
@@ -893,7 +938,7 @@ class GUI_2D(QWidget):
 
     def update_scene(self):
         """Update scene."""
-        self.data_label.setText(f"Time: {self.time}")
+        self.data_label.setText(f"Arena ticks: {self.time}")
         self.scene.clear()
         if self.is_abstract or not self.arena_vertices:
             self._draw_abstract_dots()
