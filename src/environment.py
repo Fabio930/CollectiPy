@@ -17,6 +17,64 @@ from gui import GuiFactory
 from entityManager import EntityManager
 from collision_detector import CollisionDetector
 
+def set_affinity_safely(proc, cores):
+    """Set CPU affinity without breaking simulation."""
+    try:
+        p = psutil.Process(proc.pid)
+        p.cpu_affinity(cores)
+        print(f"Affinity set for PID {proc.pid}: {cores}")
+    except Exception as e:
+        print(f"Failed to set CPU affinity for PID {proc.pid}: {e}")
+
+def allocate_cores(total_cores, pattern):
+    """
+    Resize the partition defined in pattern based on the number of available CPU cores.
+
+    pattern = {
+        'arena': 2,
+        'agents': 3,
+        'detector': 3,
+        'gui': 2
+    }
+    """
+    ideal_total = sum(pattern.values())
+    if total_cores < ideal_total:
+        scale = total_cores / ideal_total
+        scaled = {k: max(1, int(round(v * scale))) for k, v in pattern.items()}
+        scaled_total = sum(scaled.values())
+        while scaled_total > total_cores:
+            biggest = max(scaled, key=lambda x: scaled[x])
+            if scaled[biggest] > 1:
+                scaled[biggest] -= 1
+                scaled_total -= 1
+            else:
+                break
+        while scaled_total < total_cores:
+            smallest = min(scaled, key=lambda x: scaled[x])
+            scaled[smallest] += 1
+            scaled_total += 1
+        assigned = {}
+        start = 0
+        for name, count in scaled.items():
+            assigned[name] = list(range(start, start + count))
+            start += count
+        return assigned
+    elif total_cores == ideal_total:
+        assigned = {}
+        start = 0
+        for name, count in pattern.items():
+            assigned[name] = list(range(start, start + count))
+            start += count
+        return assigned
+    else:
+        assigned = {}
+        start = 0
+        for name, count in pattern.items():
+            assigned[name] = list(range(start, start + count))
+            start += count
+        return assigned
+
+
 class EnvironmentFactory():
     """Environment factory."""
     @staticmethod
@@ -106,7 +164,12 @@ class SingleProcessEnvironment(Environment):
             arena_process = mp.Process(target=arena.run, args=(self.num_runs, self.time_limit, arena_queue, agents_queue, gui_in_queue, dec_arena_in, gui_control_queue, render_enabled))
             agents_process = mp.Process(target=entity_manager.run, args=(self.num_runs, self.time_limit, arena_queue, agents_queue, dec_agents_in, dec_agents_out))
             detector_process = mp.Process(target=collision_detector.run, args=(dec_agents_in, dec_agents_out, dec_arena_in))
-
+            pattern = {
+                "arena": 1,
+                "agents": 3,
+                "detector": 2,
+                "gui": 2
+            }
             killed = 0
             if render_enabled:
                 self.render[1]["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
@@ -128,6 +191,12 @@ class SingleProcessEnvironment(Environment):
                     detector_process.start()
                 agents_process.start()
                 arena_process.start()
+                total_cores = psutil.cpu_count(logical=True)
+                allocation = allocate_cores(total_cores, pattern)
+                set_affinity_safely(detector_process, allocation.get("detector", []))
+                set_affinity_safely(agents_process, allocation.get("agents", []))
+                set_affinity_safely(arena_process, allocation.get("arena", []))
+                set_affinity_safely(gui_process, allocation.get("gui", []))
                 while True:
                     arena_alive = arena_process.is_alive()
                     agents_alive = agents_process.is_alive()
@@ -204,6 +273,11 @@ class SingleProcessEnvironment(Environment):
                     detector_process.start()
                 agents_process.start()
                 arena_process.start()
+                total_cores = psutil.cpu_count(logical=True)
+                allocation = allocate_cores(total_cores, pattern)
+                set_affinity_safely(detector_process, allocation.get("detector", []))
+                set_affinity_safely(agents_process, allocation.get("agents", []))
+                set_affinity_safely(arena_process, allocation.get("arena", []))
                 while arena_process.is_alive() and agents_process.is_alive():
                     arena_process.join(timeout=0.1)
                     agents_process.join(timeout=0.1)
