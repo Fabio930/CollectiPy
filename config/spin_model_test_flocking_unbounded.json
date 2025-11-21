@@ -26,8 +26,8 @@
         },
         "agents":{
             "movable_0":{
-                "ticks_per_second": 2,
-                "number": [7],
+                "ticks_per_second": 5,
+                "number": [1],
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 10,
@@ -36,18 +36,10 @@
                 "color": "blue",
                 "detection": {
                     "type": "GPS",
-                    "range": "inf",
-                    "acquisition_per_second": "inf"
-                },
-                "messages": {
-                    "tx_per_second": 2,
-                    "rx_per_second": 4,
-                    "comm_range": 0.1,
-                    "type": "broadcast",
-                    "kind": "anonymous"
+                    "range": 3,
+                    "acquisition_per_second": 1
                 },
                 "moving_behavior":"spin_model",
-                "fallback_moving_behavior":"random_way_point",
                 "spin_model":{
                     "spin_pre_run_steps": 0,
                     "perception_width": 0.2,

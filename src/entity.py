@@ -953,7 +953,7 @@ class Agent(Entity):
                 candidate = cfg.get(key)
                 break
         if candidate is None:
-            return math.inf
+            return 1
         if isinstance(candidate, str):
             normalized = candidate.strip().lower()
             if normalized in ("inf", "infinite", "none", "max"):
@@ -966,7 +966,7 @@ class Agent(Entity):
                 self.get_name(),
                 candidate
             )
-            return math.inf
+            return 1
         if numeric <= 0:
             return 0.0
         return numeric
@@ -1274,7 +1274,7 @@ class MovableAgent(StaticAgent):
         self.prev_position = Vector3D()
         self.prev_goal_distance = 0
         self.moving_behavior = config_elem.get("moving_behavior","random_walk")
-        self.fallback_moving_behavior = config_elem.get("fallback_moving_behavior","random_walk")
+        self.fallback_moving_behavior = config_elem.get("fallback_moving_behavior","none")
         self.logic_behavior = config_elem.get("logic_behavior")
         self.spin_model_params = config_elem.get("spin_model", {})
         self.wrap_config = None

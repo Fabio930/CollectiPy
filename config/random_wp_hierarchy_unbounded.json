@@ -34,22 +34,14 @@
                 "color": "black",
                 "height": 0.05,
                 "diameter": 0.06,
-                "number": [
-                    3
-                ],
-                "strength": [
-                    5.0
-                ],
-                "uncertainty": [
-                    0.0
-                ]
+                "number": [3],
+                "strength": [5.0],
+                "uncertainty": [0.0]
             }
         },
         "agents": {
             "movable_0": {
-                "number": [
-                    12
-                ],
+                "number": [12],
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,

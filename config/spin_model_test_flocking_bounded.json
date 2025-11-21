@@ -37,7 +37,6 @@
                     "acquisition_per_second": 1
                 },
                 "moving_behavior":"spin_model",
-                "fallback_moving_behavior":"random_way_point",
                 "spin_model":{
                     "spin_pre_run_steps": 0,
                     "perception_width": 0.2,

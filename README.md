@@ -115,11 +115,11 @@ To run the simulations a run.sh file is provided.
             "detection":{ DEFAULT:{} - extendable object similar to `messages`
                 "type": str, DEFAULT:"GPS" - Detection plugin resolved via `models/detection` (custom modules supported).
                 "range": float|"inf", DEFAULT:"inf" - Limit how far perception gathers targets (alias: "distance").
-                "acquisition_per_second": float|"inf", DEFAULT:"inf" (= once per tick) - Sampling frequency expressed as Hz; determines how often detection snapshots run relative to the agent tick rate.
+                "acquisition_per_second": float|1, DEFAULT:1 (= once per second) - Sampling frequency expressed as Hz; determines how often detection snapshots run relative to the agent tick rate. "inf" is used for max (once per tick)
             },
-            "detection_settings":{ DEFAULT:{} legacy optional overrides for range (kept for backward compatibility) },
+            "detection_settings":{ DEFAULT:{} legacy optional overrides for range },
             "moving_behavior":str, DEFAULT:"random_walk" - Any movement plugin registered in the system (`random_walk`, `random_way_point`, `spin_model`, or a custom module).
-            "fallback_moving_behavior": str, DEFAULT:"random_walk" - Movement model used when the main plugin cannot produce an action (e.g., spin model without perception).
+            "fallback_moving_behavior": str, DEFAULT:"none" - Movement model used when the main plugin cannot produce an action (e.g., spin model without perception).
             "logic_behavior": str, DEFAULT:None - Optional logic plugin executed before the movement plugin (placeholder for future reasoning modules).
             "hierarchy_node": str, OPTIONAL - desired hierarchy node for the agent (used by the hierarchy confinement plugin). Defaults to the root ("0") if omitted.
             "spin_model":{ DEFAULT:{} empty dict -> default configuration
@@ -150,7 +150,7 @@ To run the simulations a run.sh file is provided.
                 "handshake_timeout": float|str, DEFAULT:5 (seconds before a silent partner is dropped; accepts "auto")
                 "timer": { OPTIONAL - configure automatic message expiration inside each agent
                     "distribution": "fixed"|"uniform"|"exponential" (DEFAULT:"fixed")
-                    "average": float, REQUIRED - mean duration in seconds; values are converted into ticks based on `ticks_per_second`
+                    "average": float, REQUIRED - mean duration in seconds.
                 }
             },
             "information_scope": { OPTIONAL - hierarchy-aware visibility rules

@@ -39,7 +39,7 @@ class SpinMovementModel(MovementModel):
         if agent_task is None and hasattr(agent, "set_task"):
             agent.set_task(self.task)
         self.reference = self.spin_model_params.get("reference", "egocentric")
-        self.fallback_behavior = agent.config_elem.get("fallback_moving_behavior", "random_walk")
+        self.fallback_behavior = agent.config_elem.get("fallback_moving_behavior", "none")
         self.group_angles = np.linspace(0, 2 * math.pi, self.num_groups, endpoint=False)
         self.perception = None
         self._active_perception_channel = "objects"
@@ -223,7 +223,7 @@ class SpinMovementModel(MovementModel):
 
     def _run_fallback(self, tick: int, arena_shape, objects: dict, agents: dict) -> None:
         """Run the fallback."""
-        if self.fallback_behavior == "spin_model":
+        if self.fallback_behavior in ("spin_model","none"):
             return
         behavior = self.fallback_behavior
         if self._fallback_model is None:

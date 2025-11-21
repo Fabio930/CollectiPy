@@ -43,7 +43,7 @@
                     "kind": "anonymous",
                     "timer": {
                         "distribution": "exponential",
-                        "average": 6
+                        "average": 0
                     }
                 }      
             }

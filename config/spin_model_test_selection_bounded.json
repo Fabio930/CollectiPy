@@ -48,10 +48,9 @@
                 "detection": {
                     "type": "GPS",
                     "range": "inf",
-                    "acquisition_per_second": "inf"
+                    "acquisition_per_second": 1
                 },
                 "moving_behavior":"spin_model",
-                "fallback_moving_behavior":"random_way_point",
                 "spin_model":{
                     "spin_per_tick": 10,
                     "spin_pre_run_steps": 0,
