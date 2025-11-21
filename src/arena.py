@@ -500,7 +500,7 @@ class SolidArena(Arena):
                     t += 1
                 elif reset:
                     break
-                else: time.sleep(0.05)
+                else: time.sleep(0.0005)
             if self.data_handling is not None and last_snapshot_info:
                 self.data_handling.save(
                     self.agents_shapes,
