@@ -34,6 +34,18 @@ Edit `run.sh` to point to the config you want to run; the default is one of the 
 
 Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.sh run.sh`). Run `./compile.sh` to install the requirements and `./run.sh` to launch the selected config.
 
+## GUI controls (current draft)
+
+- Start/Stop: space or the Start/Stop buttons
+- Step: `E` or the Step button
+- Reset: `R` or the Reset button
+- Graphs window: `G` or the dropdown in the header
+- Zoom: `+` / `-` (also Ctrl+ variants); pan with `W/A/S/D`, arrows, or right mouse drag
+- Restore view: `V` or the Restore button (also clears selection/locks)
+- Centroid: `C` or the Centroid button; double-click to lock/unlock on the centroid
+- Agent selection: click agents in arena or graph; double-click locks the camera on that agent
+- Spin window: detached, does not steal focus; closing the main window closes all panels
+
 ## Config.json Example
 
 ```json
@@ -197,155 +209,4 @@ handshakes for a short time window after the local body overlaps with another
 agent. If contact stops while a session is active it calls
 `Agent.terminate_handshake()` so the radio frees the channel. This illustrates
 how policies more elaborate than the default "auto discover whoever replies
-first" flow can live entirely inside plugins without changing the simulator
-core.
-
-**Messaging behaviour.** Message payloads must always be dictionaries; non-dict values are logged and discarded so plugins can safely extend them with custom fields. Received packets are archived inside each agent: `agent.message_archive` stores lists keyed by the identifiable sender (`source_agent`, `agent_id`, or `from`), and anonymous packets fall back to `agent.anonymous_message_buffer`. Both structures are cleared on every `reset()`.
-
-### Minimal random-waypoint preset
-
-Need a lightweight scenario for benchmarks or demos? `config/random_wp_minimal_gui.json`
-spawns a handful of random-waypoint agents inside a small rectangular arena,
-disables collisions/messages/results logging, and keeps the GUI to the bare
-minimum (just the arena canvas). It is the fastest preset shipped with the
-repository and a good starting point for stress tests when you do not need the
-connection overlays or per-agent panels.
-
-### Messaging policies, limits, and channels
-
-`messages.channels` controls how many RF lanes an agent has:
-
-- `"dual"` (default) matches the classic two-channel radio (TX and RX run in
-  parallel).
-- `"single"` emulates half-duplex hardware: the receive phase is skipped on ticks
-  where the node transmitted.
-
-`broadcast` packets can still be anonymous, but `hand_shake` and `rebroadcast`
-require identifiable payloads (`kind` cannot be `"anonymous"`). Handshake radios
-continuously broadcast discovery invites (unless `messages.handshake_auto` is
-set to `false`); the first peer that replies with an `"accept"` lock takes the
-channel until a `"dialogue_end"` signal is exchanged or the inactivity timer
-(`messages.handshake_timeout`, defaults to 5 s) expires. Plugins can call
-`Agent.request_handshake()`, `Agent.set_handshake_autostart(False)`, or
-`Agent.set_handshake_acceptance(False)` to implement custom policies (see the
-collision-triggered example below). `rebroadcast` is
-strictly ID-aware: half of the time the agent sends its own payload, the rest of
-the time it picks a random buffered message that has been forwarded fewer than
-`rebroadcast_steps` (default infinity when `type="rebroadcast"`), increments the
-`rebroadcast_count`, and propagates it again while annotating who relayed it
-last. The 50/50 split is implemented via a simple random wheel: each tick the
-simulator samples a uniform number in `[0, 1)` and uses `< 0.5` to emit fresh
-telemetry, otherwise it forwards one of the eligible buffered packets. If the
-buffer is empty or all packets exhausted their counters, the node
-sends its own telemetry instead.
-
-Send and receive quotas (`tx_per_second` and `rx_per_second`, legacy configs
-still accept `messages_per_seconds`/`receive_per_seconds`; defaults are 1 Hz TX
-and 4 Hz RX) are converted into per-tick token buckets so that agents
-cannot inject or process more traffic than requested. When `timer` is configured,
-each received packet gets a lifetime sampled from the requested distribution and
-is automatically removed from the agent buffers once its timer (expressed in
-seconds, converted into ticks) reaches zero.
-
-Outgoing payloads always contain the standard metadata (`tick`, world `position`,
-`agent_id`, and the full `entity` key). Plugins can append extra fields through
-`Agent.set_outgoing_message_fields`, but the simulator re-injects the canonical
-fields right before sending and stores every received packet in the agent’s
-`messages` register for later inspection or re-broadcast.
-
-## Plugins
-
-The simulator exposes a lightweight plugin system so that movement, detection, motion/kinematics, and agent-logic routines can be extended without touching the core files. Key points:
-
-- Built-in plugins live under `src/models/` and register themselves when imported.
-- External plugins can be placed in the top-level `plugins/` directory (or any other importable package) and listed in the JSON config via the `"plugins": [...]` array; they will be imported before the simulation starts.
-- Movement plugins must implement `plugin_base.MovementModel`, motion/kinematics plugins implement `MotionModel` (e.g., the default `unicycle`), detection plugins `DetectionModel`, and logic plugins `LogicModel`. Registration is done through `plugin_registry.register_*`.
-- Message routing can also be customised. Pick a built-in bus by setting `messages.bus`
-  in the config (`"auto"` falls back to spatial in solid arenas and to a global bus
-  otherwise) or register a new bus with `plugin_registry.register_message_bus`.
-
-Refer to `PLUGINS.md` for in-depth instructions and examples of custom modules.
-
-## Logging
-
-Set the `environment.logging` section in the config to enable structured logs describing agent/object creation, reasoning cycles, message exchanges, and collisions. Example:
-
-```json
-"logging": {
-  "enabled": true,
-  "level": "DEBUG",
-  "file_level": "WARNING",
-  "to_console": true
-}
-```
-
-When enabled, the simulator records detailed traces through Python’s `logging` module; when disabled, only warnings/errors are emitted. Each run creates a timestamped archive under `logs/` (e.g. `logs/20240603-121030_ab12cd34.log.zip`) so that the inner `.log` stays human-readable but is shipped as a compressed blob rather than a machine-ingestible CSV. The config file is also copied under `logs/configs/`, and `logs/logs_configs_mapping.csv` maintains the correspondence between hashes and log paths starting from the project root.
-
-## Unbounded arena
-
-Setting `_id: "unbounded"` inside the `environment.arenas` block creates an unbounded wrap-around arena. The `diameter` describes the virtual wrap-around surface that is flattened into an ellipse: the width equals the circumference and the height equals half the circumference. After the conversion the arena behaves like the others while keeping wrap-around motion consistent with the surface.
-
-- the simulator builds an ellipse that serves as the arena shape (used for collision handling and rendering)
-- wrap-around motion reconnects edges so entities that leave one side reappear on the opposite side without changing their adjacency
-- object/agent movement, detection, and messaging see the same rules as in bounded arenas while the hard borders are removed
-
-Example:
-
-```json
-"arena_0": {
-  "_id": "unbounded",
-  "diameter": 2.0,
-  "segments": 120,
-  "random_seed": 13,
-  "color": "lightblue"
-}
-```
-
-The `segments` field controls how finely the ellipse is tessellated for rendering and collision checks (defaults to 96).
-
-## Hierarchical arenas and confinement plugin
-
-Every solid arena can be partitioned into a reversed tree via the optional
-`arena.hierarchy` block. Level 0 always represents the whole arena and each
-additional level subdivides every node using either 2 or 4 adjacent branches.
-When the GUI detects more than one level it renders the resulting grid to make
-the spatial zoning explicit.
-
-Agents and objects can opt into a specific node by adding the field
-`"hierarchy_node": "0.1"` (dot-separated indices) to their configuration.
-Agents can then activate the built-in `hierarchy_confinement` logic plugin:
-
-```json
-"logic_behavior": "hierarchy_confinement",
-"hierarchy_node": "0.1.2"
-```
-
-The plugin clamps agent motion so that their shape always remains inside the
-assigned node, making it easy to confine teams to predetermined quadrants or to
-gate behaviours when they migrate to a different branch. When the field is
-missing the plugin defaults to the root node, preserving backward compatibility.
-
-Additional notes:
-
-- Agents are always initialised as belonging to the root node ("0"). The optional
-  `hierarchy_node` field is treated as a *target* that can be adopted later by
-  calling `agent.set_hierarchy_node(...)`.
-- The logic plugin keeps track of the current level through
-  `agent.get_hierarchy_level()`, which uses the arena hierarchy metadata.
-- `ArenaHierarchy` exposes helper methods such as `level_of(node_id)`,
-  `neighbors(node_id)`, `path_between(start, end)`, and `locate_path(x, y)` so
-  that future logic can enforce sequential transitions (e.g., an agent must pass
-  through common ancestors instead of jumping directly between siblings).
-- Each level receives a distinct, high-contrast colour derived from ColorBrewer-
-  style palettes; the GUI overlays every zone with its level colour and prints
-  the node number (child index). Agents render a secondary square attachment
-  opposite to the default circular mark, tinted with the colour of the level
-  they currently occupy so that their affiliation is always visible.
-
-## Contributing
-
-Contributions, bug reports, and suggestions are welcome!
-If you use CollectiPy for your research, teaching, or project, please open an Issue or Discussion.
-Your feedback helps validate and evolve the framework!
-
-⭐ If you like the project, leave a **star**.
+first" flow can live entirely inside plugins without changing the simulator.

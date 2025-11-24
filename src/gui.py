@@ -8,14 +8,14 @@
 # ------------------------------------------------------------------------------
 
 """Graphical user interface for the simulator."""
-import logging, math
+import logging, math, time
 import matplotlib.pyplot as plt
 from config import Config
 from matplotlib.cm import coolwarm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame
-from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF
-from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent
+from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF, Signal
+from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut
 
 class GuiFactory():
 
@@ -46,12 +46,24 @@ class DetachedPanelWindow(QWidget):
         self.setWindowFlag(Qt.Window, True)
         self._close_callback = close_callback
         self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._force_close = False
 
     def closeEvent(self, event):
         if self._close_callback:
             self._close_callback()
+        if self._force_close:
+            event.accept()
+            return
         event.ignore()
         self.hide()
+
+    def force_close(self):
+        """Close the window bypassing the hide-on-close behavior."""
+        self._force_close = True
+        try:
+            self.close()
+        finally:
+            self._force_close = False
 
 class GUI_2D(QWidget):
     """2 d."""
@@ -82,6 +94,17 @@ class GUI_2D(QWidget):
         self.hierarchy_overlay = hierarchy_overlay or []
         self.setWindowTitle("Arena GUI")
         self.setFocusPolicy(Qt.StrongFocus)
+        self.scale = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self._view_rect = None
+        self._view_initialized = False
+        self._camera_lock = None  # ("agent", key) or ("centroid", None)
+        self._panning = False
+        self._pan_last_scene_pos = None
+        self._centroid_last_click_ts = 0.0
+        self._keyboard_pan_factor = 0.12
+        self._zoom_min_span = 1e-3
 
         self._main_layout = QHBoxLayout()
         self._left_layout = QVBoxLayout()
@@ -112,6 +135,12 @@ class GUI_2D(QWidget):
             self.button_layout.addWidget(self.view_mode_label)
             self.button_layout.addWidget(self.view_mode_selector)
         header_layout.addLayout(self.button_layout)
+        self.view_controls_layout = QHBoxLayout()
+        self.centroid_button = QPushButton("Centroid")
+        self.restore_button = QPushButton("Restore View")
+        self.view_controls_layout.addWidget(self.centroid_button)
+        self.view_controls_layout.addWidget(self.restore_button)
+        header_layout.addLayout(self.view_controls_layout)
         self.header_container.setLayout(header_layout)
         self.header_collapsed = False
         self.header_toggle = QToolButton()
@@ -128,12 +157,14 @@ class GUI_2D(QWidget):
         self.stop_button.clicked.connect(self.stop_simulation)
         self.step_button.clicked.connect(self.step_simulation)
         self.reset_button.clicked.connect(self.reset_simulation)
-        self.scale = 1
+        self.centroid_button.clicked.connect(self._on_centroid_button_clicked)
+        self.restore_button.clicked.connect(self._on_restore_button_clicked)
         self.view = QGraphicsView()
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setMinimumWidth(640)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.view.setFocusPolicy(Qt.NoFocus)
         self._layout_change_in_progress = False
         self._last_viewport_width = None
         self._panel_extra_padding = {
@@ -163,11 +194,17 @@ class GUI_2D(QWidget):
             self.canvas.setMinimumSize(320, 320)
             self.canvas.setMaximumWidth(360)
             self.spin_window = DetachedPanelWindow("Spin Model", close_callback=self._on_spin_window_closed)
+            self.spin_window.setFocusPolicy(Qt.NoFocus)
+            self.spin_window.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+            self.spin_window.setAttribute(Qt.WA_ShowWithoutActivating, True)
             spin_layout = QVBoxLayout()
             spin_layout.setContentsMargins(0, 0, 0, 0)
             spin_layout.addWidget(self.canvas)
             self.spin_window.setLayout(spin_layout)
             self.spin_window.setVisible(False)
+            hint = self.spin_window.sizeHint()
+            if hint.isValid():
+                self.spin_window.setFixedSize(hint)
         if self.wrap_config:
             hint = QLabel("Wrap-around active (sphere projection)")
             hint.setStyleSheet("color: gray; font-size: 10pt;")
@@ -189,8 +226,8 @@ class GUI_2D(QWidget):
         }
         if self.viewable_modes:
             self.graph_window = DetachedPanelWindow("Connection Graphs", close_callback=self._on_graph_window_closed)
-            self.graph_window.setMinimumWidth(520)
-            self.graph_window.setMaximumWidth(640)
+            self.graph_window.setMinimumWidth(720)
+            self.graph_window.setMaximumWidth(720)
             self.graph_window.setAutoFillBackground(True)
             self.graph_window.setStyleSheet("background-color: #2f2f2f; border-radius: 6px;")
             self.graph_layout = QVBoxLayout()
@@ -198,10 +235,14 @@ class GUI_2D(QWidget):
             self.graph_layout.setSpacing(16)
             self.graph_window.setLayout(self.graph_layout)
             self.graph_window.setVisible(False)
+            self.graph_window.setMinimumHeight(540)
+            self.graph_window.setMaximumHeight(540)
+            self.graph_window.setFixedSize(720, 540)
             for mode in self.viewable_modes:
                 title = "Messages graph" if mode == "messages" else "Detection graph"
                 graph_widget = NetworkGraphWidget(title, self.connection_colors[mode], title_color="#f5f5f5")
                 graph_widget.setVisible(True)
+                graph_widget.agent_selected.connect(self._handle_graph_agent_selection)
                 self.graph_views[mode] = graph_widget
                 self.graph_layout.addWidget(graph_widget)
             if self.graph_views:
@@ -282,6 +323,28 @@ class GUI_2D(QWidget):
         self.reset = False
         self.step_requested = False
         self.view.viewport().installEventFilter(self)
+        # Keyboard shortcuts (use shortcuts to avoid focus issues).
+        self._register_shortcut("+", lambda: self._zoom_camera(0.9))
+        self._register_shortcut("=", lambda: self._zoom_camera(0.9))
+        self._register_shortcut("Ctrl++", lambda: self._zoom_camera(0.9))
+        self._register_shortcut("Ctrl+=", lambda: self._zoom_camera(0.9))
+        self._register_shortcut("-", lambda: self._zoom_camera(1.1))
+        self._register_shortcut("Ctrl+-", lambda: self._zoom_camera(1.1))
+        for seq in ("W", "Up"):
+            self._register_shortcut(seq, lambda: self._nudge_camera(0, -1))
+        for seq in ("S", "Down"):
+            self._register_shortcut(seq, lambda: self._nudge_camera(0, 1))
+        for seq in ("A", "Left"):
+            self._register_shortcut(seq, lambda: self._nudge_camera(-1, 0))
+        for seq in ("D", "Right"):
+            self._register_shortcut(seq, lambda: self._nudge_camera(1, 0))
+        self._register_shortcut("Space", self._toggle_run)
+        self._register_shortcut("R", self.reset_simulation)
+        self._register_shortcut("E", self.step_simulation)
+        self._register_shortcut("C", self._on_centroid_button_clicked)
+        self._register_shortcut("V", self._on_restore_button_clicked)
+        if self.view_mode_selector:
+            self._register_shortcut("G", self._toggle_graphs_shortcut)
         self.resizeEvent(None)
         self.timer = QTimer(self)
         self.connection = self.timer.timeout.connect(self.update_data)
@@ -295,7 +358,15 @@ class GUI_2D(QWidget):
                 self._sync_scene_rect_with_view()
                 self.update_scene()
                 return False
-            if event.type() == QEvent.Type.MouseButtonPress:
+            if event.type() == QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                if delta != 0:
+                    steps = delta / 120.0
+                    base = 0.94
+                    factor = math.pow(base, steps) if steps > 0 else math.pow(1 / base, abs(steps))
+                    self._zoom_camera(factor)
+                return True
+            if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
                 if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.LeftButton:
                     scene_pos = self.view.mapToScene(event.pos())
                     if self.is_abstract:
@@ -304,21 +375,50 @@ class GUI_2D(QWidget):
                         new_selection = data if isinstance(data, tuple) else None
                     else:
                         new_selection = self.get_agent_at(scene_pos)
-                    if new_selection is None:
-                        if self.clicked_spin is not None:
-                            self._clear_selection()
-                    elif new_selection == self.clicked_spin:
-                        self._clear_selection()
-                    else:
-                        self.clicked_spin = new_selection
-                        self._show_spin_canvas()
-                        self.update_spins_plot()
-                        self._update_connection_legend()
-                        self._update_graph_filter_controls()
-                        self._update_graph_views()
-                        self.update_scene()
+                    self._handle_agent_selection(new_selection, double_click=(event.type() == QEvent.Type.MouseButtonDblClick))
+                    return True
+                if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.RightButton and event.type() == QEvent.Type.MouseButtonPress:
+                    self._panning = True
+                    self._pan_last_scene_pos = self.view.mapToScene(event.pos())
+                    return True
+            if event.type() == QEvent.Type.MouseMove and self._panning:
+                if self._pan_last_scene_pos is not None:
+                    current_scene_pos = self.view.mapToScene(event.pos())
+                    delta = current_scene_pos - self._pan_last_scene_pos
+                    self._pan_camera_by_scene_delta(delta)
+                    self._pan_last_scene_pos = current_scene_pos
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease and isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.RightButton:
+                self._panning = False
+                self._pan_last_scene_pos = None
                 return True
         return super().eventFilter(watched, event)
+
+    def _handle_agent_selection(self, agent_key, double_click=False):
+        """Handle agent selection regardless of source."""
+        if agent_key is None:
+            self._clear_selection()
+            return
+        if agent_key == self.clicked_spin and not double_click:
+            self._clear_selection()
+            return
+        self.clicked_spin = agent_key
+        self._show_spin_canvas()
+        self.update_spins_plot()
+        self._update_connection_legend()
+        self._update_graph_filter_controls()
+        self._update_graph_views()
+        self.update_scene()
+        if double_click:
+            self._focus_on_agent(agent_key, force=True, lock=True)
+        else:
+            self._unlock_camera()
+            self._focus_on_agent(agent_key, force=False, lock=False)
+
+    def _handle_graph_agent_selection(self, agent_key, double_click=False):
+        """Handle agent selection triggered from the graph windows."""
+        self._refresh_agent_centers()
+        self._handle_agent_selection(agent_key, double_click=double_click)
 
     def _show_spin_canvas(self):
         """Ensure the spin plot canvas is visible."""
@@ -428,9 +528,9 @@ class GUI_2D(QWidget):
             return
         if self.spin_panel_visible:
             if not self.spin_window.isVisible():
+                # Avoid stealing focus from the main window.
                 self.spin_window.show()
             self.spin_window.raise_()
-            self.spin_window.activateWindow()
         else:
             if self.spin_window.isVisible():
                 self.spin_window.hide()
@@ -449,6 +549,7 @@ class GUI_2D(QWidget):
             self.view_mode_selector.setCurrentIndex(0)
             self.view_mode_selector.blockSignals(False)
         self._apply_graph_view_mode(0)
+        self.graph_view_active = False
 
     def _update_legend_column_visibility(self):
         """Ensure the legend column mirrors the legend widget visibility."""
@@ -463,6 +564,27 @@ class GUI_2D(QWidget):
         self._main_layout.activate()
         padding = self._panel_extra_padding.get("legend", 0) if should_show else 0
         self._preserve_arena_view_width(previous_width, padding)
+
+    def _on_centroid_button_clicked(self):
+        """Center the view on the agents centroid (double click locks)."""
+        # If currently locked on centroid, a single click unlocks.
+        if self._camera_lock and self._camera_lock[0] == "centroid":
+            self._unlock_camera()
+            self._update_centroid_button_label()
+            return
+        now = time.time()
+        double_click = (now - self._centroid_last_click_ts) < 0.4
+        self._centroid_last_click_ts = now
+        self._clear_selection(update_view=False)
+        self._focus_on_centroid(lock=double_click)
+        self._update_centroid_button_label()
+
+    def _on_restore_button_clicked(self):
+        """Restore the default camera view."""
+        self._clear_selection(update_view=False)
+        self._unlock_camera()
+        self._update_centroid_button_label()
+        self._restore_view()
 
     def _handle_view_mode_change(self, index):
         """React to user selection from the view dropdown."""
@@ -526,6 +648,19 @@ class GUI_2D(QWidget):
         self.header_container.setVisible(not self.header_collapsed)
         self.header_toggle.setText("▼" if self.header_collapsed else "▲")
         self._main_layout.activate()
+
+    def closeEvent(self, event):
+        """Ensure auxiliary panels close with the main window."""
+        try:
+            if self.graph_window:
+                self.graph_window.force_close()
+            if self.spin_window:
+                self.spin_window.force_close()
+        finally:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        super().closeEvent(event)
     def _recompute_graph_layout(self):
         """Rebuild the graph layout using the current mode."""
         if not self.connection_graphs or not self.connection_graphs.get("messages"):
@@ -592,6 +727,8 @@ class GUI_2D(QWidget):
         if self.clicked_spin is None:
             return
         self.clicked_spin = None
+        self._unlock_camera()
+        self._update_centroid_button_label()
         self._hide_spin_canvas()
         if self.legend_widget:
             self.legend_widget.update_entries([])
@@ -618,6 +755,324 @@ class GUI_2D(QWidget):
                         return key, idx
         return None
 
+    # ----- Camera and view helpers -----------------------------------------
+    def _refresh_agent_centers(self):
+        """Rebuild the cache of agent centers."""
+        centers = {}
+        shapes = self.agents_shapes or {}
+        for key, entities in shapes.items():
+            for idx, shape in enumerate(entities):
+                try:
+                    center = shape.center_of_mass()
+                except Exception:
+                    center = None
+                if center is None:
+                    continue
+                centers[(key, idx)] = center
+        if centers:
+            self._agent_centers = centers
+
+    def _compute_arena_rect(self):
+        """Return the bounding rectangle of the arena vertices."""
+        if not self.arena_vertices:
+            return None
+        min_x = min(v.x for v in self.arena_vertices)
+        max_x = max(v.x for v in self.arena_vertices)
+        min_y = min(v.y for v in self.arena_vertices)
+        max_y = max(v.y for v in self.arena_vertices)
+        width = max(max_x - min_x, 1e-6)
+        height = max(max_y - min_y, 1e-6)
+        return QRectF(min_x, min_y, width, height)
+
+    def _compute_agents_rect(self):
+        """Return the bounding rectangle covering all agents."""
+        centers = self._agent_centers or {}
+        if not centers:
+            return None
+        xs = [c.x for c in centers.values()]
+        ys = [c.y for c in centers.values()]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        width = max(max_x - min_x, 1e-6)
+        height = max(max_y - min_y, 1e-6)
+        return QRectF(min_x, min_y, width, height)
+
+    def _pad_rect(self, rect: QRectF, padding_ratio: float = 0.05, min_padding: float = 0.1):
+        """Return a rectangle expanded by a padding factor."""
+        if rect is None:
+            return None
+        pad = max(rect.width(), rect.height()) * padding_ratio
+        pad = max(pad, min_padding)
+        return QRectF(
+            rect.left() - pad,
+            rect.top() - pad,
+            rect.width() + 2 * pad,
+            rect.height() + 2 * pad
+        )
+
+    def _fit_rect_to_aspect(self, rect: QRectF):
+        """Expand the rect so it matches the viewport aspect ratio."""
+        if rect is None:
+            return None
+        vw = max(1, self.view.viewport().width()) if self.view else 1
+        vh = max(1, self.view.viewport().height()) if self.view else 1
+        aspect = vw / float(vh)
+        width = max(rect.width(), 1e-6)
+        height = max(rect.height(), 1e-6)
+        if width / height > aspect:
+            target_height = width / aspect
+            target_width = width
+        else:
+            target_width = height * aspect
+            target_height = height
+        dx = (target_width - width) / 2.0
+        dy = (target_height - height) / 2.0
+        return QRectF(
+            rect.left() - dx,
+            rect.top() - dy,
+            target_width,
+            target_height
+        )
+
+    def _default_view_rect(self):
+        """Return the default view rectangle based on arena or agents."""
+        arena_rect = self._compute_arena_rect()
+        agents_rect = self._compute_agents_rect()
+        base_rect = None
+        # Prefer arena bounds when bounded; otherwise use agents.
+        if self.wrap_config is None and arena_rect is not None:
+            base_rect = arena_rect
+        elif agents_rect is not None:
+            base_rect = agents_rect
+        elif arena_rect is not None:
+            base_rect = arena_rect
+        if base_rect is None:
+            base_rect = QRectF(-5, -5, 10, 10)
+        padded = self._pad_rect(base_rect)
+        return self._fit_rect_to_aspect(padded)
+
+    def _ensure_view_initialized(self):
+        """Initialize the camera view rectangle if missing."""
+        if self._view_initialized:
+            return
+        rect = self._default_view_rect()
+        if rect is None:
+            return
+        self._view_rect = rect
+        self._view_initialized = True
+
+    def _recompute_transform(self):
+        """Update scale and offsets based on the current view rectangle."""
+        self._ensure_view_initialized()
+        if self._view_rect is None:
+            return
+        aspect_fitted = self._fit_rect_to_aspect(self._view_rect)
+        if aspect_fitted is not None:
+            self._view_rect = aspect_fitted
+        rect = self._view_rect
+        vw = max(1, self.view.viewport().width()) if self.view else 1
+        vh = max(1, self.view.viewport().height()) if self.view else 1
+        scale_x = vw / rect.width()
+        scale_y = vh / rect.height()
+        self.scale = min(scale_x, scale_y)
+        self.offset_x = vw * 0.5 - rect.center().x() * self.scale
+        self.offset_y = vh * 0.5 - rect.center().y() * self.scale
+
+    def _world_from_scene(self, scene_point: QPointF):
+        """Convert a scene pixel coordinate into world coordinates."""
+        if self.scale == 0:
+            return QPointF(0, 0)
+        return QPointF(
+            (scene_point.x() - self.offset_x) / self.scale,
+            (scene_point.y() - self.offset_y) / self.scale
+        )
+
+    def _is_point_visible(self, world_point: QPointF, margin_ratio: float = 0.02):
+        """Return True if a world point is inside the current view rect."""
+        if self._view_rect is None:
+            return False
+        margin_x = self._view_rect.width() * margin_ratio
+        margin_y = self._view_rect.height() * margin_ratio
+        expanded = QRectF(
+            self._view_rect.left() - margin_x,
+            self._view_rect.top() - margin_y,
+            self._view_rect.width() + 2 * margin_x,
+            self._view_rect.height() + 2 * margin_y
+        )
+        return expanded.contains(world_point)
+
+    def _pan_camera_by_scene_delta(self, delta: QPointF):
+        """Pan the camera using a delta measured in scene pixels."""
+        if self.scale == 0:
+            return
+        dx_world = delta.x() / self.scale
+        dy_world = delta.y() / self.scale
+        self._pan_camera(-dx_world, -dy_world)
+
+    def _pan_camera(self, dx_world: float, dy_world: float):
+        """Translate the camera view by the given world delta."""
+        if self._view_rect is None:
+            self._ensure_view_initialized()
+        if self._view_rect is None:
+            return
+        self._unlock_camera()
+        self._view_rect.translate(dx_world, dy_world)
+        self.update_scene()
+
+    def _zoom_camera(self, factor: float, anchor_scene_pos=None):
+        """Zoom the camera keeping the anchor point stable."""
+        if self._view_rect is None:
+            self._ensure_view_initialized()
+        if self._view_rect is None:
+            return
+        rect = self._view_rect
+        aspect = rect.width() / max(rect.height(), 1e-6)
+        anchor_world = None
+        if anchor_scene_pos is not None:
+            anchor_world = self._world_from_scene(self.view.mapToScene(anchor_scene_pos))
+        if anchor_world is None:
+            anchor_world = QPointF(rect.center().x(), rect.center().y())
+        base_rect = self._default_view_rect()
+        max_span = max(base_rect.width(), base_rect.height()) * 5 if base_rect else rect.width() * 5
+        min_span = max(self._zoom_min_span, min(rect.width(), rect.height()) * 0.05)
+        new_width = rect.width() * factor
+        new_width = max(min_span, min(new_width, max_span))
+        new_height = new_width / aspect
+        center = rect.center()
+        new_center = QPointF(
+            anchor_world.x() + (center.x() - anchor_world.x()) * factor,
+            anchor_world.y() + (center.y() - anchor_world.y()) * factor
+        )
+        self._view_rect = QRectF(
+            new_center.x() - new_width / 2.0,
+            new_center.y() - new_height / 2.0,
+            new_width,
+            new_height
+        )
+        self.update_scene()
+
+    def _restore_view(self):
+        """Reset the camera to show the arena or agents."""
+        rect = None
+        if self.wrap_config is None:
+            rect = self._compute_arena_rect()
+            if rect is not None:
+                rect = self._pad_rect(rect)
+        agents_rect = self._compute_agents_rect()
+        if rect is None or self.wrap_config is not None:
+            rect = agents_rect if agents_rect is not None else self._default_view_rect()
+        if rect is None:
+            return
+        self._unlock_camera()
+        self._view_rect = self._fit_rect_to_aspect(rect)
+        self.update_scene()
+
+    def _focus_on_centroid(self, lock=False, apply_scene=True):
+        """Move camera to the centroid of all agents."""
+        if not self._agent_centers:
+            return
+        xs = [c.x for c in self._agent_centers.values()]
+        ys = [c.y for c in self._agent_centers.values()]
+        centroid = QPointF(sum(xs) / len(xs), sum(ys) / len(ys))
+        rect = self._view_rect or self._default_view_rect()
+        if rect is None:
+            return
+        span = max(
+            math.hypot(c.x - centroid.x(), c.y - centroid.y())
+            for c in self._agent_centers.values()
+        )
+        target_width = rect.width()
+        target_height = rect.height()
+        if self.wrap_config is not None:
+            target_width = max(span * 2.2, rect.width() * 0.8, self._zoom_min_span)
+            target_height = target_width / max(rect.width() / max(rect.height(), 1e-6), 1e-6)
+        new_rect = QRectF(
+            centroid.x() - target_width / 2.0,
+            centroid.y() - target_height / 2.0,
+            target_width,
+            target_height
+        )
+        self._view_rect = self._fit_rect_to_aspect(new_rect)
+        if lock:
+            self._lock_camera("centroid", None)
+        else:
+            self._unlock_camera()
+        if apply_scene:
+            self.update_scene()
+
+    def _focus_on_agent(self, agent_key, force=False, lock=False, apply_scene=True):
+        """Move camera to the specified agent."""
+        if not agent_key:
+            return
+        center = self._agent_centers.get(agent_key)
+        if center is None:
+            return
+        point = QPointF(center.x, center.y)
+        if not force and self._is_point_visible(point):
+            if lock:
+                self._lock_camera("agent", agent_key)
+            return
+        rect = self._view_rect or self._default_view_rect()
+        if rect is None:
+            return
+        new_rect = QRectF(
+            point.x() - rect.width() / 2.0,
+            point.y() - rect.height() / 2.0,
+            rect.width(),
+            rect.height()
+        )
+        self._view_rect = new_rect
+        if lock:
+            self._lock_camera("agent", agent_key)
+        else:
+            self._unlock_camera()
+        if apply_scene:
+            self.update_scene()
+
+    def _lock_camera(self, mode, target):
+        """Lock camera on agent or centroid."""
+        self._camera_lock = (mode, target)
+        self._update_centroid_button_label()
+
+    def _unlock_camera(self):
+        """Clear camera lock."""
+        self._camera_lock = None
+        self._update_centroid_button_label()
+
+    def _update_camera_lock(self):
+        """Maintain camera lock on every refresh."""
+        if not self._camera_lock:
+            return
+        mode, target = self._camera_lock
+        if mode == "agent" and target not in (self._agent_centers or {}):
+            self._unlock_camera()
+            return
+        if mode == "centroid" and not self._agent_centers:
+            self._unlock_camera()
+            return
+        if mode == "agent":
+            self._focus_on_agent(target, force=True, lock=True, apply_scene=False)
+        elif mode == "centroid":
+            self._focus_on_centroid(lock=True, apply_scene=False)
+
+    def _update_centroid_button_label(self):
+        """Reflect lock state on centroid button label."""
+        if not hasattr(self, "centroid_button") or self.centroid_button is None:
+            return
+        locked = self._camera_lock and self._camera_lock[0] == "centroid"
+        label = "Centroid" + (" [lock]" if locked else "")
+        if self.centroid_button.text() != label:
+            self.centroid_button.setText(label)
+
+    def _nudge_camera(self, dx_sign: float, dy_sign: float):
+        """Move camera with keyboard controls."""
+        if self._view_rect is None:
+            self._ensure_view_initialized()
+        if self._view_rect is None:
+            return
+        step_x = self._view_rect.width() * self._keyboard_pan_factor
+        step_y = self._view_rect.height() * self._keyboard_pan_factor
+        self._pan_camera(dx_sign * step_x, dy_sign * step_y)
     def _sync_scene_rect_with_view(self):
         """Ensure the scene rectangle matches the current viewport size."""
         if not self.view or not self.scene:
@@ -693,22 +1148,78 @@ class GUI_2D(QWidget):
         """Handle basic keyboard shortcuts for simulation control."""
         key = event.key()
         if key == Qt.Key_Space:
-            if self.running:
-                self.stop_simulation()
-            else:
-                self.start_simulation()
+            self._toggle_run()
             event.accept()
             return
         if key == Qt.Key_R:
             self.reset_simulation()
             event.accept()
             return
-        if key == Qt.Key_S:
+        if key == Qt.Key_E:
             if not self.running:
                 self.step_simulation()
             event.accept()
             return
+        if key in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_KP_Add):
+            self._zoom_camera(0.9)
+            event.accept()
+            return
+        if key in (Qt.Key_Minus, Qt.Key_KP_Subtract):
+            self._zoom_camera(1.1)
+            event.accept()
+            return
+        if key == Qt.Key_C:
+            self._on_centroid_button_clicked()
+            event.accept()
+            return
+        if key == Qt.Key_V:
+            self._on_restore_button_clicked()
+            event.accept()
+            return
+        if key == Qt.Key_G and self.view_mode_selector:
+            current = self.view_mode_selector.currentIndex()
+            new_index = 0 if current != 0 else 1
+            self.view_mode_selector.setCurrentIndex(new_index)
+            event.accept()
+            return
+        if key in (Qt.Key_W, Qt.Key_Up):
+            self._nudge_camera(0, -1)
+            event.accept()
+            return
+        if key in (Qt.Key_S, Qt.Key_Down):
+            self._nudge_camera(0, 1)
+            event.accept()
+            return
+        if key in (Qt.Key_A, Qt.Key_Left):
+            self._nudge_camera(-1, 0)
+            event.accept()
+            return
+        if key in (Qt.Key_D, Qt.Key_Right):
+            self._nudge_camera(1, 0)
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def _toggle_run(self):
+        """Toggle start/stop."""
+        if self.running:
+            self.stop_simulation()
+        else:
+            self.start_simulation()
+
+    def _toggle_graphs_shortcut(self):
+        """Toggle graph visibility via keyboard."""
+        if not self.view_mode_selector:
+            return
+        current = self.view_mode_selector.currentIndex()
+        new_index = 0 if current != 0 else 1
+        self.view_mode_selector.setCurrentIndex(new_index)
+
+    def _register_shortcut(self, seq, callback):
+        """Register an application-wide shortcut."""
+        sc = QShortcut(QKeySequence(seq), self)
+        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        sc.activated.connect(callback)
 
     def update_spins_plot(self):
         """Update spins plot."""
@@ -781,6 +1292,7 @@ class GUI_2D(QWidget):
                 self.objects_shapes = o_shapes
                 self.agents_shapes = data["agents_shapes"]
                 self.agents_spins = data["agents_spins"]
+                self._refresh_agent_centers()
                 if self.connection_features_enabled:
                     self.agents_metadata = data.get("agents_metadata", {})
                     if self._connection_features_active():
@@ -805,6 +1317,8 @@ class GUI_2D(QWidget):
             self.agents_shapes = {}
             self.agents_spins = {}
             self.agents_metadata = {}
+            self._agent_centers = {}
+            self._view_initialized = False
             self._clear_connection_caches()
             self._update_graph_views()
             self._clear_selection(update_view=False)
@@ -815,25 +1329,13 @@ class GUI_2D(QWidget):
         """Draw arena."""
         if not self.arena_vertices:
             return
-        view_width = self.view.viewport().width()
-        view_height = self.view.viewport().height()
-        min_x = min(v.x for v in self.arena_vertices)
-        min_y = min(v.y for v in self.arena_vertices)
-        max_x = max(v.x for v in self.arena_vertices)
-        max_y = max(v.y for v in self.arena_vertices)
-        arena_width = max_x - min_x
-        arena_height = max_y - min_y
-        margin_x = 40
-        margin_y = 40
-        scale_x = (view_width - 2 * margin_x) / arena_width if arena_width > 0 else 1
-        scale_y = (view_height - 2 * margin_y) / arena_height if arena_height > 0 else 1
-        self.scale = min(scale_x, scale_y)
-        self.offset_x = margin_x - min_x * self.scale
-        self.offset_y = margin_y - min_y * self.scale
+        scale = self.scale
+        offset_x = self.offset_x
+        offset_y = self.offset_y
         transformed_vertices = [
             QPointF(
-                v.x * self.scale + self.offset_x,
-                v.y * self.scale + self.offset_y
+                v.x * scale + offset_x,
+                v.y * scale + offset_y
             )
             for v in self.arena_vertices
         ]
@@ -942,6 +1444,9 @@ class GUI_2D(QWidget):
     def update_scene(self):
         """Update scene."""
         self.data_label.setText(f"Arena ticks: {self.time}")
+        self._ensure_view_initialized()
+        self._update_camera_lock()
+        self._recompute_transform()
         self.scene.clear()
         if self.is_abstract or not self.arena_vertices:
             self._draw_abstract_dots()
@@ -1281,6 +1786,8 @@ class GUI_2D(QWidget):
 class NetworkGraphWidget(QWidget):
     """Simple widget that renders an interaction graph."""
 
+    agent_selected = Signal(object, bool)
+
     def __init__(self, title: str, edge_color: QColor, title_color = "black"):
         super().__init__()
         self.edge_color = edge_color
@@ -1297,6 +1804,8 @@ class NetworkGraphWidget(QWidget):
         layout.addWidget(self._title)
         layout.addWidget(self._view)
         self.setLayout(layout)
+
+        self._view.viewport().installEventFilter(self)
 
     def update_graph(self, nodes, edges, normalized_coords=None, highlight=None):
         """Redraw the graph based on the provided nodes and edges."""
@@ -1386,9 +1895,11 @@ class NetworkGraphWidget(QWidget):
                 node_pen,
                 node_brush
             )
+            ellipse.setData(0, node.get("id"))
             ellipse.setToolTip(node.get("label", ""))
             text_value = node.get("short_label") or node.get("label", "")
             label = self._scene.addText(text_value)
+            label.setData(0, node.get("id"))
             label.setDefaultTextColor(Qt.black)
             label_rect = label.boundingRect()
             label.setPos(
@@ -1408,6 +1919,31 @@ class NetworkGraphWidget(QWidget):
                     (node_radius + 4) * 2,
                     halo_pen
                 )
+
+    def eventFilter(self, watched, event):
+        """Handle click selection on graph nodes."""
+        if watched == self._view.viewport():
+            if event.type() == QEvent.MouseButtonDblClick:
+                agent_id = self._agent_at(event.pos())
+                if agent_id is not None:
+                    self.agent_selected.emit(agent_id, True)
+                    return True
+            if event.type() == QEvent.MouseButtonPress:
+                agent_id = self._agent_at(event.pos())
+                if agent_id is not None:
+                    self.agent_selected.emit(agent_id, False)
+                    return True
+        return super().eventFilter(watched, event)
+
+    def _agent_at(self, viewport_pos):
+        """Return agent id at the given viewport position if present."""
+        scene_pos = self._view.mapToScene(viewport_pos)
+        # itemAt may return edges; search all items under cursor for data
+        for item in self._scene.items(scene_pos):
+            agent_id = item.data(0) if hasattr(item, "data") else None
+            if agent_id is not None:
+                return agent_id
+        return None
 
     @staticmethod
     def _color_to_css(value) -> str:
