@@ -96,13 +96,13 @@ class GPSDetectionModel(DetectionModel):
 
     def _collect_object_targets(self, perception, objects):
         """Accumulate perception contributed by configured objects."""
-        for _, (shapes, positions, strengths, uncertainties) in objects.items():
-            for n in range(len(shapes)):
-                dx = positions[n].x - self.agent.position.x
-                dy = positions[n].y - self.agent.position.y
-                dz = positions[n].z - self.agent.position.z
-                effective_width = self.perception_width + uncertainties[n]
-                self._accumulate_target(perception, dx, dy, dz, effective_width, strengths[n])
+        for _, (_, positions, strengths, uncertainties) in objects.items():
+            for position, strength, uncertainty in zip(positions, strengths, uncertainties):
+                dx = position.x - self.agent.position.x
+                dy = position.y - self.agent.position.y
+                dz = position.z - self.agent.position.z
+                effective_width = self.perception_width + uncertainty
+                self._accumulate_target(perception, dx, dy, dz, effective_width, strength)
 
     def _apply_global_inhibition(self, perception_channel):
         """Apply the configured global inhibition to a channel."""

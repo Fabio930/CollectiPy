@@ -85,8 +85,9 @@ class Shape:
     flat_shapes = ["circle", "square", "rectangle"]
     no_shapes = ["point", "none"]
 
-    def __init__(self, config_elem:dict, center: Vector3D = Vector3D()):
+    def __init__(self, config_elem:dict, center: Vector3D | None = None):
         """Initialize the instance."""
+        center = center or Vector3D()
         self.center = Vector3D(center.x, center.y, center.z)
         self._object = "arena"
         self._id = "point"
@@ -248,7 +249,7 @@ class Shape:
 
 class Sphere(Shape):
     """Sphere."""
-    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D = Vector3D()):
+    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         """Initialize the instance."""
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
@@ -288,7 +289,7 @@ class Sphere(Shape):
 
 class Cuboid(Shape):
     """Cuboid."""
-    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D = Vector3D()):
+    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         """Initialize the instance."""
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
@@ -352,7 +353,7 @@ class Cuboid(Shape):
 
 class Cylinder(Shape):
     """Cylinder."""
-    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D = Vector3D()):
+    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         """Initialize the instance."""
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
@@ -423,7 +424,7 @@ class UnboundedShape(Shape):
     """Shape representing an unbounded arena (large placeholder square)."""
     BOUND = 1e9
 
-    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D = Vector3D()):
+    def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
         self._id = shape_type

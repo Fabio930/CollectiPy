@@ -55,13 +55,13 @@ class Vector3D:
         return self / mag
 
     def v_rotate_z(self, point, angle:float):
-        """V rotate z."""
+        """Rotate the vector around ``point`` on the Z axis."""
         translated = self - point
         cos_theta = math.cos(angle)
         sin_theta = math.sin(angle)
-        x = translated.x * cos_theta
-        y = translated.y * sin_theta
-        rotated = Vector3D(x, y, 0)
+        x = translated.x * cos_theta - translated.y * sin_theta
+        y = translated.x * sin_theta + translated.y * cos_theta
+        rotated = Vector3D(x, y, translated.z)
         return rotated + point
 
     def __repr__(self) -> str:

@@ -8,7 +8,6 @@
 # ------------------------------------------------------------------------------
 
 """Graphical user interface for the simulator."""
-# pyright: reportAttributeAccessIssue=false
 import logging, math, time
 from typing import Any, Optional, cast
 import matplotlib.pyplot as plt
