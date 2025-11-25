@@ -7,7 +7,11 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import json, itertools, copy
+import json, itertools
+
+def _clone_config_obj(obj):
+    """Deep-clone config data without using copy module."""
+    return json.loads(json.dumps(obj))
 
 class Config:
     """Config."""
@@ -81,7 +85,7 @@ class Config:
         combinations = list(itertools.product(*values))
         expanded = []
         for combo in combinations:
-            new_entity = copy.deepcopy(entity)
+            new_entity = _clone_config_obj(entity)
             for idx, f in enumerate(list_fields):
                 new_entity[f] = combo[idx]
             for k in list_fields:

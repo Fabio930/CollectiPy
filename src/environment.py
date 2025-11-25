@@ -88,11 +88,13 @@ class Environment():
     """Environment."""
     def __init__(self,config_elem:Config):
         """Initialize the instance."""
-        self.experiments = config_elem.parse_experiments()
+        # Freeze experiments to avoid external mutation.
+        self.experiments = tuple(config_elem.parse_experiments())
         self.num_runs = int(config_elem.environment.get("num_runs",1))
         self.time_limit = int(config_elem.environment.get("time_limit",0))
         self.gui_id = config_elem.gui.get("_id","2D")
-        self.render = [True,config_elem.gui] if len(config_elem.gui)>0 else [False,{}]
+        base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
+        self.render = [True, base_gui_cfg] if base_gui_cfg else [False, {}]
         self.collisions = config_elem.environment.get("collisions",False)
         if not self.render[0] and self.time_limit==0:
             raise Exception("Invalid configuration: infinite experiment with no GUI.")
@@ -174,12 +176,13 @@ class Environment():
             }
             killed = 0
             if render_enabled:
-                self.render[1]["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
+                render_config = dict(self.render[1])
+                render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
                 hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
                 gui_process = mp.Process(
                     target=self.run_gui,
                     args=(
-                        self.render[1],
+                        render_config,
                         arena_shape.vertices(),
                         arena_shape.color(),
                         gui_in_queue,
