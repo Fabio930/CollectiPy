@@ -22,7 +22,7 @@
         "objects": {},
         "agents": {
             "movable_handshake": {
-                "number": [20],
+                "number": [10],
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,
