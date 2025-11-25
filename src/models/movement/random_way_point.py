@@ -64,46 +64,30 @@ class RandomWayPointMovement(MovementModel):
             logger.debug("%s steering %s (angle_to_goal=%.2f)", agent.get_name(), agent.motion, angle_to_goal)
 
     def _random_goal(self, arena_shape):
-        """Return a new goal position respecting spherical wrap if available."""
-        if not self.wrap_config or self.wrap_config.get("projection") != "ellipse":
-            return self.agent.shape._get_random_point_inside_shape(self.agent.random_generator, arena_shape)
-        rand = self.agent.random_generator
-        lon = rand.uniform(-math.pi, math.pi)
-        u = rand.uniform(-1.0, 1.0)
-        lat = math.asin(u)
-        return self._latlon_to_point(lat, lon)
-
-    def _latlon_to_point(self, lat: float, lon: float):
-        """Map spherical coordinates back to the flattened ellipse."""
-        origin = self.wrap_config["origin"]
-        width = self.wrap_config["width"]
-        height = self.wrap_config["height"]
-        x = origin.x + ((lon + math.pi) / (2 * math.pi)) * width
-        y = origin.y + ((lat + (math.pi * 0.5)) / math.pi) * height
-        return Vector3D(x, y, self.agent.position.z)
+        """Return a new goal position."""
+        center = getattr(self.agent, "position", None) or self.agent.get_start_position()
+        radius = None
+        distribution = "uniform"
+        params = getattr(self.agent, "spawn_params", None)
+        if params:
+            center = params[0] or center
+            radius = params[1]
+            distribution = params[2] or "uniform"
+        if radius is None:
+            if self.wrap_config and self.wrap_config.get("unbounded"):
+                width = float(self.wrap_config.get("width", 1.0))
+                height = float(self.wrap_config.get("height", width))
+                radius = max(0.1, min(width, height) * 0.5)
+            else:
+                radius = 1.0
+        return self._sample_spawn(center, radius, distribution)
 
     def _wrapped_vector_to_goal(self, agent):
         """Return the shortest vector towards the goal accounting for wrap."""
-        if not self.wrap_config:
-            return (
-                agent.goal_position.x - agent.position.x,
-                agent.goal_position.y - agent.position.y
-            )
-        dx = agent.goal_position.x - agent.position.x
-        dy = agent.goal_position.y - agent.position.y
-        width = self.wrap_config["width"]
-        height = self.wrap_config["height"]
-        dx = self._wrap_delta(dx, width)
-        dy = self._wrap_delta(dy, height)
-        return dx, dy
-
-    @staticmethod
-    def _wrap_delta(delta, extent):
-        """Wrap a delta around the given extent to keep the shortest distance."""
-        if extent <= 0:
-            return delta
-        half = extent * 0.5
-        return ((delta + half) % extent) - half
+        return (
+            agent.goal_position.x - agent.position.x,
+            agent.goal_position.y - agent.position.y
+        )
 
     def _distance_to_goal(self, agent):
         """Return the wrapped distance to the current goal."""
@@ -111,5 +95,25 @@ class RandomWayPointMovement(MovementModel):
             return 0.0
         dx, dy = self._wrapped_vector_to_goal(agent)
         return math.hypot(dx, dy)
+
+    def _sample_spawn(self, center, radius, distribution):
+        """Sample a point from the configured distribution."""
+        rng = self.agent.random_generator
+        dist = str(distribution).lower()
+        if dist == "gaussian":
+            std = radius / 3.0
+            x = rng.gauss(center.x, std)
+            y = rng.gauss(center.y, std)
+        elif dist == "ring":
+            r = rng.uniform(radius * 0.5, radius)
+            theta = rng.uniform(0.0, 2 * math.pi)
+            x = center.x + r * math.cos(theta)
+            y = center.y + r * math.sin(theta)
+        else:
+            r = math.sqrt(rng.uniform(0.0, 1.0)) * radius
+            theta = rng.uniform(0.0, 2 * math.pi)
+            x = center.x + r * math.cos(theta)
+            y = center.y + r * math.sin(theta)
+        return Vector3D(x, y, self.agent.position.z)
 
 register_movement_model("random_way_point", lambda agent: RandomWayPointMovement(agent))

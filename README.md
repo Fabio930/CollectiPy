@@ -18,7 +18,7 @@ Edit `run.sh` to point to the config you want to run; the default is one of the 
 
 - **config/**: Provides the methods to handle the json configuration file.
 - **environment/**: Manages the parallel processing of the siumulations.
-- **arena/**: Contains custom arenas where simulations take place. Users can create their own arenas by extending the base classes provided (rectangle/circle/square and the unbounded wrap-around projection).
+- **arena/**: Contains custom arenas where simulations take place. Users can create their own arenas by extending the base classes provided (rectangle/circle/square and the unbounded square preview).
 - **entityManager/**: Manages the simulation of agents deployed in the arena.
 - **entity/**: Houses the definitions for various entities such as agents, objects, and highlighted areas within the arena.
 - **gui/**: Includes base classes for the graphical user interface. The GUI can be enabled or disabled based on user preference.
@@ -44,7 +44,6 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
 - Restore view: `V` or the Restore button (also clears selection/locks)
 - Centroid: `C` or the Centroid button; double-click to lock/unlock on the centroid
 - Agent selection: click agents in arena or graph; double-click locks the camera on that agent
-- Spin window: detached, does not steal focus; closing the main window closes all panels
 
 ## Config.json Example
 
@@ -52,7 +51,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
 {
 "environment":{
     "collisions": bool, DEFAULT:false
-    "ticks_per_second": int, DEFAULT:1
+    "ticks_per_second": int, DEFAULT:3
     "time_limit": int, DEFAULT:0(inf)
     "num_runs": int, DEFAULT:1
     "results":{ DEFAULT:{} empty dict -> no saving. If rendering is enabled -> no saving
@@ -66,7 +65,6 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
         "snapshots_per_second": int, DEFAULT:1 (1 = end-of-second only, 2 = mid-second + end-second captures).
     },
     "logging":{ DEFAULT:{} empty dict -> logging disabled
-        "enabled": bool, DEFAULT:false - turn detailed logging on/off (also enables log persistence)
         "level": str, DEFAULT:"INFO" - console level (set DEBUG to track interactions/collisions)
         "file_level": str, DEFAULT:"WARNING" - severity written to disk (WARNING/ERROR by default)
         "to_console": bool, DEFAULT:true - echo logs to stdout
@@ -83,7 +81,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "width": int, DEFAULT:1
             "depth": int, DEFAULT:1
             "_id": str, Required - SUPPORTED:"rectangle","square","circle","abstract","unbounded"
-            "diameter": float, Required only for "_id":"unbounded" (defines the wrap-around diameter that becomes an ellipse)
+            "diameter": float, OPTIONAL for "_id":"unbounded" (initial side of the preview square; defaults to 10 if omitted or <=0)
             "color": "gray" DEFAULT:white
             "hierarchy": { OPTIONAL - define the reversed-tree partition applied to this arena
                 "depth": int, DEFAULT:0 - number of additional levels (root is level 0)
@@ -97,7 +95,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "position": list(3Dvec), DEFAULT:None default assings random not-overlapping initial positions
             "orientation": list(3Dvec), DEFAULT:None default assings random initial orientations
             "_id": "str", Required - SUPPORTED:"idle","interactive"
-            "shape": "str", Required - SUPPORTED:"circle","square","rectangle","ellipse","sphere","cube","cylinder","none" flat geometry can be used to define walkable areas in the arena
+            "shape": "str", Required - SUPPORTED:"circle","square","rectangle","sphere","cube","cylinder","none" flat geometry can be used to define walkable areas in the arena
             "height": float, DEFAULT:1 width and depth used for not-round objects
             "diameter": float, DEFAULT:1 used for round objects
             "color": "str", DEFAULT:"black"
@@ -112,7 +110,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "number": list(int), DEFAULT:[1] each list's entry will define a different simulation
             "position": list(3Dvec), DEFAULT:None default assings random not-overlapping initial positions
             "orientation": list(3Dvec), DEFAULT:None default assings random initial orientations
-            "shape": str, - SUPPORTED:"sphere","cube","cylinder","ellipse","none"
+            "shape": str, - SUPPORTED:"sphere","cube","cylinder","none"
             "linear_velocity": float, DEFAULT:0.01 m/s
             "angular_velocity": float, DEFAULT:10 deg/s
             "height": float,
@@ -171,6 +169,13 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
 }
 }
 ```
+
+### Agent spawning (bounded vs unbounded)
+
+- Default spawn center `c = [0, 0]` and radius `r` can be overridden per agent group via `spawn.center` / `spawn.radius` / `spawn.distribution` (`uniform` | `gaussian` | `ring`, default `uniform`). Agents/sample logic can also mutate these at runtime.
+- Bounded arenas: if `r` is not provided, it defaults to the inradius of the arena footprint. The sampled area is clamped to the arena; if the requested circle exceeds the bounds it is truncated to fit. Placement still respects non-overlap with walls, objects, and other agents.
+- Unbounded arenas: if `r` is missing/invalid, a finite radius is inferred from agent count/size so that all requested agents fit in a reasonable square. Sampling uses the chosen distribution around `c` without wrap-around.
+- Multiple groups sharing the same spawn center: the second (and subsequent) groups are shifted away by at least `0.25 * r`, repeated until a non-overlapping placement is found or attempts are exhausted. If spawn disks do not touch and placement still fails, the init aborts with an error (attempt limit unchanged).
 
 Raw traces saved under `environment.results.base_path` obey the spec lists declared in `results.agent_specs` / `results.group_specs`. When an arena hierarchy is configured, each base row also includes the hierarchy node where the agent currently sits so downstream analysis can group by partition. Per-agent pickles (`<group>_<idx>.pkl`) are emitted only when `"base"` is present (sampled `[tick, pos x, pos y, pos z]` rows) and can optionally append `"spin_model"` dumps (`<group>_<idx>_spins.pkl`). Snapshots are taken once per simulated second by default (after the last tick in that second); setting `snapshots_per_second: 2` adds a mid-second capture. Tick `0` is always stored so consumers see the initial pose, and the very last tick is forced even if it does not align with the cadence. Group specs apply to global outputs: `"graph_messages"` / `"graph_detection"` write one pickle per tick under `graphs/<mode>/step_<tick>.pkl`, and the helper spec `"graphs"` enables both. Message edges require that the transmitter has range and a non-zero TX budget **and** the receiver advertises a non-zero RX budget; detection edges only appear when the sensing agent has a non-zero acquisition rate in addition to range. All per-step graph pickles are zipped into `{mode}_graphs.zip` at the end of the run, and finally the whole `run_<n>` folder is compressed so analysis scripts can ingest the pickles while storage stays compact.
 

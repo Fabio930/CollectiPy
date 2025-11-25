@@ -4,7 +4,7 @@
         "plugins.examples.collision_handshake_plugin"
     ],
     "environment": {
-        "collisions": true,
+        "collisions": false,
         "time_limit": 0,
         "num_runs": 1,
         "gui": {
@@ -14,10 +14,7 @@
         },
         "arenas": {
             "arena_0": {
-                "_id": "rectangle",
-                "width": 1.2,
-                "depth": 1.2,
-                "height": 0.2,
+                "_id": "unbounded",
                 "random_seed": 21,
                 "color": "white"
             }
@@ -25,7 +22,7 @@
         "objects": {},
         "agents": {
             "movable_handshake": {
-                "number": [8],
+                "number": [20],
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,
@@ -46,7 +43,7 @@
                 }
             },
             "movable_sampler": {
-                "number": [6],
+                "number": [20],
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,

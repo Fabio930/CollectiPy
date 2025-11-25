@@ -9,19 +9,26 @@
 
 """Graphical user interface for the simulator."""
 import logging, math, time
+from typing import Any, Optional, cast
 import matplotlib.pyplot as plt
+from geometry_utils.vector3D import Vector3D
 from config import Config
-from matplotlib.cm import coolwarm
+from matplotlib import cm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame
 from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF, Signal
-from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut, QResizeEvent
+
+# Help static analyzers with Qt dynamic attributes/constants.
+Qt = cast(Any, Qt)
+QSizePolicy = cast(Any, QSizePolicy)
+QFrame = cast(Any, QFrame)
 
 class GuiFactory():
 
     """Gui factory."""
     @staticmethod
-    def create_gui(config_elem:Config,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def create_gui(config_elem:Any,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
         """Create gui."""
         if config_elem.get("_id") in ("2D","abstract"):
             return QApplication([]),GUI_2D(
@@ -67,7 +74,7 @@ class DetachedPanelWindow(QWidget):
 
 class GUI_2D(QWidget):
     """2 d."""
-    def __init__(self, config_elem: Config,arena_vertices,arena_color,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def __init__(self, config_elem: Any,arena_vertices,arena_color,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
         """Initialize the instance."""
         super().__init__()
         self.gui_mode = config_elem.get("_id", "2D")
@@ -91,6 +98,8 @@ class GUI_2D(QWidget):
         self.gui_in_queue = gui_in_queue
         self.gui_control_queue = gui_control_queue
         self.wrap_config = wrap_config
+        self.unbounded_mode = bool(wrap_config and wrap_config.get("unbounded"))
+        self._unbounded_rect: Optional[QRectF] = None
         self.hierarchy_overlay = hierarchy_overlay or []
         self.setWindowTitle("Arena GUI")
         self.setFocusPolicy(Qt.StrongFocus)
@@ -205,10 +214,6 @@ class GUI_2D(QWidget):
             hint = self.spin_window.sizeHint()
             if hint.isValid():
                 self.spin_window.setFixedSize(hint)
-        if self.wrap_config:
-            hint = QLabel("Wrap-around active (sphere projection)")
-            hint.setStyleSheet("color: gray; font-size: 10pt;")
-            self._left_layout.addWidget(hint)
         arena_row = QHBoxLayout()
         arena_row.setContentsMargins(0, 0, 0, 0)
         arena_row.setSpacing(8)
@@ -353,13 +358,14 @@ class GUI_2D(QWidget):
 
     def eventFilter(self, watched, event):
         """Handle Qt event filtering."""
+        ev = cast(Any, event)
         if watched == self.view.viewport():
             if event.type() == QEvent.Type.Resize:
                 self._sync_scene_rect_with_view()
                 self.update_scene()
                 return False
             if event.type() == QEvent.Type.Wheel:
-                delta = event.angleDelta().y()
+                delta = ev.angleDelta().y()
                 if delta != 0:
                     steps = delta / 120.0
                     base = 0.94
@@ -368,7 +374,7 @@ class GUI_2D(QWidget):
                 return True
             if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
                 if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.LeftButton:
-                    scene_pos = self.view.mapToScene(event.pos())
+                    scene_pos = self.view.mapToScene(ev.pos())
                     if self.is_abstract:
                         item = self.scene.itemAt(scene_pos, self.view.transform())
                         data = item.data(0) if item is not None else None
@@ -379,11 +385,11 @@ class GUI_2D(QWidget):
                     return True
                 if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.RightButton and event.type() == QEvent.Type.MouseButtonPress:
                     self._panning = True
-                    self._pan_last_scene_pos = self.view.mapToScene(event.pos())
+                    self._pan_last_scene_pos = self.view.mapToScene(ev.pos())
                     return True
             if event.type() == QEvent.Type.MouseMove and self._panning:
                 if self._pan_last_scene_pos is not None:
-                    current_scene_pos = self.view.mapToScene(event.pos())
+                    current_scene_pos = self.view.mapToScene(ev.pos())
                     delta = current_scene_pos - self._pan_last_scene_pos
                     self._pan_camera_by_scene_delta(delta)
                     self._pan_last_scene_pos = current_scene_pos
@@ -575,7 +581,6 @@ class GUI_2D(QWidget):
         now = time.time()
         double_click = (now - self._centroid_last_click_ts) < 0.4
         self._centroid_last_click_ts = now
-        self._clear_selection(update_view=False)
         self._focus_on_centroid(lock=double_click)
         self._update_centroid_button_label()
 
@@ -774,6 +779,8 @@ class GUI_2D(QWidget):
 
     def _compute_arena_rect(self):
         """Return the bounding rectangle of the arena vertices."""
+        if self.unbounded_mode:
+            return self._compute_dynamic_unbounded_rect()
         if not self.arena_vertices:
             return None
         min_x = min(v.x for v in self.arena_vertices)
@@ -840,7 +847,7 @@ class GUI_2D(QWidget):
         agents_rect = self._compute_agents_rect()
         base_rect = None
         # Prefer arena bounds when bounded; otherwise use agents.
-        if self.wrap_config is None and arena_rect is not None:
+        if (self.wrap_config is None or not self.unbounded_mode) and arena_rect is not None:
             base_rect = arena_rect
         elif agents_rect is not None:
             base_rect = agents_rect
@@ -850,6 +857,49 @@ class GUI_2D(QWidget):
             base_rect = QRectF(-5, -5, 10, 10)
         padded = self._pad_rect(base_rect)
         return self._fit_rect_to_aspect(padded)
+
+    def _compute_dynamic_unbounded_rect(self):
+        """Compute a bounded preview rect for unbounded arenas."""
+        centers = self._agent_centers or {}
+        if centers:
+            xs = [c.x for c in centers.values()]
+            ys = [c.y for c in centers.values()]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            span = max(max_x - min_x, max_y - min_y, 1.0)
+            pad = max(span * 0.5, 2.0)
+            rect = QRectF(min_x - pad, min_y - pad, (max_x - min_x) + 2 * pad, (max_y - min_y) + 2 * pad)
+        else:
+            rect = QRectF(-5, -5, 10, 10)
+        return rect
+
+    def _update_unbounded_vertices(self):
+        """Resize the preview square so all agents stay away from edges."""
+        rect = self._compute_dynamic_unbounded_rect()
+        pad = max(rect.width(), rect.height()) * 0.05
+        rect = QRectF(
+            rect.left() - pad,
+            rect.top() - pad,
+            rect.width() + 2 * pad,
+            rect.height() + 2 * pad
+        )
+        # Grow-only behavior to avoid sudden shrinking/jumps.
+        if self._unbounded_rect is None:
+            self._unbounded_rect = rect
+        else:
+            u = self._unbounded_rect
+            min_x = min(u.left(), rect.left())
+            min_y = min(u.top(), rect.top())
+            max_x = max(u.right(), rect.right())
+            max_y = max(u.bottom(), rect.bottom())
+            self._unbounded_rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+        urect = self._unbounded_rect
+        self.arena_vertices = [
+            Vector3D(urect.left(), urect.top(), 0),
+            Vector3D(urect.right(), urect.top(), 0),
+            Vector3D(urect.right(), urect.bottom(), 0),
+            Vector3D(urect.left(), urect.bottom(), 0)
+        ]
 
     def _ensure_view_initialized(self):
         """Initialize the camera view rectangle if missing."""
@@ -866,6 +916,8 @@ class GUI_2D(QWidget):
         self._ensure_view_initialized()
         if self._view_rect is None:
             return
+        if self.unbounded_mode:
+            self._update_unbounded_vertices()
         aspect_fitted = self._fit_rect_to_aspect(self._view_rect)
         if aspect_fitted is not None:
             self._view_rect = aspect_fitted
@@ -915,7 +967,6 @@ class GUI_2D(QWidget):
             self._ensure_view_initialized()
         if self._view_rect is None:
             return
-        self._unlock_camera()
         self._view_rect.translate(dx_world, dy_world)
         self.update_scene()
 
@@ -925,6 +976,8 @@ class GUI_2D(QWidget):
             self._ensure_view_initialized()
         if self._view_rect is None:
             return
+        lock = self._camera_lock[0] if self._camera_lock else None
+        lock_target = self._camera_lock[1] if self._camera_lock else None
         rect = self._view_rect
         aspect = rect.width() / max(rect.height(), 1e-6)
         anchor_world = None
@@ -949,6 +1002,12 @@ class GUI_2D(QWidget):
             new_width,
             new_height
         )
+        # Preserve lock target after zoom.
+        if lock == "agent" and lock_target is not None:
+            self._focus_on_agent(lock_target, force=True, lock=True, apply_scene=False)
+        elif lock == "centroid":
+            # Re-center on centroid but keep user-driven zoom; do not enlarge span.
+            self._focus_on_centroid(lock=True, apply_scene=False, preserve_view_size=True)
         self.update_scene()
 
     def _restore_view(self):
@@ -967,7 +1026,7 @@ class GUI_2D(QWidget):
         self._view_rect = self._fit_rect_to_aspect(rect)
         self.update_scene()
 
-    def _focus_on_centroid(self, lock=False, apply_scene=True):
+    def _focus_on_centroid(self, lock=False, apply_scene=True, preserve_view_size: bool = False):
         """Move camera to the centroid of all agents."""
         if not self._agent_centers:
             return
@@ -977,15 +1036,25 @@ class GUI_2D(QWidget):
         rect = self._view_rect or self._default_view_rect()
         if rect is None:
             return
+        count = len(self._agent_centers)
         span = max(
             math.hypot(c.x - centroid.x(), c.y - centroid.y())
             for c in self._agent_centers.values()
         )
         target_width = rect.width()
         target_height = rect.height()
-        if self.wrap_config is not None:
-            target_width = max(span * 2.2, rect.width() * 0.8, self._zoom_min_span)
-            target_height = target_width / max(rect.width() / max(rect.height(), 1e-6), 1e-6)
+        if not preserve_view_size:
+            # Ensure we include at least two agents (bounding-box based).
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            bbox_span = max(max_x - min_x, max_y - min_y, self._zoom_min_span)
+            margin = max(bbox_span * 0.2, self._zoom_min_span * 2)
+            min_span = bbox_span + margin
+            target_width = max(target_width, min_span)
+            target_height = max(target_height, min_span / max(rect.width() / max(rect.height(), 1e-6), 1e-6))
+            if self.wrap_config is not None:
+                target_width = max(target_width, span * 2.2, rect.width() * 0.8, self._zoom_min_span)
+                target_height = target_width / max(rect.width() / max(rect.height(), 1e-6), 1e-6)
         new_rect = QRectF(
             centroid.x() - target_width / 2.0,
             centroid.y() - target_height / 2.0,
@@ -1053,7 +1122,9 @@ class GUI_2D(QWidget):
         if mode == "agent":
             self._focus_on_agent(target, force=True, lock=True, apply_scene=False)
         elif mode == "centroid":
-            self._focus_on_centroid(lock=True, apply_scene=False)
+            self._focus_on_centroid(lock=True, apply_scene=False, preserve_view_size=True)
+        if self.unbounded_mode:
+            self._update_unbounded_vertices()
 
     def _update_centroid_button_label(self):
         """Reflect lock state on centroid button label."""
@@ -1112,9 +1183,10 @@ class GUI_2D(QWidget):
         finally:
             self._layout_change_in_progress = False
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: Optional[QResizeEvent]):
         """Handle Qt resize events."""
-        super().resizeEvent(event)
+        if event is not None:
+            super().resizeEvent(event)
         self._sync_scene_rect_with_view()
         self.update_scene()
 
@@ -1238,11 +1310,12 @@ class GUI_2D(QWidget):
             self._clear_selection(update_view=False)
             return
         self._show_spin_canvas()
+        cmap = cm.get_cmap("coolwarm")
         group_mean_spins = spin[0].mean(axis=1)
-        colors_spins = coolwarm(group_mean_spins)
+        colors_spins = cmap(group_mean_spins)
         group_mean_perception = spin[2].reshape(spin[1][1], spin[1][2]).mean(axis=1)
         normalized_perception = (group_mean_perception + 1) * 0.5
-        colors_perception = coolwarm(normalized_perception)
+        colors_perception = cmap(normalized_perception)
         angles = spin[1][0][::spin[1][2]]
         width = 2 * math.pi / spin[1][1]
         if self.spins_bars is None or self.perception_bars is None:
@@ -1329,6 +1402,8 @@ class GUI_2D(QWidget):
         """Draw arena."""
         if not self.arena_vertices:
             return
+        if self.unbounded_mode:
+            self._update_unbounded_vertices()
         scale = self.scale
         offset_x = self.offset_x
         offset_y = self.offset_y
@@ -1341,15 +1416,11 @@ class GUI_2D(QWidget):
         ]
         polygon = QPolygonF(transformed_vertices)
         pen = QPen(Qt.black, 2)
-        if self.wrap_config:
+        if self.wrap_config and not self.unbounded_mode:
             pen.setStyle(Qt.DashLine)
         brush = QBrush(QColor(self.arena_color))
-        if self.wrap_config and self.wrap_config.get("projection") == "ellipse":
-            rect = polygon.boundingRect()
-            self.scene.addEllipse(rect, pen, brush)
-        else:
-            self.scene.addPolygon(polygon, pen, brush)
-        if self.wrap_config:
+        self.scene.addPolygon(polygon, pen, brush)
+        if self.wrap_config and not self.unbounded_mode:
             self._draw_axes_and_wrap_indicators(polygon)
         self._draw_hierarchy_overlay()
 
@@ -1448,19 +1519,23 @@ class GUI_2D(QWidget):
         self._update_camera_lock()
         self._recompute_transform()
         self.scene.clear()
-        if self.is_abstract or not self.arena_vertices:
+        if self.is_abstract:
             self._draw_abstract_dots()
+            return
+        if not self.arena_vertices:
             return
         self.draw_arena()
         scale = self.scale
         offset_x = self.offset_x
         offset_y = self.offset_y
 
+        wrap_offsets = [(0.0, 0.0)] if self.unbounded_mode else None
+
         if self.objects_shapes is not None:
             for entities in self.objects_shapes.values():
                 for entity in entities:
                     vertices = entity.vertices()
-                    for dx, dy in self._wrap_offsets(vertices):
+                    for dx, dy in (wrap_offsets or self._wrap_offsets(vertices)):
                         entity_vertices = [
                             QPointF(
                                 (vertex.x + dx) * scale + offset_x,
@@ -1476,7 +1551,7 @@ class GUI_2D(QWidget):
             for key, entities in self.agents_shapes.items():
                 for idx, entity in enumerate(entities):
                     vertices = entity.vertices()
-                    offsets = self._wrap_offsets(vertices)
+                    offsets = [(0.0, 0.0)] if self.unbounded_mode else self._wrap_offsets(vertices)
                     for dx, dy in offsets:
                         entity_vertices = [
                             QPointF(

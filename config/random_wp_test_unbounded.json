@@ -4,6 +4,9 @@
         "ticks_per_second": 3,
         "time_limit": 0,
         "num_runs": 1,
+        "logging":{
+            "level":"INFO"
+        },
         "gui":{
             "_id": "2D",
             "on_click": ["messages"],
@@ -12,7 +15,6 @@
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "diameter": 1,
                 "_id": "unbounded",
                 "color": "gray"
             }
@@ -40,11 +42,7 @@
                 "messages": {
                     "comm_range": 0.1,
                     "type": "broadcast",
-                    "kind": "anonymous",
-                    "timer": {
-                        "distribution": "exponential",
-                        "average": 0
-                    }
+                    "kind": "anonymous"
                 }      
             }
         }   
