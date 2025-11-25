@@ -169,10 +169,10 @@ class Environment():
             agents_process = mp.Process(target=entity_manager.run, args=(self.num_runs, self.time_limit, arena_queue, agents_queue, dec_agents_in, dec_agents_out))
             detector_process = mp.Process(target=collision_detector.run, args=(dec_agents_in, dec_agents_out, dec_arena_in))
             pattern = {
-                "arena": 1,
-                "agents": 1,
-                "detector": 1,
-                "gui": 1
+                "arena": 2,
+                "agents": 2,
+                "detector": 2,
+                "gui": 2
             }
             killed = 0
             if render_enabled:
