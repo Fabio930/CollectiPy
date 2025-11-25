@@ -96,7 +96,7 @@ class Environment():
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", 1) or 1))
-        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 20) or 20))
+        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 30) or 30))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
         if gui_id in ("none", "off", None) or not base_gui_cfg:
             self.render = [False, {}]
@@ -179,6 +179,14 @@ class Environment():
     def start(self):
         """Start the process."""
         ctx = mp.get_context("fork")
+        # Reserve a dedicated core for the environment/main process so workers use different ones.
+        try:
+            env_core = pick_least_used_free_cores(1)
+            if env_core:
+                psutil.Process().cpu_affinity(env_core)
+                used_cores.update(env_core)
+        except Exception as e:
+            logging.warning("Could not set environment CPU affinity: %s", e)
         for exp in self.experiments:
             def _safe_terminate(proc):
                 if proc and proc.is_alive():
@@ -188,8 +196,6 @@ class Environment():
                 if proc and proc.pid is not None:
                     proc.join(timeout=timeout)
 
-            arena_queue = _PipeQueue(ctx)
-            agents_queue = _PipeQueue(ctx)
             dec_arena_in = _PipeQueue(ctx)
             gui_in_queue = _PipeQueue(ctx)
             gui_control_queue = _PipeQueue(ctx)
@@ -199,14 +205,15 @@ class Environment():
             except Exception:
                 pass
             agents = self.agents_init(exp)
-            # Multiprocess agent splitting is temporarily forced to 1 to keep queues single-consumer.
-            # Temporary safeguard: single agent process to avoid queue corruption.
-            processes_requested = 1
+            processes_requested = max(1, int(exp.environment.get("per_agents_process", 1) or 1))
             agent_blocks = self._split_agents(agents, processes_requested)
             n_blocks = len(agent_blocks)
             # Detector input/output queues
             dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
+            # Per-manager arena/agents queues
+            arena_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
+            agents_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             arena_shape = arena.get_shape()
             if arena_shape is None:
                 raise ValueError("Arena shape was not initialized; cannot start environment.")
@@ -215,7 +222,19 @@ class Environment():
             wrap_config = arena.get_wrap_config()
             arena_hierarchy = arena.get_hierarchy()
             collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
-            arena_process = mp.Process(target=arena.run, args=(self.num_runs, self.time_limit, arena_queue, agents_queue, gui_in_queue, dec_arena_in, gui_control_queue, render_enabled))
+            arena_process = mp.Process(
+                target=arena.run,
+                args=(
+                    self.num_runs,
+                    self.time_limit,
+                    arena_queue_list,
+                    agents_queue_list,
+                    gui_in_queue,
+                    dec_arena_in,
+                    gui_control_queue,
+                    render_enabled
+                )
+            )
             # Managers
             manager_processes = []
             for idx_block, block in enumerate(agent_blocks):
@@ -233,8 +252,8 @@ class Environment():
                     args=(
                         self.num_runs,
                         self.time_limit,
-                        arena_queue,
-                        agents_queue,
+                        arena_queue_list[idx_block],
+                        agents_queue_list[idx_block],
                         dec_agents_in_list[idx_block],
                         dec_agents_out_list[idx_block]
                 )

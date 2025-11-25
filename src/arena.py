@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 
 import logging, time, math, random
-from typing import Optional
+from typing import Optional, Any
 import multiprocessing as mp
 from config import Config
 from random import Random
@@ -461,8 +461,24 @@ class SolidArena(Arena):
             time.sleep(self._gui_backpressure_interval)
         self._gui_backpressure_active = False
         
-    def run(self,num_runs,time_limit, arena_queue:mp.Queue, agents_queue:mp.Queue, gui_in_queue:mp.Queue,dec_arena_in:mp.Queue, gui_control_queue:mp.Queue,render:bool=False):
-        """Function to run the arena in a separate process"""
+    def run(self,num_runs,time_limit, arena_queue: Any, agents_queue: Any, gui_in_queue: Any,dec_arena_in: Any, gui_control_queue: Any,render:bool=False):
+        """Function to run the arena in a separate process (supports multiple agent queues)."""
+        arena_queues = arena_queue if isinstance(arena_queue, list) else [arena_queue]
+        agents_queues = agents_queue if isinstance(agents_queue, list) else [agents_queue]
+        n_managers = len(agents_queues)
+
+        def _combine_agent_snapshots(snapshots):
+            shapes = {}
+            spins = {}
+            metadata = {}
+            for snap in snapshots:
+                if not snap:
+                    continue
+                shapes.update(snap.get("agents_shapes", {}))
+                spins.update(snap.get("agents_spins", {}))
+                metadata.update(snap.get("agents_metadata", {}))
+            return shapes, spins, metadata
+
         ticks_limit = time_limit*self.ticks_per_second + 1 if time_limit > 0 else 0
         run = 1
         while run < num_runs + 1:
@@ -474,15 +490,16 @@ class SolidArena(Arena):
             if render:
                 gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
                 self._apply_gui_backpressure(gui_in_queue)
-            arena_queue.put({**arena_data, "random_seed": self.random_seed})
+            for q in arena_queues:
+                q.put({**arena_data, "random_seed": self.random_seed})
 
-            data_in = self._maybe_get(agents_queue, timeout=1.0)
-            if data_in is None:
-                continue
-            self.agents_shapes = data_in["agents_shapes"]
-            self.agents_spins = data_in["agents_spins"]
-            self.agents_metadata = data_in.get("agents_metadata", {})
-            initial_tick_rate = data_in.get("status", [0, self.ticks_per_second])[1]
+            latest_agent_data = [None] * n_managers
+            for idx, q in enumerate(agents_queues):
+                latest_agent_data[idx] = self._maybe_get(q, timeout=1.0)
+            if any(d is None for d in latest_agent_data):
+                break
+            self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(latest_agent_data)
+            initial_tick_rate = latest_agent_data[0].get("status", [0, self.ticks_per_second])[1]
             if self.data_handling is not None:
                 self.data_handling.new_run(
                     run,
@@ -519,32 +536,34 @@ class SolidArena(Arena):
                 if running or step_mode:
                     if not render and not getattr(self, "quiet", False):
                         print(f"\rarena_ticks {t}", end='', flush=True)
-                    arena_queue.put(arena_data)
-                    while data_in["status"][0]/data_in["status"][1] < t/self.ticks_per_second:
-                        latest = self._maybe_get(agents_queue, timeout=0.01)
-                        if latest is not None:
-                            data_in = latest
-                        arena_data = {
-                            "status": [t,self.ticks_per_second],
-                            "objects": self.pack_objects_data()
-                        }
+                    for q in arena_queues:
+                        q.put(arena_data)
+                    ready = [False] * n_managers
+                    while not all(ready):
+                        for idx, q in enumerate(agents_queues):
+                            candidate = self._maybe_get(q, timeout=0.01)
+                            if candidate is not None:
+                                latest_agent_data[idx] = candidate
+                        for idx, snap in enumerate(latest_agent_data):
+                            ready[idx] = bool(snap and snap["status"][0]/snap["status"][1] >= t/self.ticks_per_second)
                         detector_data = {
                             "objects": self.pack_detector_data()
                         }
-                        if arena_queue.qsize()==0:
-                            arena_queue.put(arena_data)
-                            dec_arena_in.put(detector_data)
+                        if all(q.qsize()==0 for q in arena_queues):
+                            for q in arena_queues:
+                                q.put(arena_data)
+                            if dec_arena_in is not None:
+                                dec_arena_in.put(detector_data)
                         time.sleep(0.001)
 
-                    latest = self._maybe_get(agents_queue, timeout=0.0)
-                    if latest is not None:
-                        data_in = latest
-                    self.agents_shapes = data_in["agents_shapes"]
-                    self.agents_spins = data_in["agents_spins"]
-                    self.agents_metadata = data_in.get("agents_metadata", {})
+                    for idx, q in enumerate(agents_queues):
+                        latest = self._maybe_get(q, timeout=0.0)
+                        if latest is not None:
+                            latest_agent_data[idx] = latest
+                    self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(latest_agent_data)
                     if self.data_handling is not None:
-                        tick_stamp = data_in.get("status", [t, self.ticks_per_second])[0]
-                        tick_rate = data_in.get("status", [tick_stamp, self.ticks_per_second])[1]
+                        tick_stamp = arena_data.get("status", [t, self.ticks_per_second])[0]
+                        tick_rate = arena_data.get("status", [tick_stamp, self.ticks_per_second])[1]
                         self.data_handling.save(
                             self.agents_shapes,
                             self.agents_spins,
@@ -583,7 +602,8 @@ class SolidArena(Arena):
                                 "status": "reset",
                                 "objects": self.pack_objects_data()
                     }
-                    arena_queue.put(arena_data)
+                    for q in arena_queues:
+                        q.put(arena_data)
                 if not render: print("")
             elif not reset:
                 run += 1
@@ -596,7 +616,8 @@ class SolidArena(Arena):
                             "status": "reset",
                             "objects": self.pack_objects_data()
                 }
-                arena_queue.put(arena_data)
+                for q in arena_queues:
+                    q.put(arena_data)
         
     def reset(self):
         """Reset the component state."""

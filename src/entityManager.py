@@ -75,9 +75,28 @@ class EntityManager:
         self._global_max = self.arena_shape.max_vert()
         self._invalid_hierarchy_nodes = set()
         bus_context = {"arena_shape": self.arena_shape, "wrap_config": self.wrap_config, "hierarchy": self.hierarchy}
+        # Try to use a shared bus when message configs match across groups.
+        msg_configs = []
+        for cfg, ents in self.agents.values():
+            mc = cfg.get("messages", {}) if isinstance(cfg, dict) else {}
+            msg_configs.append(mc)
+        shared_bus = None
+        if msg_configs and all(mc == msg_configs[0] for mc in msg_configs):
+            any_msg_enabled = len(msg_configs[0]) > 0
+            if any_msg_enabled:
+                all_entities = []
+                for (_, entities) in self.agents.values():
+                    all_entities.extend(entities)
+                shared_bus = MessageBusFactory.create(all_entities, msg_configs[0], bus_context)
         for agent_type, (config,entities) in self.agents.items():
             any_msg_enabled = True if len(config.get("messages",{})) > 0 else False
-            if any_msg_enabled:
+            if shared_bus:
+                bus = shared_bus
+                self.message_buses[agent_type] = bus
+                for e in entities:
+                    if hasattr(e, "set_message_bus"):
+                        e.set_message_bus(bus)
+            elif any_msg_enabled:
                 bus = MessageBusFactory.create(entities, config.get("messages", {}), bus_context)
                 self.message_buses[agent_type] = bus
                 for e in entities:
