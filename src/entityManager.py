@@ -32,11 +32,16 @@ class EntityManager:
         """Get from a queue/Pipe with a tiny sleep to avoid busy-wait."""
         while True:
             if hasattr(q, "poll"):
-                if q.poll(timeout):
-                    return q.get()
+                try:
+                    if q.poll(timeout):
+                        return q.get()
+                except EOFError:
+                    return None
             else:
                 try:
                     return q.get(timeout=timeout)
+                except EOFError:
+                    return None
                 except Exception:
                     pass
             time.sleep(sleep_s)
@@ -45,11 +50,16 @@ class EntityManager:
     def _maybe_get(q, timeout: float = 0.0):
         """Non-blocking get with optional timeout."""
         if hasattr(q, "poll"):
-            if q.poll(timeout):
-                return q.get()
+            try:
+                if q.poll(timeout):
+                    return q.get()
+            except EOFError:
+                return None
             return None
         try:
             return q.get(timeout=timeout)
+        except EOFError:
+            return None
         except Exception:
             return None
     def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None, snapshot_stride: int = 1, manager_id: int = 0):
@@ -193,6 +203,8 @@ class EntityManager:
         while run < num_runs + 1:
             reset = False
             data_in = self._blocking_get(arena_queue)
+            if data_in is None:
+                break
             if data_in["status"][0] == 0:
                 self.initialize(data_in["random_seed"], data_in["objects"])
             for agent_type, (_, entities) in self.agents.items():
@@ -261,9 +273,9 @@ class EntityManager:
                 }
                 agents_queue.put(agents_data)
                 dec_data_in = {}
-                if t % self.snapshot_stride == 0:
+                if dec_agents_in is not None and dec_agents_out is not None and t % self.snapshot_stride == 0:
                     dec_agents_in.put(detector_data)
-                    dec_data_in = self._blocking_get(dec_agents_out)
+                    dec_data_in = self._maybe_get(dec_agents_out, timeout=0.05) or {}
                 for _, entities in self.agents.values():
                     pos = dec_data_in.get(entities[0].entity(), None)
                     if pos is not None:

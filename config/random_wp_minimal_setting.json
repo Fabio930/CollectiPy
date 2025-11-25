@@ -1,18 +1,20 @@
 {
     "environment": {
         "collisions": false,
-        "time_limit": 500,
+        "time_limit": 0,
         "num_runs": 1,
+        "gui": {"_id": "2D"},
         "arenas": {
             "arena_0": {
-                "_id": "square",
-                "width": 1.2,
-                "depth": 0.8,
+                "_id": "unbounded",
                 "random_seed": 13,
                 "color": "gray"
             }
         },
         "objects": {},
+        "logging": {
+            "console_level": "WARNING"
+        },
         "agents": {
             "movable_0": {
                 "number": [100],

@@ -88,11 +88,16 @@ class Arena():
         """Get from a queue/Pipe with tiny sleep to avoid busy-wait."""
         while True:
             if hasattr(q, "poll"):
-                if q.poll(timeout):
-                    return q.get()
+                try:
+                    if q.poll(timeout):
+                        return q.get()
+                except EOFError:
+                    return None
             else:
                 try:
                     return q.get(timeout=timeout)
+                except EOFError:
+                    return None
                 except Exception:
                     pass
             time.sleep(sleep_s)
@@ -101,11 +106,16 @@ class Arena():
     def _maybe_get(q, timeout: float = 0.0):
         """Non-blocking get with optional timeout."""
         if hasattr(q, "poll"):
-            if q.poll(timeout):
-                return q.get()
+            try:
+                if q.poll(timeout):
+                    return q.get()
+            except EOFError:
+                return None
             return None
         try:
             return q.get(timeout=timeout)
+        except EOFError:
+            return None
         except Exception:
             return None
 
@@ -466,7 +476,9 @@ class SolidArena(Arena):
                 self._apply_gui_backpressure(gui_in_queue)
             arena_queue.put({**arena_data, "random_seed": self.random_seed})
 
-            data_in = self._blocking_get(agents_queue)
+            data_in = self._maybe_get(agents_queue, timeout=1.0)
+            if data_in is None:
+                continue
             self.agents_shapes = data_in["agents_shapes"]
             self.agents_spins = data_in["agents_spins"]
             self.agents_metadata = data_in.get("agents_metadata", {})

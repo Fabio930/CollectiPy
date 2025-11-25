@@ -1,18 +1,10 @@
 {
-
-    "pattern" : {
-        "arena": 1,
-        "agents": 2,
-        "detector": 2,
-        "gui": 2
-    },
     "environment":{
         "collisions": false,
         "time_limit": 0,
         "num_runs": 1,
-        "per_agents_process": 5,
         "logging":{
-            "file_level": "DEBUG"
+            "console_level": "DEBUG"
         },
         "gui":{
             "_id": "2D",
@@ -31,7 +23,7 @@
         },
         "agents":{
             "movable_0":{
-                "number": [20],
+                "number": [15],
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 10,

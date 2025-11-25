@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from bodies.shapes3D import Shape
 from geometry_utils.vector3D import Vector3D
 
@@ -40,39 +40,73 @@ class CollisionDetector:
         self.agents: Dict[str, AgentCollisionPayload] = {}
         self.objects: Dict[str, Tuple[List[Shape], List[Vector3D]]] = {}
 
+    def _poll(self, q: Any, timeout: float = 0.0) -> bool:
+        """Safe poll for Queue/Pipe or lists of queues."""
+        if isinstance(q, (list, tuple)):
+            return any(self._poll(elem, timeout) for elem in q if elem is not None)
+        poll_fn = getattr(q, "poll", None)
+        if callable(poll_fn):
+            try:
+                return bool(poll_fn(timeout))
+            except Exception:
+                return False
+        get_fn = getattr(q, "get", None)
+        if not callable(get_fn):
+            return False
+        try:
+            item = q.get(timeout=timeout)
+            q.put(item)
+            return True
+        except Exception:
+            return False
+
     def run(
         self,
-        dec_agents_in: mp.Queue,
-        dec_agents_out: mp.Queue | list,
-        dec_arena_in: mp.Queue
+        dec_agents_in: Any,
+        dec_agents_out: Any,
+        dec_arena_in: Any
     ) -> None:
         """
         Main loop: wait for updates from the arena and the entity manager,
         compute collision responses, and send corrections back.
         """
         logger.info("CollisionDetector started (collisions=%s)", self.collisions)
-        manager_outputs = dec_agents_out if isinstance(dec_agents_out, list) else [dec_agents_out]
+        agent_inputs = dec_agents_in if isinstance(dec_agents_in, (list, tuple)) else [dec_agents_in]
+        manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
         latest_agents: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         while True:
             idle = True
             # Pull the latest objects description when available.
-            if dec_arena_in.poll(0):
-                self.objects = dec_arena_in.get()["objects"]
-                idle = False
-                logger.debug("Objects updated (%d groups)", len(self.objects))
+            if dec_arena_in and self._poll(dec_arena_in, 0):
+                try:
+                    payload = dec_arena_in.get()
+                    if payload:
+                        self.objects = payload["objects"]
+                        idle = False
+                        logger.debug("Objects updated (%d groups)", len(self.objects))
+                except EOFError:
+                    pass
             # Pull agent data (shapes, velocities, names, ...).
-            if dec_agents_in.poll(0):
-                payload = dec_agents_in.get()
-                manager_id = payload.get("manager_id", 0)
-                latest_agents[manager_id] = payload["agents"]
+            updated = False
+            for q in agent_inputs:
+                if q is None:
+                    continue
+                if self._poll(q, 0):
+                    try:
+                        payload = q.get()
+                    except EOFError:
+                        payload = None
+                    if payload is None:
+                        continue
+                    manager_id = payload.get("manager_id", 0)
+                    latest_agents[manager_id] = payload["agents"]
+                    updated = True
+            if updated:
                 idle = False
-                logger.debug("Agent state received (%d groups, manager %s)", len(payload["agents"]), manager_id)
-                # Merge all agents for global collision computation.
                 merged: Dict[str, AgentCollisionPayload] = {}
                 for ag in latest_agents.values():
                     merged.update(ag)
                 self.agents = merged
-                # Compute corrections per manager.
                 for m_id, mgr_agents in latest_agents.items():
                     out: Dict[str, List[Optional[Vector3D]]] = {}
                     for club, (shapes, velocities, vectors, positions, names) in mgr_agents.items():
@@ -118,12 +152,14 @@ class CollisionDetector:
                                     correction += resp
                                 correction = correction / len(responses)
                                 out_tmp[idx] = correction
-                                logger.debug("%s collision correction -> %s", name, correction)
                         out[club] = out_tmp
-                    try:
-                        manager_outputs[m_id].put(out)
-                    except IndexError:
-                        manager_outputs[0].put(out)
+                    target_idx = m_id if m_id < len(manager_outputs) else 0
+                    target_q = manager_outputs[target_idx]
+                    if target_q:
+                        try:
+                            target_q.put(out)
+                        except Exception:
+                            pass
             if idle:
                 time.sleep(0.001)
 

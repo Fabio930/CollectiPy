@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 
 """Environment: process-level orchestration of the simulation."""
-import logging, psutil, gc, math
+import logging, psutil, gc, time
 import multiprocessing as mp
 from multiprocessing.context import BaseContext
 from typing import Any, Dict
@@ -92,11 +92,16 @@ class Environment():
         self.experiments = tuple(config_elem.parse_experiments())
         self.num_runs = int(config_elem.environment.get("num_runs",1))
         self.time_limit = int(config_elem.environment.get("time_limit",0))
-        self.gui_id = config_elem.gui.get("_id","2D")
+        gui_id = config_elem.gui.get("_id","2D")
+        self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", 1) or 1))
+        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 20) or 20))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
-        self.render = [True, base_gui_cfg] if base_gui_cfg else [False, {}]
+        if gui_id in ("none", "off", None) or not base_gui_cfg:
+            self.render = [False, {}]
+        else:
+            self.render = [True, base_gui_cfg]
         self.collisions = config_elem.environment.get("collisions",False)
         if not self.render[0] and self.time_limit==0:
             raise Exception("Invalid configuration: infinite experiment with no GUI.")
@@ -149,6 +154,14 @@ class Environment():
             blocks[target][agent_type][1].append(entity)
         return blocks
 
+    @staticmethod
+    def _count_agents(agents: Dict[str, tuple[Dict[str, Any], list]]) -> int:
+        """Count total agents."""
+        total = 0
+        for _, (_, entities) in agents.items():
+            total += len(entities)
+        return total
+
     def run_gui(self, config:dict, arena_vertices:list, arena_color:str, gui_in_queue, gui_control_queue, wrap_config=None, hierarchy_overlay=None):
         """Run the gui."""
         app, gui = GuiFactory.create_gui(
@@ -167,6 +180,14 @@ class Environment():
         """Start the process."""
         ctx = mp.get_context("fork")
         for exp in self.experiments:
+            def _safe_terminate(proc):
+                if proc and proc.is_alive():
+                    proc.terminate()
+
+            def _safe_join(proc, timeout=None):
+                if proc and proc.pid is not None:
+                    proc.join(timeout=timeout)
+
             arena_queue = _PipeQueue(ctx)
             agents_queue = _PipeQueue(ctx)
             dec_arena_in = _PipeQueue(ctx)
@@ -178,14 +199,13 @@ class Environment():
             except Exception:
                 pass
             agents = self.agents_init(exp)
-            processes_requested = max(1, int(exp.environment.get("per_agents_process", 1) or 1))
+            # Multiprocess agent splitting is temporarily forced to 1 to keep queues single-consumer.
+            # Temporary safeguard: single agent process to avoid queue corruption.
+            processes_requested = 1
             agent_blocks = self._split_agents(agents, processes_requested)
             n_blocks = len(agent_blocks)
             # Detector input/output queues
-            if n_blocks > 1:
-                dec_agents_in_shared = ctx.Queue()
-            else:
-                dec_agents_in_shared = _PipeQueue(ctx)
+            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             arena_shape = arena.get_shape()
             if arena_shape is None:
@@ -200,15 +220,34 @@ class Environment():
             manager_processes = []
             for idx_block, block in enumerate(agent_blocks):
                 block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
-                entity_manager = EntityManager(block_filtered, arena_shape, wrap_config=wrap_config, hierarchy=arena_hierarchy)
-                proc = mp.Process(target=entity_manager.run, args=(self.num_runs, self.time_limit, arena_queue, agents_queue, dec_agents_in_shared, dec_agents_out_list[idx_block]))
+                entity_manager = EntityManager(
+                    block_filtered,
+                    arena_shape,
+                    wrap_config=wrap_config,
+                    hierarchy=arena_hierarchy,
+                    snapshot_stride=self.snapshot_stride,
+                    manager_id=idx_block
+                )
+                proc = mp.Process(
+                    target=entity_manager.run,
+                    args=(
+                        self.num_runs,
+                        self.time_limit,
+                        arena_queue,
+                        agents_queue,
+                        dec_agents_in_list[idx_block],
+                        dec_agents_out_list[idx_block]
+                )
+                )
                 manager_processes.append(proc)
-            detector_process = mp.Process(target=collision_detector.run, args=(dec_agents_in_shared, dec_agents_out_list, dec_arena_in))
+            det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
+            det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
+            detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
             pattern = {
-                "arena": 3,
-                "agents": 9,
-                "detector": 3,
-                "gui": 3
+                "arena": 1,
+                "agents": 2,
+                "detector": 1,
+                "gui": 2
             }
             killed = 0
             if render_enabled:
@@ -228,7 +267,7 @@ class Environment():
                     )
                 )
                 gui_process.start()
-                if arena_id not in ("abstract", "none", None):
+                if detector_process and arena_id not in ("abstract", "none", None):
                     detector_process.start()
                 for proc in manager_processes:
                     proc.start()
@@ -236,89 +275,58 @@ class Environment():
                 set_affinity_safely(arena_process,   pattern["arena"])
                 for proc in manager_processes:
                     set_affinity_safely(proc,  pattern["agents"])
-                set_affinity_safely(detector_process, pattern["detector"])
+                if detector_process:
+                    set_affinity_safely(detector_process, pattern["detector"])
                 set_affinity_safely(gui_process, pattern["gui"])
 
+                all_processes = [arena_process] + manager_processes
+                if detector_process:
+                    all_processes.append(detector_process)
+                all_processes.append(gui_process)
+
                 while True:
+                    exit_failure = next((p for p in all_processes if p.exitcode not in (None, 0)), None)
                     arena_alive = arena_process.is_alive()
-                    agents_alive = all(proc.is_alive() for proc in manager_processes)
-                    gui_alive = gui_process.is_alive()
-                    detector_alive = detector_process.is_alive() if detector_process.pid is not None else False
-                    arena_exit = arena_process.exitcode
-                    agents_exit = None
-                    if manager_processes:
-                        exits = [p.exitcode for p in manager_processes]
-                        if any(code not in (None, 0) for code in exits):
-                            agents_exit = 1
-                    gui_exit = gui_process.exitcode
-                    # Check for process failures
-                    if arena_exit not in (None, 0):
+                    if exit_failure:
                         killed = 1
-                        for proc in manager_processes:
-                            if proc.is_alive(): proc.terminate()
-                        if gui_alive: gui_process.terminate()
-                        if detector_alive: detector_process.terminate()
-                        if arena_process.pid is not None: arena_process.join()
-                        for proc in manager_processes:
-                            if proc.pid is not None: proc.join()
-                        if detector_process.pid is not None: detector_process.join()
-                        if gui_process.pid is not None: gui_process.join()
-                        arena.close()
-                        raise RuntimeError("A subprocess exited unexpectedly.")
-                    elif agents_exit not in (None, 0):
+                        for proc in all_processes:
+                            _safe_terminate(proc)
+                        break
+                    if not arena_alive:
+                        for proc in all_processes:
+                            if proc is arena_process:
+                                continue
+                            _safe_terminate(proc)
+                        break
+                    if render_enabled and gui_process and not gui_process.is_alive():
                         killed = 1
-                        if arena_alive: arena_process.terminate()
-                        if gui_alive: gui_process.terminate()
-                        if detector_alive: detector_process.terminate()
-                        if arena_process.pid is not None: arena_process.join()
-                        for proc in manager_processes:
-                            if proc.pid is not None: proc.join()
-                        if detector_process.pid is not None: detector_process.join()
-                        if gui_process.pid is not None: gui_process.join()
-                        arena.close()
-                        raise RuntimeError("A subprocess exited unexpectedly.")
-                    elif render_enabled and gui_exit not in (None, 0):
-                        killed = 1
-                        if arena_alive: arena_process.terminate()
-                        for proc in manager_processes:
-                            if proc.is_alive(): proc.terminate()
-                        if detector_alive: detector_process.terminate()
-                        if arena_process.pid is not None: arena_process.join()
-                        for proc in manager_processes:
-                            if proc.pid is not None: proc.join()
-                        if detector_process.pid is not None: detector_process.join()
-                        if gui_process.pid is not None: gui_process.join()
-                        arena.close()
-                        raise RuntimeError("A subprocess exited unexpectedly.")
+                        for proc in all_processes:
+                            _safe_terminate(proc)
+                        break
                     # Zombie/Dead GUI process
-                    if killed == 0 and gui_process.pid is not None:
+                    if render_enabled and gui_process and gui_process.pid is not None:
                         try:
                             gui_status = psutil.Process(gui_process.pid).status()
+                            if gui_status in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                                killed = 1
+                                for proc in all_processes:
+                                    _safe_terminate(proc)
+                                break
                         except psutil.NoSuchProcess:
-                            gui_status = psutil.STATUS_DEAD
-                        if gui_status in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
                             killed = 1
-                            if arena_alive: arena_process.terminate()
-                            if agents_alive: agents_process.terminate()
-                            if detector_alive: detector_process.terminate()
-                            arena.close()
-                            entity_manager.close()
+                            for proc in all_processes:
+                                _safe_terminate(proc)
                             break
-                    if not arena_alive:
-                        for proc in manager_processes:
-                            if proc.is_alive(): proc.terminate()
-                        if detector_alive: detector_process.terminate()
-                        if gui_alive: gui_process.terminate()
-                        arena.close()
-                        break
+                    gc.collect()
+                    time.sleep(0.01)
                 # Join all processes
-                if arena_process.pid is not None: arena_process.join()
+                _safe_join(arena_process)
                 for proc in manager_processes:
-                    if proc.pid is not None: proc.join()
-                if detector_process.pid is not None: detector_process.join()
-                if gui_process.pid is not None: gui_process.join()
+                    _safe_join(proc)
+                _safe_join(detector_process)
+                _safe_join(gui_process)
             else:
-                if arena_id not in ("abstract", "none", None):
+                if detector_process and arena_id not in ("abstract", "none", None):
                     detector_process.start()
                 for proc in manager_processes:
                     proc.start()
@@ -326,28 +334,29 @@ class Environment():
                 set_affinity_safely(arena_process,   pattern["arena"])
                 for proc in manager_processes:
                     set_affinity_safely(proc,  pattern["agents"])
-                set_affinity_safely(detector_process, pattern["detector"])
+                if detector_process:
+                    set_affinity_safely(detector_process, pattern["detector"])
                 while arena_process.is_alive() and all(proc.is_alive() for proc in manager_processes):
-                    arena_process.join(timeout=0.1)
+                    _safe_join(arena_process, timeout=0.1)
                     for proc in manager_processes:
-                        proc.join(timeout=0.1)
+                        _safe_join(proc, timeout=0.1)
                 killed = 0
                 if arena_process.exitcode not in (None, 0):
                     killed = 1
                     for proc in manager_processes:
-                        if proc.is_alive(): proc.terminate()
-                    if detector_process.is_alive(): detector_process.terminate()
+                        _safe_terminate(proc)
+                    _safe_terminate(detector_process)
                 elif any(proc.exitcode not in (None, 0) for proc in manager_processes):
                     killed = 1
                     if arena_process.is_alive(): arena_process.terminate()
-                    if detector_process.is_alive(): detector_process.terminate()
+                    _safe_terminate(detector_process)
                 # Join all processes
-                if arena_process.pid is not None: arena_process.join()
+                _safe_join(arena_process)
                 for proc in manager_processes:
-                    if proc.pid is not None: proc.join()
-                if detector_process.pid is not None:
-                    detector_process.terminate()
-                    detector_process.join()
+                    _safe_join(proc)
+                if detector_process:
+                    _safe_terminate(detector_process)
+                    _safe_join(detector_process)
                 arena.close()
                 if killed == 1:
                     raise RuntimeError("A subprocess exited unexpectedly.")

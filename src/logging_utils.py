@@ -65,7 +65,6 @@ def configure_logging(
         Dictionary coming from the config file. Supported keys:
         - file_level (str|int): logging level for persisted log (default: WARNING)
         - console_level (str|int): logging level for console (default: WARNING)
-        - to_console (bool): echo logs to stdout (default: False)
     config_path:
         Path to the configuration file being used for the simulation.
     project_root:
@@ -85,7 +84,8 @@ def configure_logging(
     if "enabled" in settings:
         default_warnings.append("Logging 'enabled' is deprecated and ignored; logging is enabled when the 'logging' section is present.")
 
-    # Console logging
+    # Console logging (only if explicitly enabled via 'console': true).
+    console_enabled = bool(settings.get("console", False))
     console_level_value = settings.get("console_level")
     if console_level_value is None and "level" in settings:
         console_level_value = settings.get("level")
@@ -95,14 +95,8 @@ def configure_logging(
     # File logging
     file_level = _coerce_level(settings.get("file_level"), logging.WARNING, "file_level", default_warnings)
 
-    # Console echo flag
-    to_console_raw = settings.get("to_console")
-    if to_console_raw is None:
-        default_warnings.append("Logging 'to_console' not set; defaulting to False (no terminal output).")
-    to_console = bool(to_console_raw) if to_console_raw is not None else False
-
     handlers: list[logging.Handler] = []
-    if to_console:
+    if console_enabled:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(console_level)
         handlers.append(console_handler)
@@ -126,10 +120,13 @@ def configure_logging(
 
     logging.basicConfig(level=effective_level, handlers=handlers or None, force=True)
     logging.getLogger(LOG_NAMESPACE).setLevel(effective_level)
+    # Silence noisy third-party debug (e.g., matplotlib font scanning) unless explicitly enabled elsewhere.
+    logging.getLogger("matplotlib").setLevel(max(logging.WARNING, effective_level))
 
     logger = logging.getLogger(LOG_NAMESPACE)
     for msg in default_warnings:
-        logger.warning(msg)
+        if handlers:
+            logger.warning(msg)
 
 def _prepare_log_artifacts(
     config_path: Optional[str | Path],
