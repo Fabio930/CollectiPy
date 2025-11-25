@@ -14,9 +14,10 @@
         },
         "arenas": {
             "arena_0": {
-                "_id": "unbounded",
-                "random_seed": 21,
-                "color": "white"
+                "_id": "square",
+                "depth": 1.5,
+                "random_seed": 0,
+                "color": "gray"
             }
         },
         "objects": {},
