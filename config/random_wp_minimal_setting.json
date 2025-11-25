@@ -3,13 +3,14 @@
         "collisions": false,
         "time_limit": 0,
         "num_runs": 1,
+        "per_agents_process": 5,
         "results": {},
         "gui": {
             "_id": "2D"
         },
         "arenas": {
             "arena_0": {
-                "_id": "rectangle",
+                "_id": "square",
                 "width": 1.2,
                 "depth": 0.8,
                 "random_seed": 13,
@@ -19,7 +20,7 @@
         "objects": {},
         "agents": {
             "movable_0": {
-                "number": [10],
+                "number": [100],
                 "shape": "cylinder",
                 "height": 0.02,
                 "diameter": 0.03,
