@@ -23,7 +23,7 @@
         "objects": {},
         "agents": {
             "movable_sampler": {
-                "number": [100],
+                "number": [60],
                 "shape": "cylinder",
                 "height": 0.03,
                 "diameter": 0.05,

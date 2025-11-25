@@ -95,8 +95,9 @@ class Environment():
         gui_id = config_elem.gui.get("_id","2D")
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
-        self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", 1)))
-        self.auto_agents_per_proc_target = max(10, int(config_elem.environment.get("auto_agents_per_proc_target", 20)))
+        # Default to a higher stride to reduce IPC pressure when configs do not override it.
+        self.snapshot_stride = max(10, int(config_elem.environment.get("snapshot_stride", 100)))
+        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 5)))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
         if gui_id in ("none", "off", None) or not base_gui_cfg:
             self.render = [False, {}]
@@ -264,7 +265,7 @@ class Environment():
             detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
             pattern = {
                 "arena": 1,
-                "agents": 2,
+                "agents": 3,
                 "detector": 1,
                 "gui": 2
             }

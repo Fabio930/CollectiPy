@@ -12,9 +12,6 @@
             }
         },
         "objects": {},
-        "logging": {
-            "console_level": "WARNING"
-        },
         "agents": {
             "movable_0": {
                 "number": [100],

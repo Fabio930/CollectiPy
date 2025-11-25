@@ -128,7 +128,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "logic_behavior": str, DEFAULT:None - Optional logic plugin executed before the movement plugin (placeholder for future reasoning modules).
             "hierarchy_node": str, OPTIONAL - desired hierarchy node for the agent (used by the hierarchy confinement plugin). Defaults to the root ("0") if omitted.
             "spin_model":{ DEFAULT:{} empty dict -> default configuration
-                "spin_per_tick": int, DEFAULT:10
+                "spin_per_tick": int, DEFAULT:3
                 "spin_pre_run_steps": int, DEFAULT:0 default value avoid pre run steps
                 "perception_width": float, DEFAULT:0.5
                 "num_groups": int, DEFAULT:16
