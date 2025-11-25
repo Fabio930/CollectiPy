@@ -130,14 +130,15 @@ class CollisionDetector:
                                         names
                                     )
                                 )
-                                responses.extend(
-                                    self._resolve_object_collisions(
-                                        name,
-                                        shape,
-                                        position,
-                                        forward_vector
+                                if self.objects:
+                                    responses.extend(
+                                        self._resolve_object_collisions(
+                                            name,
+                                            shape,
+                                            position,
+                                            forward_vector
+                                        )
                                     )
-                                )
                             if not self.wrap_config:
                                 boundary_response = self._resolve_arena_collision(
                                     shape,
@@ -163,6 +164,61 @@ class CollisionDetector:
             if idle:
                 time.sleep(0.001)
 
+    def compute_corrections(self, agents_payload: dict, objects_payload: Optional[dict]) -> Dict[str, List[Optional[Vector3D]]]:
+        """
+        Synchronous collision resolution. Expects the same payload layout produced by
+        EntityManager.pack_detector_data(): {club: (shapes, velocities, vectors, positions, names)}.
+        """
+        self.agents = agents_payload or {}
+        self.objects = objects_payload or {}
+        out: Dict[str, List[Optional[Vector3D]]] = {}
+        for club, (shapes, velocities, vectors, positions, names) in self.agents.items():
+            n_shapes = len(shapes)
+            out_tmp: List[Optional[Vector3D]] = [None] * n_shapes
+            for idx in range(n_shapes):
+                shape = shapes[idx]
+                forward_vector = vectors[idx]
+                position = positions[idx]
+                name = names[idx]
+                responses: List[Vector3D] = []
+                if self.collisions:
+                    responses.extend(
+                        self._resolve_agent_collisions(
+                            name,
+                            shape,
+                            position,
+                            forward_vector,
+                            vectors,
+                            positions,
+                            names
+                        )
+                    )
+                    if self.objects:
+                        responses.extend(
+                            self._resolve_object_collisions(
+                                name,
+                                shape,
+                                position,
+                                forward_vector
+                            )
+                        )
+                if not self.wrap_config:
+                    boundary_response = self._resolve_arena_collision(
+                        shape,
+                        position,
+                        forward_vector
+                    )
+                    if boundary_response is not None:
+                        responses.append(boundary_response)
+                if responses:
+                    correction = Vector3D()
+                    for resp in responses:
+                        correction += resp
+                    correction = correction / len(responses)
+                    out_tmp[idx] = correction
+            out[club] = out_tmp
+        return out
+
     def _resolve_agent_collisions(
         self,
         name: str,
@@ -182,22 +238,19 @@ class CollisionDetector:
                     continue
                 other_position = other_positions[idx]
                 delta = Vector3D(position.x - other_position.x, position.y - other_position.y, 0)
-                sum_radius = shape.get_radius() + other_shape.get_radius()
+                sum_radius = self._shape_radius(shape) + self._shape_radius(other_shape)
                 actual_distance = delta.magnitude()
-                if actual_distance >= sum_radius or actual_distance == 0:
+                if actual_distance >= sum_radius:
                     continue
+                if actual_distance == 0:
+                    delta = forward_vector if forward_vector.magnitude() > 0 else Vector3D(1, 0, 0)
+                    actual_distance = 0.0
                 overlap = shape.check_overlap(other_shape)
                 if not overlap[0]:
                     continue
                 normal = delta.normalize()
-                penetration_depth = sum_radius - actual_distance
-                response = self._compute_bounce_response(
-                    position,
-                    forward_vector,
-                    normal,
-                    penetration_depth,
-                    other_vectors[idx]
-                )
+                penetration_depth = sum_radius - actual_distance + 1e-3
+                response = normal * penetration_depth
                 responses.append(response)
                 logger.info("Collision agent-agent: %s <-> %s depth=%.4f", name, other_name, penetration_depth)
         return responses
@@ -215,22 +268,19 @@ class CollisionDetector:
             for idx, obj_shape in enumerate(shapes):
                 obj_position = positions[idx]
                 delta = Vector3D(position.x - obj_position.x, position.y - obj_position.y, 0)
-                sum_radius = shape.get_radius() + obj_shape.get_radius()
+                sum_radius = self._shape_radius(shape) + self._shape_radius(obj_shape)
                 actual_distance = delta.magnitude()
-                if actual_distance >= sum_radius or actual_distance == 0:
+                if actual_distance >= sum_radius:
                     continue
+                if actual_distance == 0:
+                    delta = forward_vector if forward_vector.magnitude() > 0 else Vector3D(1, 0, 0)
+                    actual_distance = 0.0
                 overlap = shape.check_overlap(obj_shape)
                 if not overlap[0]:
                     continue
                 normal = delta.normalize()
-                penetration_depth = sum_radius - actual_distance
-                response = self._compute_bounce_response(
-                    position,
-                    forward_vector,
-                    normal,
-                    penetration_depth,
-                    Vector3D()
-                )
+                penetration_depth = sum_radius - actual_distance + 1e-3
+                response = normal * penetration_depth
                 responses.append(response)
                 logger.info("Collision agent-object: %s -> %s depth=%.4f", name, obj_id, penetration_depth)
         return responses
@@ -251,31 +301,22 @@ class CollisionDetector:
         arena_max = self.arena_shape.max_vert()
         shape_min = shape.min_vert()
         shape_max = shape.max_vert()
-        prev_position = position - forward_vector
-        allowed_move = Vector3D(forward_vector.x, forward_vector.y, 0)
-        corrective = Vector3D(0, 0, 0)
-
+        push = Vector3D(0, 0, 0)
         if shape_min.x < arena_min.x:
-            corrective.x += arena_min.x - shape_min.x + 1e-3
-            if allowed_move.x < 0:
-                allowed_move.x = 0
+            push.x = arena_min.x - shape_min.x + 1e-3
         elif shape_max.x > arena_max.x:
-            corrective.x += arena_max.x - shape_max.x - 1e-3
-            if allowed_move.x > 0:
-                allowed_move.x = 0
+            push.x = arena_max.x - shape_max.x - 1e-3
 
         if shape_min.y < arena_min.y:
-            corrective.y += arena_min.y - shape_min.y + 1e-3
-            if allowed_move.y < 0:
-                allowed_move.y = 0
+            push.y = arena_min.y - shape_min.y + 1e-3
         elif shape_max.y > arena_max.y:
-            corrective.y += arena_max.y - shape_max.y - 1e-3
-            if allowed_move.y > 0:
-                allowed_move.y = 0
+            push.y = arena_max.y - shape_max.y - 1e-3
+
+        if push.x == 0 and push.y == 0:
+            return None
 
         logger.info("Collision arena-boundary for shape id=%s", shape._id)
-        corrected_position = prev_position + allowed_move + corrective
-        return corrected_position
+        return push
 
     def _compute_bounce_response(
         self,
@@ -297,6 +338,25 @@ class CollisionDetector:
                 move = reflected.normalize() * forward_vector.magnitude()
         blended_move = (move * 0.8) + (forward_vector * 0.2)
         return prev_position + blended_move + separation
+
+    def _shape_radius(self, shape: Shape) -> float:
+        """Best-effort radius for broad-phase checks."""
+        getter = getattr(shape, "get_radius", None)
+        if callable(getter):
+            try:
+                r = float(getter())
+                if r > 0:
+                    return r
+            except Exception:
+                pass
+        center = shape.center_of_mass()
+        try:
+            return max(
+                (Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude() for v in shape.vertices_list),
+                default=0.0
+            )
+        except Exception:
+            return 0.0
 
 
 def reflect_vector(vector: Vector3D, normal: Vector3D) -> Vector3D:

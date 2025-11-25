@@ -1430,6 +1430,9 @@ class MovableAgent(StaticAgent):
         if self._logic_plugin and hasattr(self._logic_plugin, "after_movement"):
             self._logic_plugin.after_movement(self, tick, arena_shape, objects, agents)
         self._apply_motion(tick)
+        # Keep the shape geometry in sync with the updated pose for collision checks.
+        self.shape.translate(self.position)
+        self.shape.translate_attachments(self.orientation.z)
 
     def _apply_motion(self, tick:int):
         """Apply the motion using the configured kinematic model."""

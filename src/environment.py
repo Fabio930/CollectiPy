@@ -115,8 +115,9 @@ class Environment():
         gui_id = config_elem.gui.get("_id","2D")
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
-        # Default to a higher stride to reduce IPC pressure when configs do not override it.
-        self.snapshot_stride = max(10, int(config_elem.environment.get("snapshot_stride", 100)))
+        # Collision detection benefits from frequent sampling.
+        default_stride = 1 if config_elem.environment.get("collisions", False) else 100
+        self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", default_stride)))
         self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 5)))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
         if gui_id in ("none", "off", None) or not base_gui_cfg:
@@ -287,8 +288,8 @@ class Environment():
             agent_blocks = self._split_agents(agents, n_agent_procs)
             n_blocks = len(agent_blocks)
             # Detector input/output queues
-            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
-            dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
+            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if not self.collisions else [None] * n_blocks
+            dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if not self.collisions else [None] * n_blocks
             # Per-manager arena/agents queues
             arena_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             agents_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
@@ -322,7 +323,8 @@ class Environment():
                     wrap_config=wrap_config,
                     hierarchy=arena_hierarchy,
                     snapshot_stride=self.snapshot_stride,
-                    manager_id=idx_block
+                    manager_id=idx_block,
+                    collisions=self.collisions
                 )
                 proc = mp.Process(
                     target=entity_manager.run,
@@ -338,7 +340,7 @@ class Environment():
                 manager_processes.append(proc)
             det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
             det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
-            detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
+            detector_process = None if self.collisions else mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
             pattern = {
                 "arena": 2,
                 "agents": 3,

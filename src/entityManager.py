@@ -16,6 +16,7 @@ from typing import Optional
 from messagebus import MessageBusFactory
 from random import Random
 from geometry_utils.vector3D import Vector3D
+from collision_detector import CollisionDetector
 from arena_hierarchy import ArenaHierarchy
 
 logger = logging.getLogger("sim.entity_manager")
@@ -62,7 +63,7 @@ class EntityManager:
             return None
         except Exception:
             return None
-    def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None, snapshot_stride: int = 1, manager_id: int = 0):
+    def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None, snapshot_stride: int = 1, manager_id: int = 0, collisions: bool = False):
         """Initialize the instance."""
         self.agents = agents
         self.arena_shape = arena_shape
@@ -70,10 +71,12 @@ class EntityManager:
         self.hierarchy = hierarchy
         self.snapshot_stride = max(1, snapshot_stride)
         self.manager_id = manager_id
+        self.collisions = collisions
         self.message_buses = {}
         self._global_min = self.arena_shape.min_vert()
         self._global_max = self.arena_shape.max_vert()
         self._invalid_hierarchy_nodes = set()
+        self._detector = CollisionDetector(self.arena_shape, collisions, wrap_config=wrap_config) if collisions else None
         bus_context = {"arena_shape": self.arena_shape, "wrap_config": self.wrap_config, "hierarchy": self.hierarchy}
         # Try to use a shared bus when message configs match across groups.
         msg_configs = []
@@ -129,6 +132,7 @@ class EntityManager:
         """Initialize the component state."""
         logger.info("Initializing agents with random seed %s", random_seed)
         seed_counter = 0
+        placed_shapes = []
         for (_, entities) in self.agents.values():
             for entity in entities:
                 entity.set_position(Vector3D(999, 0, 0), False)
@@ -168,10 +172,16 @@ class EntityManager:
                             done = False
                         # Check overlap with other entities
                         if done:
-                            for m, other_entity in enumerate(entities):
+                            for other_entity in entities:
                                 if other_entity is entity:
                                     continue
                                 if shape_n.check_overlap(other_entity.get_shape())[0]:
+                                    done = False
+                                    break
+                        # Check overlap with already placed entities (all groups)
+                        if done:
+                            for placed in placed_shapes:
+                                if shape_n.check_overlap(placed)[0]:
                                     done = False
                                     break
                         # Check overlap with objects
@@ -197,6 +207,7 @@ class EntityManager:
                     adjusted = self._clamp_vector_to_entity_bounds(entity, adjusted)
                     entity.set_start_position(adjusted)
                     logger.debug("%s position from config %s", entity.get_name(), (position.x, position.y, position.z))
+                placed_shapes.append(entity.get_shape())
                 entity.shape.translate_attachments(entity.orientation.z)
                 entity.prepare_for_run(objects,self.get_agent_shapes())
                 logger.debug("%s ready for simulation", entity.get_name())
@@ -300,7 +311,9 @@ class EntityManager:
                 }
                 agents_queue.put(agents_data)
                 dec_data_in = {}
-                if dec_agents_in is not None and dec_agents_out is not None and t % self.snapshot_stride == 0:
+                if self.collisions and self._detector and t % self.snapshot_stride == 0:
+                    dec_data_in = self._detector.compute_corrections(detector_data["agents"], data_in.get("objects"))
+                elif dec_agents_in is not None and dec_agents_out is not None and t % self.snapshot_stride == 0:
                     dec_agents_in.put(detector_data)
                     dec_data_in = self._maybe_get(dec_agents_out, timeout=0.05) or {}
                 for _, entities in self.agents.values():
@@ -337,7 +350,7 @@ class EntityManager:
             shapes = [entity.get_shape() for entity in entities]
             velocities = [entity.get_max_absolute_velocity() for entity in entities]
             vectors = [entity.get_forward_vector() for entity in entities]
-            positions = [entity.get_prev_position() for entity in entities]
+            positions = [entity.get_position() for entity in entities]
             names = [entity.get_name() for entity in entities]
             out[entities[0].entity()] = (shapes, velocities, vectors, positions, names)
         if logger.isEnabledFor(logging.DEBUG):
@@ -363,6 +376,12 @@ class EntityManager:
                 return
         wrapped = Vector3D(new_x, new_y, pos.z)
         entity.set_position(wrapped)
+        try:
+            shape = entity.get_shape()
+            shape.translate(wrapped)
+            shape.translate_attachments(entity.get_orientation().z)
+        except Exception:
+            pass
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("%s wrapped to %s", entity.get_name(), (wrapped.x, wrapped.y, wrapped.z))
 
@@ -382,15 +401,17 @@ class EntityManager:
         getter = getattr(self.arena_shape, "get_radius", None)
         if callable(getter):
             try:
-                arena_radius = float(getter())
+                candidate = getter()
+                if isinstance(candidate, (int, float)):
+                    arena_radius = float(candidate)
             except Exception:
                 arena_radius = None
 
         clamped_pos = None
         if arena_radius is not None and arena_radius > 0:
             limit = max(0.0, arena_radius - radius)
-            dx = pos.x - cx
-            dy = pos.y - cy
+            dx = float(pos.x - cx)
+            dy = float(pos.y - cy)
             dist = math.hypot(dx, dy)
             if dist > limit and dist > 0:
                 scale = limit / dist if dist > 0 else 0.0
@@ -410,6 +431,12 @@ class EntityManager:
                 clamped_pos = Vector3D(clamped_x, clamped_y, pos.z)
         if clamped_pos and (clamped_pos.x != pos.x or clamped_pos.y != pos.y):
             entity.set_position(clamped_pos)
+            try:
+                shape = entity.get_shape()
+                shape.translate(clamped_pos)
+                shape.translate_attachments(entity.get_orientation().z)
+            except Exception:
+                pass
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("%s clamped to arena bounds %s", entity.get_name(), (clamped_pos.x, clamped_pos.y, clamped_pos.z))
 
@@ -476,9 +503,11 @@ class EntityManager:
         getter = getattr(shape, "get_radius", None)
         if callable(getter):
             try:
-                r = float(getter())
-                if r > 0:
-                    return r
+                candidate = getter()
+                if isinstance(candidate, (int, float)):
+                    r = float(candidate)
+                    if r > 0:
+                        return r
             except Exception:
                 pass
         center = shape.center_of_mass()
