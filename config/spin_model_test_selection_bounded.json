@@ -37,7 +37,7 @@
         },
         "agents":{
             "movable_0":{
-                "ticks_per_second": 2,
+                "ticks_per_second": 5,
                 "number": [2],
                 "shape": "cylinder",
                 "linear_velocity": 0.02,

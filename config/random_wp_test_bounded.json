@@ -2,13 +2,14 @@
     "environment":{
         "collisions": true,
         "time_limit": 0,
+        "ticks_per_second": 3,
         "num_runs": 1,
-        "results":{
-            "group_specs": ["messages"],
-            "snapshots_per_second": 1
-        },
         "gui":{
-            "_id": "2D"
+            "_id": "2D",
+            "throttle": {
+                "poll_interval_ms": 16,
+                "max_backlog": 3
+            }
         },
         "arenas":{
             "arena_0":{
@@ -30,7 +31,7 @@
         },
         "agents":{
             "movable_0":{
-                "ticks_per_second": 20,
+                "ticks_per_second": 10,
                 "number": [20],
                 "shape": "cylinder",
                 "linear_velocity": 0.03,

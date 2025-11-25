@@ -83,6 +83,7 @@ class Entity:
         self.hierarchy_target = self.hierarchy_node
         self.hierarchy_level = None
         self.task = config_elem.get("task") if isinstance(config_elem, dict) else None
+        self.spawn_params = None
     
     def get_name(self):
         """Return the name."""

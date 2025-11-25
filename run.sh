@@ -25,10 +25,9 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 # Uncomment the scenario you want to run.
-# "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/collision_handshake_demo.json"
 # "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/random_wp_test_bounded.json"
 # "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/random_wp_test_unbounded.json"
 # "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/random_wp_message_cleanup.json"
 # "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/spin_model_test_selection_bounded.json"
 "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/spin_model_test_flocking_bounded.json"
-# "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/random_waypoint_hierarchy_unbounded.json"
+# "$PYTHON_BIN" "$ROOT_DIR/src/main.py" -c "$ROOT_DIR/config/spin_model_test_flocking_unbounded.json"

@@ -2,7 +2,7 @@
     "environment":{
         "collisions": false,
         "ticks_per_second": 1,
-        "time_limit": 200,
+        "time_limit": 0,
         "num_runs": 1,
         "results":{
             "agent_specs": ["base", "spin_model"],
@@ -17,8 +17,7 @@
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "diameter": 0.3,
-                "_id": "sphere",
+                "_id": "unbounded",
                 "color": "gray"
             }
         },
@@ -27,7 +26,7 @@
         "agents":{
             "movable_0":{
                 "ticks_per_second": 5,
-                "number": [1],
+                "number": [10],
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 10,
@@ -47,7 +46,7 @@
                     "num_spins_per_group": 8,
                     "perception_global_inhibition": 0,
                     "T": 0.3,
-                    "J": 40,
+                    "J": 300,
                     "nu": 0.4,
                     "p_spin_up": 0.5,
                     "time_delay": 1,

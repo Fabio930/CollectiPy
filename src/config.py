@@ -155,7 +155,7 @@ class Config:
                             "time_limit": environment.get("time_limit", 0),
                             "num_runs": environment.get("num_runs", 1),
                             "results": environment.get("results",{}),
-                            "logging": environment.get("logging", {}),
+                            "logging": environment.get("logging") or {},
                             "gui": environment.get("gui",{}),
                             "arena": arena_value,
                             "objects": {},

@@ -51,6 +51,26 @@ def set_affinity_safely(proc, num_cores):
     except Exception as e:
         logging.error(f"[AFFINITY ERROR] PID {proc.pid}: {e}")
 
+class _PipeQueue:
+    """Single-producer/single-consumer queue backed by Pipe with poll()."""
+    def __init__(self, ctx: mp.context.BaseContext):
+        self._recv, self._send = ctx.Pipe(duplex=False)
+
+    def put(self, item):
+        self._send.send(item)
+
+    def get(self):
+        return self._recv.recv()
+
+    def poll(self, timeout: float = 0.0):
+        return self._recv.poll(timeout)
+
+    def qsize(self):
+        return 1 if self._recv.poll(0) else 0
+
+    def empty(self):
+        return not self._recv.poll(0)
+
 class EnvironmentFactory():
     """Environment factory."""
     @staticmethod
@@ -108,14 +128,15 @@ class Environment():
 
     def start(self):
         """Start the process."""
+        ctx = mp.get_context("fork")
         for exp in self.experiments:
-            arena_queue = mp.Queue()
-            agents_queue = mp.Queue()
-            dec_arena_in = mp.Queue()
-            dec_agents_in = mp.Queue()
-            dec_agents_out = mp.Queue()
-            gui_in_queue = mp.Queue()
-            gui_control_queue = mp.Queue()
+            arena_queue = _PipeQueue(ctx)
+            agents_queue = _PipeQueue(ctx)
+            dec_arena_in = _PipeQueue(ctx)
+            dec_agents_in = _PipeQueue(ctx)
+            dec_agents_out = _PipeQueue(ctx)
+            gui_in_queue = _PipeQueue(ctx)
+            gui_control_queue = _PipeQueue(ctx)
             arena = self.arena_init(exp)
             agents = self.agents_init(exp)
             arena_shape = arena.get_shape()

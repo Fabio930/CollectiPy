@@ -268,7 +268,7 @@ class EntityManager:
 
     def _apply_wrap(self, entity):
         """Apply the wrap."""
-        if not self.wrap_config:
+        if not self.wrap_config or self.wrap_config.get("unbounded"):
             return
         origin = self.wrap_config["origin"]
         width = self.wrap_config["width"]
