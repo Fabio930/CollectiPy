@@ -53,11 +53,11 @@ class CollisionDetector:
         while True:
             out: Dict[str, List[Optional[Vector3D]]] = {}
             # Pull the latest objects description when available.
-            if dec_arena_in.qsize() > 0:
+            if dec_arena_in.poll(0):
                 self.objects = dec_arena_in.get()["objects"]
                 logger.debug("Objects updated (%d groups)", len(self.objects))
             # Pull agent data (shapes, velocities, names, ...).
-            if dec_agents_in.qsize() > 0:
+            if dec_agents_in.poll(0):
                 self.agents = dec_agents_in.get()["agents"]
                 logger.debug("Agent state received (%d groups)", len(self.agents))
                 for club, (shapes, velocities, vectors, positions, names) in self.agents.items():
@@ -186,6 +186,8 @@ class CollisionDetector:
         forward_vector: Vector3D
     ) -> Optional[Vector3D]:
         """Resolve the arena collision."""
+        if self.wrap_config and self.wrap_config.get("unbounded"):
+            return None
         overlap = shape.check_overlap(self.arena_shape)
         if not overlap[0]:
             return None

@@ -55,6 +55,8 @@ def main(argv):
         my_env.start()
     except Exception as e:
         logging.fatal(f"Failed to create environment: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

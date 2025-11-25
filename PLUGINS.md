@@ -167,7 +167,7 @@ to the outgoing payload, but the simulator always injects the standard metadata
 (`tick`, global position, full entity key, and the public identifier when the
 message kind is `id`) before forwarding the packet to the bus.
 
-**Policy summary**
+### Policy summary
 
 - `broadcast` is the only type that may remain anonymous.
 - `rebroadcast` packets are always ID-aware: half the time the agent emits its

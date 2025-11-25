@@ -66,7 +66,6 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
         "snapshots_per_second": int, DEFAULT:1 (1 = end-of-second only, 2 = mid-second + end-second captures).
     },
     "logging":{ DEFAULT:{} empty dict -> logging disabled
-        "enabled": bool, DEFAULT:false - turn detailed logging on/off (also enables log persistence)
         "level": str, DEFAULT:"INFO" - console level (set DEBUG to track interactions/collisions)
         "file_level": str, DEFAULT:"WARNING" - severity written to disk (WARNING/ERROR by default)
         "to_console": bool, DEFAULT:true - echo logs to stdout
@@ -83,7 +82,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "width": int, DEFAULT:1
             "depth": int, DEFAULT:1
             "_id": str, Required - SUPPORTED:"rectangle","square","circle","abstract","unbounded"
-            "diameter": float, Required only for "_id":"unbounded" (defines the side of the unbounded preview square)
+            "diameter": float, OPTIONAL for "_id":"unbounded" (initial side of the preview square; defaults to 10 if omitted or <=0)
             "color": "gray" DEFAULT:white
             "hierarchy": { OPTIONAL - define the reversed-tree partition applied to this arena
                 "depth": int, DEFAULT:0 - number of additional levels (root is level 0)

@@ -374,18 +374,25 @@ class UnboundedShape(Shape):
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
         self._id = shape_type
+        self.side = float(config_elem.get("side", self.BOUND * 2.0))
         self.set_vertices()
 
     def set_vertices(self):
         """Set four extreme vertices to approximate infinity."""
-        b = self.BOUND
+        half = min(self.BOUND, self.side * 0.5)
+        b = half
+        # Use a thin prism so z-bounds include tall objects.
         self.vertices_list = [
-            Vector3D(-b, -b, 0),
-            Vector3D(b, -b, 0),
-            Vector3D(b, b, 0),
-            Vector3D(-b, b, 0)
+            Vector3D(-b, -b, -self.BOUND * 0.5),
+            Vector3D(b, -b, -self.BOUND * 0.5),
+            Vector3D(b, b, -self.BOUND * 0.5),
+            Vector3D(-b, b, -self.BOUND * 0.5),
+            Vector3D(-b, -b, self.BOUND * 0.5),
+            Vector3D(b, -b, self.BOUND * 0.5),
+            Vector3D(b, b, self.BOUND * 0.5),
+            Vector3D(-b, b, self.BOUND * 0.5),
         ]
 
     def get_radius(self) -> float:
         """Return an effective radius."""
-        return self.BOUND
+        return min(self.BOUND, self.side * 0.5)

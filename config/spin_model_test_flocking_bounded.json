@@ -4,7 +4,8 @@
         "ticks_per_second": 1,
         "time_limit": 0,
         "num_runs": 1,
-        "results":{
+        "logging":{
+            "file_level": "DEBUG"
         },
         "gui":{
             "_id": "2D",
@@ -14,7 +15,7 @@
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "diameter": 0.4,
+                "radius": 0.2,
                 "_id": "circle",
                 "color": "gray"
             }

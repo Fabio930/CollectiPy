@@ -13,6 +13,7 @@ from plugin_base import MovementModel
 from plugin_registry import register_movement_model
 from models.movement.common import apply_motion_state
 from models.utils import normalize_angle
+from geometry_utils.vector3D import Vector3D
 
 logger = logging.getLogger("sim.movement.random_way_point")
 
@@ -21,6 +22,7 @@ class RandomWayPointMovement(MovementModel):
     def __init__(self, agent):
         """Initialize the instance."""
         self.agent = agent
+        self.wrap_config = getattr(agent, "wrap_config", None)
 
     def step(self, agent, tick: int, arena_shape, objects: dict, agents: dict) -> None:
         """Execute the simulation step."""
@@ -63,7 +65,22 @@ class RandomWayPointMovement(MovementModel):
 
     def _random_goal(self, arena_shape):
         """Return a new goal position."""
-        return self.agent.shape._get_random_point_inside_shape(self.agent.random_generator, arena_shape)
+        center = getattr(self.agent, "position", None) or self.agent.get_start_position()
+        radius = None
+        distribution = "uniform"
+        params = getattr(self.agent, "spawn_params", None)
+        if params:
+            center = params[0] or center
+            radius = params[1]
+            distribution = params[2] or "uniform"
+        if radius is None:
+            if self.wrap_config and self.wrap_config.get("unbounded"):
+                width = float(self.wrap_config.get("width", 1.0))
+                height = float(self.wrap_config.get("height", width))
+                radius = max(0.1, min(width, height) * 0.5)
+            else:
+                radius = 1.0
+        return self._sample_spawn(center, radius, distribution)
 
     def _wrapped_vector_to_goal(self, agent):
         """Return the shortest vector towards the goal accounting for wrap."""
@@ -78,5 +95,25 @@ class RandomWayPointMovement(MovementModel):
             return 0.0
         dx, dy = self._wrapped_vector_to_goal(agent)
         return math.hypot(dx, dy)
+
+    def _sample_spawn(self, center, radius, distribution):
+        """Sample a point from the configured distribution."""
+        rng = self.agent.random_generator
+        dist = str(distribution).lower()
+        if dist == "gaussian":
+            std = radius / 3.0
+            x = rng.gauss(center.x, std)
+            y = rng.gauss(center.y, std)
+        elif dist == "ring":
+            r = rng.uniform(radius * 0.5, radius)
+            theta = rng.uniform(0.0, 2 * math.pi)
+            x = center.x + r * math.cos(theta)
+            y = center.y + r * math.sin(theta)
+        else:
+            r = math.sqrt(rng.uniform(0.0, 1.0)) * radius
+            theta = rng.uniform(0.0, 2 * math.pi)
+            x = center.x + r * math.cos(theta)
+            y = center.y + r * math.sin(theta)
+        return Vector3D(x, y, self.agent.position.z)
 
 register_movement_model("random_way_point", lambda agent: RandomWayPointMovement(agent))
