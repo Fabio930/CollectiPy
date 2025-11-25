@@ -10,9 +10,10 @@
 """
 Utilities to configure and retrieve simulation loggers.
 
-Logging can be enabled/disabled via the JSON config, allowing the user
-to persist detailed traces of the simulation (agents, objects,
-collisions, reasoning steps, ...).
+Logging is active when a 'logging' section is present in the JSON config;
+omit the section to disable file/console output. This allows the user to
+persist detailed traces of the simulation (agents, objects, collisions,
+reasoning steps, ...).
 """
 from __future__ import annotations
 
@@ -33,16 +34,22 @@ LOG_DIRNAME = "logs"
 CONFIGS_SUBDIR = "configs"
 HASH_MAP_FILENAME = "logs_configs_mapping.csv"
 
-def _coerce_level(value: Any) -> int:
+def _coerce_level(value: Any, default: int, key: str, warnings: list[str]) -> int:
     """
     Return a valid logging level from either a string or an integer.
-    Defaults to logging.INFO when the input is not recognised.
+    Append a warning message when a default is applied.
     """
+    if value is None:
+        warnings.append(f"Logging '{key}' not set; defaulting to {logging.getLevelName(default)}.")
+        return default
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        return getattr(logging, value.upper(), logging.INFO)
-    return logging.INFO
+        candidate = getattr(logging, value.upper(), None)
+        if isinstance(candidate, int):
+            return candidate
+    warnings.append(f"Logging '{key}' value {value!r} is invalid; defaulting to {logging.getLevelName(default)}.")
+    return default
 
 def configure_logging(
     settings: Optional[Dict[str, Any]] = None,
@@ -56,39 +63,59 @@ def configure_logging(
     ----------
     settings:
         Dictionary coming from the config file. Supported keys:
-        - enabled (bool): turn file logging on/off (default: False)
-        - level (str|int): logging level for console (default: "INFO")
-        - file_level (str|int): logging level for persisted log (default: level)
-        - to_console (bool): echo logs to stdout (default: True)
+        - file_level (str|int): logging level for persisted log (default: WARNING)
+        - console_level (str|int): logging level for console (default: WARNING)
+        - to_console (bool): echo logs to stdout (default: False)
     config_path:
         Path to the configuration file being used for the simulation.
     project_root:
         Path to the repository root, used to derive the logs directory.
     """
     if settings is None:
+        # Logging section missing -> disable logging.
+        logging.basicConfig(level=logging.WARNING, handlers=[logging.NullHandler()], force=True)
+        logging.getLogger(LOG_NAMESPACE).setLevel(logging.WARNING)
+        return
+
+    if not isinstance(settings, dict):
         settings = {}
-    enabled = settings.get("enabled", False)
-    console_level = _coerce_level(settings.get("level", "INFO" if enabled else "WARNING"))
-    file_level = _coerce_level(settings.get("file_level", settings.get("level", "WARNING")))
+
+    default_warnings: list[str] = []
+
+    if "enabled" in settings:
+        default_warnings.append("Logging 'enabled' is deprecated and ignored; logging is enabled when the 'logging' section is present.")
+
+    # Console logging
+    console_level_value = settings.get("console_level")
+    if console_level_value is None and "level" in settings:
+        console_level_value = settings.get("level")
+        default_warnings.append("Logging 'level' is deprecated; use 'console_level'.")
+    console_level = _coerce_level(console_level_value, logging.WARNING, "console_level", default_warnings)
+
+    # File logging
+    file_level = _coerce_level(settings.get("file_level"), logging.WARNING, "file_level", default_warnings)
+
+    # Console echo flag
+    to_console_raw = settings.get("to_console")
+    if to_console_raw is None:
+        default_warnings.append("Logging 'to_console' not set; defaulting to False (no terminal output).")
+    to_console = bool(to_console_raw) if to_console_raw is not None else False
 
     handlers: list[logging.Handler] = []
-    to_console = settings.get("to_console", bool(enabled))
     if to_console:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(console_level)
         handlers.append(console_handler)
 
-    log_path = None
-    if enabled:
-        log_context = _prepare_log_artifacts(config_path, project_root)
-        log_path = log_context.get("log_path")
-        if log_path:
-            file_handler = _CompressedLogHandler(log_context, level=file_level)
-            handlers.append(file_handler)
+    log_context = _prepare_log_artifacts(config_path, project_root)
+    log_path = log_context.get("log_path")
+    if log_path:
+        file_handler = _CompressedLogHandler(log_context, level=file_level)
+        handlers.append(file_handler)
 
     if not handlers:
         null_handler = logging.NullHandler()
-        null_handler.setLevel(console_level)
+        null_handler.setLevel(logging.WARNING)
         handlers.append(null_handler)
 
     effective_level = min(handler.level for handler in handlers)
@@ -99,6 +126,10 @@ def configure_logging(
 
     logging.basicConfig(level=effective_level, handlers=handlers or None, force=True)
     logging.getLogger(LOG_NAMESPACE).setLevel(effective_level)
+
+    logger = logging.getLogger(LOG_NAMESPACE)
+    for msg in default_warnings:
+        logger.warning(msg)
 
 def _prepare_log_artifacts(
     config_path: Optional[str | Path],

@@ -10,6 +10,8 @@
 """Environment: process-level orchestration of the simulation."""
 import logging, psutil, gc
 import multiprocessing as mp
+from multiprocessing.context import BaseContext
+from typing import Any, Dict
 from config import Config
 from entity import EntityFactory
 from arena import ArenaFactory
@@ -43,7 +45,8 @@ def set_affinity_safely(proc, num_cores):
         selected = pick_least_used_free_cores(num_cores)
         if not selected:
             logging.warning("[WARNING] No free cores: fallback to all cores")
-            selected = list(range(psutil.cpu_count(logical=True)))
+            fallback_count = psutil.cpu_count(logical=True) or 1
+            selected = list(range(fallback_count))
         p = psutil.Process(proc.pid)
         p.cpu_affinity(selected)
         used_cores.update(selected)
@@ -53,7 +56,7 @@ def set_affinity_safely(proc, num_cores):
 
 class _PipeQueue:
     """Single-producer/single-consumer queue backed by Pipe with poll()."""
-    def __init__(self, ctx: mp.context.BaseContext):
+    def __init__(self, ctx: BaseContext):
         self._recv, self._send = ctx.Pipe(duplex=False)
 
     def put(self, item):
@@ -105,9 +108,21 @@ class Environment():
 
     def agents_init(self,exp:Config):
         """Agents init."""
-        agents = {agent_type: (exp.environment.get("agents").get(agent_type),[]) for agent_type in exp.environment.get("agents").keys()}
+        agents_cfg = exp.environment.get("agents") or {}
+        if not isinstance(agents_cfg, dict):
+            raise ValueError("Invalid agents configuration: expected a dictionary.")
+        agents: Dict[str, tuple[Dict[str, Any], list]] = {
+            agent_type: (cfg, []) for agent_type, cfg in agents_cfg.items()
+        }
         for key,(config,entities) in agents.items():
-            for n in range(config["number"]):
+            if not isinstance(config, dict):
+                raise ValueError(f"Invalid agent configuration for {key}")
+            number_raw = config.get("number", 0)
+            try:
+                number = int(number_raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid number of agents for {key}: {number_raw}")
+            for n in range(number):
                 entities.append(EntityFactory.create_entity(entity_type="agent_"+key,config_elem=config,_id=n))
         logging.info(f"Agents initialized: {list(agents.keys())}")
         return agents
@@ -140,6 +155,8 @@ class Environment():
             arena = self.arena_init(exp)
             agents = self.agents_init(exp)
             arena_shape = arena.get_shape()
+            if arena_shape is None:
+                raise ValueError("Arena shape was not initialized; cannot start environment.")
             arena_id = arena.get_id()
             render_enabled = self.render[0]
             wrap_config = arena.get_wrap_config()
@@ -151,9 +168,9 @@ class Environment():
             detector_process = mp.Process(target=collision_detector.run, args=(dec_agents_in, dec_agents_out, dec_arena_in))
             pattern = {
                 "arena": 1,
-                "agents": 3,
-                "detector": 2,
-                "gui": 2
+                "agents": 1,
+                "detector": 1,
+                "gui": 1
             }
             killed = 0
             if render_enabled:
