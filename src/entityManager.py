@@ -52,13 +52,14 @@ class EntityManager:
             return q.get(timeout=timeout)
         except Exception:
             return None
-    def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None, snapshot_stride: int = 1):
+    def __init__(self, agents:dict, arena_shape, wrap_config=None, hierarchy: Optional[ArenaHierarchy] = None, snapshot_stride: int = 1, manager_id: int = 0):
         """Initialize the instance."""
         self.agents = agents
         self.arena_shape = arena_shape
         self.wrap_config = wrap_config
         self.hierarchy = hierarchy
         self.snapshot_stride = max(1, snapshot_stride)
+        self.manager_id = manager_id
         self.message_buses = {}
         self._global_min = self.arena_shape.min_vert()
         self._global_max = self.arena_shape.max_vert()
@@ -255,6 +256,7 @@ class EntityManager:
                     "agents_metadata": self.get_agent_metadata()
                 }
                 detector_data = {
+                    "manager_id": self.manager_id,
                     "agents": self.pack_detector_data()
                 }
                 agents_queue.put(agents_data)
@@ -263,7 +265,7 @@ class EntityManager:
                     dec_agents_in.put(detector_data)
                     dec_data_in = self._blocking_get(dec_agents_out)
                 for _, entities in self.agents.values():
-                    pos = dec_data_in.get(entities[0].entity())
+                    pos = dec_data_in.get(entities[0].entity(), None)
                     if pos is not None:
                         for n, entity in enumerate(entities):
                             entity.post_step(pos[n])

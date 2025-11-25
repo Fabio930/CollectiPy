@@ -43,7 +43,7 @@ class CollisionDetector:
     def run(
         self,
         dec_agents_in: mp.Queue,
-        dec_agents_out: mp.Queue,
+        dec_agents_out: mp.Queue | list,
         dec_arena_in: mp.Queue
     ) -> None:
         """
@@ -51,8 +51,9 @@ class CollisionDetector:
         compute collision responses, and send corrections back.
         """
         logger.info("CollisionDetector started (collisions=%s)", self.collisions)
+        manager_outputs = dec_agents_out if isinstance(dec_agents_out, list) else [dec_agents_out]
+        latest_agents: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         while True:
-            out: Dict[str, List[Optional[Vector3D]]] = {}
             idle = True
             # Pull the latest objects description when available.
             if dec_arena_in.poll(0):
@@ -61,55 +62,68 @@ class CollisionDetector:
                 logger.debug("Objects updated (%d groups)", len(self.objects))
             # Pull agent data (shapes, velocities, names, ...).
             if dec_agents_in.poll(0):
-                self.agents = dec_agents_in.get()["agents"]
+                payload = dec_agents_in.get()
+                manager_id = payload.get("manager_id", 0)
+                latest_agents[manager_id] = payload["agents"]
                 idle = False
-                logger.debug("Agent state received (%d groups)", len(self.agents))
-                for club, (shapes, velocities, vectors, positions, names) in self.agents.items():
-                    n_shapes = len(shapes)
-                    out_tmp: List[Optional[Vector3D]] = [None] * n_shapes
-                    for idx in range(n_shapes):
-                        shape = shapes[idx]
-                        forward_vector = vectors[idx]
-                        position = positions[idx]
-                        name = names[idx]
-                        responses: List[Vector3D] = []
-                        if self.collisions:
-                            responses.extend(
-                                self._resolve_agent_collisions(
-                                    name,
-                                    shape,
-                                    position,
-                                    forward_vector,
-                                    vectors,
-                                    positions,
-                                    names
+                logger.debug("Agent state received (%d groups, manager %s)", len(payload["agents"]), manager_id)
+                # Merge all agents for global collision computation.
+                merged: Dict[str, AgentCollisionPayload] = {}
+                for ag in latest_agents.values():
+                    merged.update(ag)
+                self.agents = merged
+                # Compute corrections per manager.
+                for m_id, mgr_agents in latest_agents.items():
+                    out: Dict[str, List[Optional[Vector3D]]] = {}
+                    for club, (shapes, velocities, vectors, positions, names) in mgr_agents.items():
+                        n_shapes = len(shapes)
+                        out_tmp: List[Optional[Vector3D]] = [None] * n_shapes
+                        for idx in range(n_shapes):
+                            shape = shapes[idx]
+                            forward_vector = vectors[idx]
+                            position = positions[idx]
+                            name = names[idx]
+                            responses: List[Vector3D] = []
+                            if self.collisions:
+                                responses.extend(
+                                    self._resolve_agent_collisions(
+                                        name,
+                                        shape,
+                                        position,
+                                        forward_vector,
+                                        vectors,
+                                        positions,
+                                        names
+                                    )
                                 )
-                            )
-                            responses.extend(
-                                self._resolve_object_collisions(
-                                    name,
+                                responses.extend(
+                                    self._resolve_object_collisions(
+                                        name,
+                                        shape,
+                                        position,
+                                        forward_vector
+                                    )
+                                )
+                            if not self.wrap_config:
+                                boundary_response = self._resolve_arena_collision(
                                     shape,
                                     position,
                                     forward_vector
                                 )
-                            )
-                        if not self.wrap_config:
-                            boundary_response = self._resolve_arena_collision(
-                                shape,
-                                position,
-                                forward_vector
-                            )
-                            if boundary_response is not None:
-                                responses.append(boundary_response)
-                        if responses:
-                            correction = Vector3D()
-                            for resp in responses:
-                                correction += resp
-                            correction = correction / len(responses)
-                            out_tmp[idx] = correction
-                            logger.debug("%s collision correction -> %s", name, correction)
-                    out[club] = out_tmp
-                dec_agents_out.put(out)
+                                if boundary_response is not None:
+                                    responses.append(boundary_response)
+                            if responses:
+                                correction = Vector3D()
+                                for resp in responses:
+                                    correction += resp
+                                correction = correction / len(responses)
+                                out_tmp[idx] = correction
+                                logger.debug("%s collision correction -> %s", name, correction)
+                        out[club] = out_tmp
+                    try:
+                        manager_outputs[m_id].put(out)
+                    except IndexError:
+                        manager_outputs[0].put(out)
             if idle:
                 time.sleep(0.001)
 

@@ -3,15 +3,13 @@
         "collisions": false,
         "time_limit": 500,
         "num_runs": 1,
-        "per_agents_process": 1,
-        "snapshot_stride": 30,
         "arenas": {
             "arena_0": {
                 "_id": "square",
                 "width": 1.2,
                 "depth": 0.8,
                 "random_seed": 13,
-                "color": "white"
+                "color": "gray"
             }
         },
         "objects": {},
