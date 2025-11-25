@@ -10,6 +10,7 @@
 """Graphical user interface for the simulator."""
 import logging, math, time
 import matplotlib.pyplot as plt
+from geometry_utils.vector3D import Vector3D
 from config import Config
 from matplotlib.cm import coolwarm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas

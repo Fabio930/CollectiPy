@@ -631,9 +631,15 @@ class UnboundedArena(SolidArena):
     """Unbounded arena rendered as a large square without wrap-around."""
     def __init__(self, config_elem:Config):
         """Initialize the instance."""
-        self.diameter = float(config_elem.arena.get("diameter", 0))
+        raw = config_elem.arena.get("diameter", None)
+        try:
+            self.diameter = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            self.diameter = None
+        if not self.diameter or self.diameter <= 0:
+            self.diameter = self._estimate_initial_diameter(config_elem)
         if self.diameter <= 0:
-            raise ValueError("UnboundedArena requires a positive 'diameter'")
+            raise ValueError("UnboundedArena could not derive a positive initial diameter")
         super().__init__(config_elem)
         logging.info(
             "Unbounded arena created (diameter=%.3f, square side=%.3f)",
@@ -641,17 +647,64 @@ class UnboundedArena(SolidArena):
             self.diameter
         )
 
+    def _estimate_initial_diameter(self, config_elem: Config) -> float:
+        """
+        Heuristic initial span when the user does not provide a diameter.
+        Uses agent count/size to choose a finite square for spawning/rendering.
+        """
+        agents_cfg = config_elem.environment.get("agents", {}) if hasattr(config_elem, "environment") else {}
+        total = 0
+        max_diam = 0.05
+        for cfg in agents_cfg.values():
+            if not isinstance(cfg, dict):
+                continue
+            num = cfg.get("number", 0)
+            if isinstance(num, (list, tuple)) and num:
+                try:
+                    num = int(num[0])
+                except Exception:
+                    num = 0
+            try:
+                num_int = int(num)
+            except Exception:
+                num_int = 0
+            total += max(num_int, 0)
+            try:
+                diam = float(cfg.get("diameter", max_diam))
+                if diam > max_diam:
+                    max_diam = diam
+            except Exception:
+                pass
+        if total <= 0:
+            return 2.0
+        agent_radius = max_diam * 0.5
+        # Spread agents on a disk with comfortable spacing; convert to square side.
+        import math
+        disk_radius = max(agent_radius * 4.0, agent_radius * math.sqrt(total) * 2.5, 0.5)
+        return max(disk_radius * 2.0, 1.0)
+
     def _arena_shape_type(self):
         """Use a special unbounded footprint."""
         return "unbounded"
 
     def _arena_shape_config(self, config_elem:Config):
         """Adapt the configuration parameters for the unbounded factory."""
-        return {"color": config_elem.arena.get("color", "gray")}
+        return {
+            "color": config_elem.arena.get("color", "gray"),
+            "side": self.diameter
+        }
 
     def get_wrap_config(self):
         """Return the wrap config."""
-        return {"unbounded": True}
+        half = self.diameter * 0.5
+        origin = Vector3D(-half, -half, 0)
+        return {
+            "unbounded": True,
+            "origin": origin,
+            "width": self.diameter,
+            "height": self.diameter,
+            "initial_half": half
+        }
 
 class CircularArena(SolidArena):
     
