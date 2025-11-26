@@ -116,7 +116,7 @@ class Environment():
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
         # Collision detection benefits from frequent sampling.
-        default_stride = 1 if config_elem.environment.get("collisions", False) else 100
+        default_stride = 1 if config_elem.environment.get("collisions", False) else 10
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", default_stride)))
         self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 5)))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}

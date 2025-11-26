@@ -96,7 +96,6 @@ class CollisionDetector:
                         payload = q.get()
                     except EOFError:
                         payload = None
-                    if payload is None:
                         continue
                     manager_id = payload.get("manager_id", 0)
                     latest_agents[manager_id] = payload["agents"]
