@@ -1400,15 +1400,24 @@ class MovableAgent(StaticAgent):
             self._logic_plugin.pre_run(objects, agents)
             logger.debug("%s performed logic pre-run hook via %s", self.get_name(), type(self._logic_plugin).__name__)
 
-    def post_step(self,position_correction:Vector3D):
-        """Post step."""
-        if position_correction != None:
-            self.position = position_correction
+    def post_step(self, position_correction: Vector3D):
+        """Post step: apply collision correction as a delta, not as an absolute position."""
+        if position_correction is not None:
+            # Apply correction as displacement
+            self.position = self.position + position_correction
+
+            # Keep geometry in sync with the updated pose
             self.shape.translate(self.position)
             self.shape.translate_attachments(self.orientation.z)
+
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("%s position corrected by detector to %s", self.get_name(), position_correction)
-    
+                logger.debug(
+                    "%s position corrected by detector with delta %s -> new pos %s",
+                    self.get_name(),
+                    position_correction,
+                    (self.position.x, self.position.y, self.position.z),
+                )
+
     def run(self,tick:int,arena_shape:Shape3DFactory,objects:dict,agents:dict):
         """Run the simulation routine."""
         self.prev_position = self.position

@@ -18,13 +18,17 @@ from arena import ArenaFactory
 from gui import GuiFactory
 from entityManager import EntityManager
 from collision_detector import CollisionDetector
+
 used_cores = set()
+
 
 def pick_least_used_free_cores(num):
     """
-    Ritorna 'num' core meno usati che NON sono in used_cores.
+    Selects 'num' cores that are not in used_cores, picking the ones with lower CPU usage.
     """
-    # Snapshot del carico CPU
+    global used_cores
+
+    # Sample the current CPU usage (percentage) for all cores
     usage = psutil.cpu_percent(interval=0.1, percpu=True)
 
     # Ordina i core dal meno usato
@@ -54,28 +58,34 @@ def set_affinity_safely(proc, num_cores):
     except Exception as e:
         logging.error(f"[AFFINITY ERROR] PID {proc.pid}: {e}")
 
+
 def set_shared_affinity(processes, num_cores):
     """
-    Assign the same core set to a list of processes. It tries to reserve
-    num_cores distinct cores; if not available it falls back to all cores.
+    Assigns a shared set of cores to multiple processes, avoiding overlapping with already used cores.
     """
     global used_cores
     try:
         selected = pick_least_used_free_cores(num_cores)
         if not selected:
+            # If no free cores, fall back to all cores (system may handle distribution)
             fallback_count = psutil.cpu_count(logical=True) or 1
             selected = list(range(fallback_count))
+
         for proc in processes:
             if proc is None:
                 continue
             p = psutil.Process(proc.pid)
             p.cpu_affinity(selected)
+
         used_cores.update(selected)
+        # print(f"[AFFINITY] Shared -> {selected}")
     except Exception as e:
         logging.error(f"[AFFINITY ERROR] shared for {[p.pid for p in processes if p]}: {e}")
 
+
 class _PipeQueue:
     """Single-producer/single-consumer queue backed by Pipe with poll()."""
+
     def __init__(self, ctx: BaseContext):
         self._recv, self._send = ctx.Pipe(duplex=False)
 
@@ -94,42 +104,52 @@ class _PipeQueue:
     def empty(self):
         return not self._recv.poll(0)
 
-class EnvironmentFactory():
+
+class EnvironmentFactory:
     """Environment factory."""
+
     @staticmethod
-    def create_environment(config_elem:Config):
+    def create_environment(config_elem: Config):
         """Create environment."""
         if config_elem.environment:
             return Environment(config_elem)
         else:
-            raise ValueError(f"Invalid environment configuration: {config_elem.environment['parallel_experiments']} {config_elem.environment['render']}")
+            raise ValueError(
+                f"Invalid environment configuration: "
+                f"{config_elem.environment['parallel_experiments']} "
+                f"{config_elem.environment['render']}"
+            )
 
-class Environment():
+
+class Environment:
     """Environment."""
-    def __init__(self,config_elem:Config):
+
+    def __init__(self, config_elem: Config):
         """Initialize the instance."""
-        # Freeze experiments to avoid external mutation.
         self.experiments = tuple(config_elem.parse_experiments())
-        self.num_runs = int(config_elem.environment.get("num_runs",1))
-        self.time_limit = int(config_elem.environment.get("time_limit",0))
-        gui_id = config_elem.gui.get("_id","2D")
+        self.num_runs = int(config_elem.environment.get("num_runs", 1))
+        self.time_limit = int(config_elem.environment.get("time_limit", 0))
+        gui_id = config_elem.gui.get("_id", "2D")
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
-        # Collision detection benefits from frequent sampling.
+        # Default snapshot stride depends on collisions: lower when collisions are enabled.
         default_stride = 1 if config_elem.environment.get("collisions", False) else 10
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", default_stride)))
-        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 5)))
+        # Automatic agent process estimation target (agents per process).
+        self.auto_agents_per_proc_target = max(
+            1, int(config_elem.environment.get("auto_agents_per_proc_target", 5))
+        )
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
         if gui_id in ("none", "off", None) or not base_gui_cfg:
             self.render = [False, {}]
         else:
             self.render = [True, base_gui_cfg]
-        self.collisions = config_elem.environment.get("collisions",False)
-        if not self.render[0] and self.time_limit==0:
+        self.collisions = config_elem.environment.get("collisions", False)
+        if not self.render[0] and self.time_limit == 0:
             raise Exception("Invalid configuration: infinite experiment with no GUI.")
         logging.info("Environment created successfully")
 
-    def arena_init(self,exp:Config):
+    def arena_init(self, exp: Config):
         """Arena init."""
         arena = ArenaFactory.create_arena(exp)
         if self.num_runs > 1 and arena.get_seed() < 0:
@@ -137,7 +157,7 @@ class Environment():
         arena.initialize()
         return arena
 
-    def agents_init(self,exp:Config):
+    def agents_init(self, exp: Config):
         """Agents init."""
         agents_cfg = exp.environment.get("agents") or {}
         if not isinstance(agents_cfg, dict):
@@ -145,7 +165,8 @@ class Environment():
         agents: Dict[str, tuple[Dict[str, Any], list]] = {
             agent_type: (cfg, []) for agent_type, cfg in agents_cfg.items()
         }
-        for agent_type, (config,entities) in agents.items():
+
+        for agent_type, (config, entities) in agents.items():
             if not isinstance(config, dict):
                 raise ValueError(f"Invalid agent configuration for {agent_type}")
             number_raw = config.get("number", 0)
@@ -156,53 +177,79 @@ class Environment():
             if number <= 0:
                 raise ValueError(f"Agent group {agent_type} must have a positive 'number' of agents")
             for n in range(number):
-                entities.append(EntityFactory.create_entity(entity_type="agent_"+agent_type,config_elem=config,_id=n))
+                entities.append(
+                    EntityFactory.create_entity(
+                        entity_type="agent_" + agent_type,
+                        config_elem=config,
+                        _id=n
+                    )
+                )
         totals = {name: len(ents) for name, (_, ents) in agents.items()}
         logging.info("Agents initialized: total=%s groups=%s", sum(totals.values()), totals)
         return agents
 
-    def _split_agents(self, agents: Dict[str, tuple[Dict[str, Any], list]], num_blocks: int) -> list[Dict[str, tuple[Dict[str, Any], list]]]:
+    def _split_agents(
+        self,
+        agents: Dict[str, tuple[Dict[str, Any], list]],
+        num_blocks: int,
+    ) -> list[Dict[str, tuple[Dict[str, Any], list]]]:
         """Split agents into nearly even blocks."""
         if num_blocks <= 1:
             return [agents]
+
+        # Flatten agents into a list of (type, config, entity)
         flat = []
         for agent_type, (cfg, entities) in agents.items():
             for entity in entities:
                 flat.append((agent_type, cfg, entity))
+
         total = len(flat)
         num_blocks = max(1, min(num_blocks, total))
         blocks: list[Dict[str, tuple[Dict[str, Any], list]]] = [dict() for _ in range(num_blocks)]
+
+        # Distribute entities round-robin among blocks
         for idx, (agent_type, cfg, entity) in enumerate(flat):
             target = idx % num_blocks
             if agent_type not in blocks[target]:
                 blocks[target][agent_type] = (cfg, [])
             blocks[target][agent_type][1].append(entity)
-        # If the split produced fewer blocks than requested (e.g., low agent count), trim empties.
+
+        # Remove empty blocks from final list
         blocks = [b for b in blocks if any(len(v[1]) for v in b.values())]
         return blocks
 
     @staticmethod
-    def _count_agents(agents: Dict[str, tuple[Dict[str, Any], list]]) -> int:
+    def _count_agents(
+        agents: Dict[str, tuple[Dict[str, Any], list]]
+    ) -> int:
         """Count total agents."""
         total = 0
         for _, (_, entities) in agents.items():
             total += len(entities)
         return total
 
-    def _estimate_agents_per_process(self, agents: Dict[str, tuple[Dict[str, Any], list]]) -> int:
+    def _estimate_agents_per_process(
+        self,
+        agents: Dict[str, tuple[Dict[str, Any], list]],
+    ) -> int:
         """
         Derive the desired number of agents per process based on workload.
-        Heavy (spin_model) -> tighter packing; light -> more agents per proc.
+
+        Heavy behavior -> fewer agents per process.
+        Lighter behavior -> more agents per process.
         """
         has_spin = False
         has_messages = False
         has_fast_detection = False
+
         for cfg, entities in agents.values():
             behavior = str(cfg.get("moving_behavior", "") or "").lower()
             if behavior == "spin_model":
                 has_spin = True
+
             if cfg.get("messages"):
                 has_messages = True
+
             det_cfg = cfg.get("detection", {}) or {}
             try:
                 acq_rate = float(det_cfg.get("acquisition_per_second", det_cfg.get("rx_per_second", 1)))
@@ -210,33 +257,45 @@ class Environment():
                     has_fast_detection = True
             except Exception:
                 pass
-        if has_spin:
-            return 6  # ~5-10 agents per proc target for heavy runs
-        if has_messages or has_fast_detection:
-            return 10  # medium workloads
-        return 20  # light workloads; still below the 30 upper guidance
 
-    def _compute_agent_processes(self, agents: Dict[str, tuple[Dict[str, Any], list]]) -> int:
+        # Heuristic:
+        if has_spin:
+            return 6
+        if has_messages or has_fast_detection:
+            return 10
+        return 20
+
+    def _compute_agent_processes(
+        self,
+        agents: Dict[str, tuple[Dict[str, Any], list]],
+    ) -> int:
         """
         Compute number of agent manager processes with internal heuristics.
-        - Prefer ~10 agents/proc, allow up to 30 for light, down to ~5 for heavy.
-        - Cap at 8 processes and at the available CPU budget.
         """
         available_cores = psutil.cpu_count(logical=True) or 1
         total_agents = self._count_agents(agents)
         if total_agents <= 0:
             return 1
         target = self._estimate_agents_per_process(agents)
-        # Clamp the target between 5 and 30 to respect the desired envelope.
         target = max(5, min(30, target))
+
         import math
         n_procs = math.ceil(total_agents / target)
-        # Leave headroom for env + arena + detector (+ GUI when enabled).
+
         reserved = 3 + (1 if self.render and self.render[0] else 0)
         max_for_agents = max(1, available_cores - reserved)
         return max(1, min(8, n_procs, max_for_agents))
 
-    def run_gui(self, config:dict, arena_vertices:list, arena_color:str, gui_in_queue, gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def run_gui(
+        self,
+        config: dict,
+        arena_vertices: list,
+        arena_color: str,
+        gui_in_queue,
+        gui_control_queue,
+        wrap_config=None,
+        hierarchy_overlay=None
+    ):
         """Run the gui."""
         app, gui = GuiFactory.create_gui(
             config,
@@ -264,7 +323,9 @@ class Environment():
                 used_cores.update(env_core)
         except Exception as e:
             logging.warning("Could not set environment CPU affinity: %s", e)
+
         for exp in self.experiments:
+
             def _safe_terminate(proc):
                 if proc and proc.is_alive():
                     proc.terminate()
@@ -284,12 +345,16 @@ class Environment():
             agents = self.agents_init(exp)
             render_enabled = self.render[0]
             n_agent_procs = self._compute_agent_processes(agents)
-            logging.info("Agent process auto-split: total_agents=%d -> processes=%d", self._count_agents(agents), n_agent_procs)
+            logging.info(
+                "Agent process auto-split: total_...=%d -> processes=%d",
+                self._count_agents(agents),
+                n_agent_procs
+            )
             agent_blocks = self._split_agents(agents, n_agent_procs)
             n_blocks = len(agent_blocks)
             # Detector input/output queues
-            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if not self.collisions else [None] * n_blocks
-            dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if not self.collisions else [None] * n_blocks
+            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
+            dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
             # Per-manager arena/agents queues
             arena_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
             agents_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
@@ -340,7 +405,7 @@ class Environment():
                 manager_processes.append(proc)
             det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
             det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
-            detector_process = None if self.collisions else mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
+            detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
             pattern = {
                 "arena": 2,
                 "agents": 3,
@@ -378,48 +443,32 @@ class Environment():
                 set_shared_affinity(manager_processes, agent_core_budget)
                 if detector_process:
                     set_affinity_safely(detector_process, pattern["detector"])
-                set_affinity_safely(gui_process, pattern["gui"])
-
-                all_processes = [arena_process] + manager_processes
-                if detector_process:
-                    all_processes.append(detector_process)
-                all_processes.append(gui_process)
-
+                set_affinity_safely(gui_process,        pattern["gui"])
+                # Supervision loop
                 while True:
-                    exit_failure = next((p for p in all_processes if p.exitcode not in (None, 0)), None)
+                    exit_failure = next(
+                        (p for p in [arena_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                        None
+                    )
                     arena_alive = arena_process.is_alive()
+                    gui_alive = gui_process.is_alive()
                     if exit_failure:
                         killed = 1
-                        for proc in all_processes:
+                        _safe_terminate(arena_process)
+                        for proc in manager_processes:
                             _safe_terminate(proc)
+                        _safe_terminate(detector_process)
+                        _safe_terminate(gui_process)
                         break
-                    if not arena_alive:
-                        for proc in all_processes:
-                            if proc is arena_process:
-                                continue
+                    if not arena_alive or not gui_alive:
+                        if arena_alive:
+                            _safe_terminate(arena_process)
+                        for proc in manager_processes:
                             _safe_terminate(proc)
+                        _safe_terminate(detector_process)
+                        _safe_terminate(gui_process)
                         break
-                    if render_enabled and gui_process and not gui_process.is_alive():
-                        killed = 1
-                        for proc in all_processes:
-                            _safe_terminate(proc)
-                        break
-                    # Zombie/Dead GUI process
-                    if render_enabled and gui_process and gui_process.pid is not None:
-                        try:
-                            gui_status = psutil.Process(gui_process.pid).status()
-                            if gui_status in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
-                                killed = 1
-                                for proc in all_processes:
-                                    _safe_terminate(proc)
-                                break
-                        except psutil.NoSuchProcess:
-                            killed = 1
-                            for proc in all_processes:
-                                _safe_terminate(proc)
-                            break
-                    gc.collect()
-                    time.sleep(0.01)
+                    time.sleep(0.1)
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:
@@ -451,7 +500,9 @@ class Environment():
                     _safe_terminate(detector_process)
                 elif any(proc.exitcode not in (None, 0) for proc in manager_processes):
                     killed = 1
-                    if arena_process.is_alive(): arena_process.terminate()
+                    _safe_terminate(arena_process)
+                    for proc in manager_processes:
+                        _safe_terminate(proc)
                     _safe_terminate(detector_process)
                 # Join all processes
                 _safe_join(arena_process)
