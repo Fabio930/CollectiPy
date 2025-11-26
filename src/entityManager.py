@@ -642,23 +642,25 @@ class EntityManager:
                         entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
                     if agent_barrier is not None:
                         agent_barrier.wait()
-                # Prepare snapshot for GUI.
-                agents_data = {
-                    "status": [t, ticks_per_second],
-                    "agents_shapes": self.get_agent_shapes(),
-                    "agents_spins": self.get_agent_spins(),
-                }
-                if not metadata_sent:
-                    agents_data["agents_metadata"] = metadata_snapshot
-                    metadata_sent = True
 
-                # Build payload for collision detector (if enabled).
+                # ----------------------------------------------------------
+                # SNAPSHOT (MANDATORY FOR COLLISION-DETECTOR ROUND SYNC)
+                # ----------------------------------------------------------
                 detector_data = {
                     "manager_id": self.manager_id,
                     "agents": self.pack_detector_data(),
                 }
-
-                agents_queue.put(agents_data)
+                # Send snapshot to GUI BEFORE collisions
+                agents_queue.put({
+                    "status": [t, ticks_per_second],
+                    "agents_shapes": self.get_agent_shapes(),
+                    "agents_spins": self.get_agent_spins(),
+                    **(
+                        {"agents_metadata": metadata_snapshot}
+                        if not metadata_sent else {}
+                    )
+                })
+                metadata_sent = True
 
                 # ------------------------------------------------------------------
                 # Asynchronous collision corrections.
@@ -699,6 +701,15 @@ class EntityManager:
                     if agent_barrier is not None:
                         agent_barrier.wait()
 
+                # Prepare snapshot for GUI.
+                agents_data = {
+                    "status": [t, ticks_per_second],
+                    "agents_shapes": self.get_agent_shapes(),
+                    "agents_spins": self.get_agent_spins(),
+                }
+                if not metadata_sent:
+                    agents_data["agents_metadata"] = metadata_snapshot
+                    metadata_sent = True
                 t += 1
 
             if t < ticks_limit and not reset:

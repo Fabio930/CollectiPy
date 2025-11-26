@@ -132,8 +132,7 @@ class Environment:
         gui_id = config_elem.gui.get("_id", "2D")
         self.gui_id = gui_id
         self.quiet = bool(config_elem.environment.get("quiet", False))
-        # Default snapshot stride depends on collisions: lower when collisions are enabled.
-        default_stride = 1 if config_elem.environment.get("collisions", False) else 10
+        default_stride = 1
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", default_stride)))
         # Automatic agent process estimation target (agents per process).
         self.auto_agents_per_proc_target = max(

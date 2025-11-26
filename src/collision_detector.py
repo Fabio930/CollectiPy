@@ -151,9 +151,10 @@ class CollisionDetector:
         agent_inputs = dec_agents_in if isinstance(dec_agents_in, (list, tuple)) else [dec_agents_in]
         manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
 
-        # Latest snapshot per manager_id.
-        latest_agents: Dict[int, Dict[str, AgentCollisionPayload]] = {}
-
+        # Round-based buffers
+        num_managers = len(agent_inputs)
+        round_snapshots = {}
+        updated_flags = {i: False for i in range(num_managers)}
         while True:
             idle = True
 
@@ -169,48 +170,57 @@ class CollisionDetector:
                 except EOFError:
                     pass
 
-            # 2) Pull latest agent snapshots from all managers.
-            updated = False
-            for q in agent_inputs:
+            # 2) Non-blocking snapshot collection (one snapshot per manager per tick)
+            for idx, q in enumerate(agent_inputs):
                 if q is None:
                     continue
                 if self._poll(q, 0.0):
                     try:
-                        payload = q.get()
+                        snap = q.get()
                     except EOFError:
-                        payload = None
-                        continue
-                    if not payload:
-                        continue
-                    manager_id = int(payload.get("manager_id", 0))
-                    agents_payload = payload.get("agents", {}) or {}
-                    latest_agents[manager_id] = agents_payload
-                    updated = True
+                        snap = None
+                else:
+                    snap = None
 
-            # 3) If we have new agent data, compute collisions all-to-all.
-            if updated and self.collisions:
-                idle = False
+                if snap:
+                    round_snapshots[idx] = snap.get("agents", {})
+                    updated_flags[idx] = True
+                    idle = False
+
+            # Round is ready only when EVERY manager produced one snapshot
+            ready_for_round = all(updated_flags[i] for i in range(num_managers))
+
+            # -------------------------------------------------------------
+            # 3) Compute and send corrections ONLY when the round is ready
+            # -------------------------------------------------------------
+            if ready_for_round and self.collisions:
                 try:
-                    corrections = self._compute_all_corrections(latest_agents)
+                    corrections = self._compute_all_corrections(round_snapshots)
                 except Exception as exc:
                     logger.exception("CollisionDetector: error in collision computation: %s", exc)
                     corrections = {}
 
-                # 4) Send per-manager corrections to the appropriate queues.
+                # Send corrections to the appropriate manager queue
                 for manager_id, mgr_corr in corrections.items():
-                    if manager_id < 0 or manager_id >= len(manager_outputs):
-                        # Fallback: send to first queue if indexing is out of range.
-                        target_q = manager_outputs[0] if manager_outputs else None
-                    else:
-                        target_q = manager_outputs[manager_id]
-                    if target_q is None:
-                        continue
+                    target_q = (
+                        manager_outputs[manager_id]
+                        if 0 <= manager_id < len(manager_outputs)
+                        else manager_outputs[0]
+                    )
                     try:
                         target_q.put(mgr_corr)
                     except Exception:
-                        # The manager might have died; avoid crashing the detector.
                         logger.debug("CollisionDetector: failed to send corrections to manager %d", manager_id)
 
+                # Reset round buffers
+                round_snapshots = {}
+                updated_flags = {i: False for i in range(num_managers)}
+
+
+
+            # -------------------------------------------------------------
+            # Idle sleep when nothing interesting happened
+            # -------------------------------------------------------------
             if idle:
                 time.sleep(0.001)
 
