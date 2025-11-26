@@ -64,9 +64,9 @@ class HierarchyNode:
     children: List[str] = field(default_factory=list)
 
 
-class ArenaHierarchy:
+class HierarchyOverlay:
     """
-    Utility class generating a reversed-tree partition of an arena.
+    Utility class generating a reversed-tree partition of an arena or flat objects.
 
     Nodes are identified using dot-separated paths starting from "0" (root).
     When spatial bounds are available each level subdivides the parent cell

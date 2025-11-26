@@ -16,7 +16,7 @@ from bodies.shapes3D import Shape3DFactory
 from entity import EntityFactory
 from geometry_utils.vector3D import Vector3D
 from dataHandling import DataHandlingFactory
-from arena_hierarchy import ArenaHierarchy, Bounds2D
+from hierarchy_overlay import HierarchyOverlay, Bounds2D
 
 class ArenaFactory():
 

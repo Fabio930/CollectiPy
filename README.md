@@ -159,8 +159,8 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
                 }
             },
             "information_scope": { OPTIONAL - hierarchy-aware visibility rules
-                "mode": "node"|"branch" (DEFAULT: disabled). When set to "node" the agent can only exchange detection/messages with entities in the same hierarchy node.
-                "direction": "up"|"down"|"both"|"flat" (DEFAULT:"both", only for "branch" mode). "flat" allows the agent to interact with the current node plus siblings that share the same parent branch.
+                "mode": "node"|"branch"|"tree (DEFAULT: disabled). When set to "node" the agent can only exchange detection/messages with entities in the same node or branch or full tree.
+                "direction": "up"|"down"|"both"|"flat" (DEFAULT:"both", only for "branch"|"tree" mode). "flat" allows the agent to interact with the current node plus nodes at same level at same branch or tree.
                 "messages" / "detection": channel-specific overrides; if omitted the same settings apply to both (shorthand strings like `"branch:up"` are accepted). Invalid entries are logged with a warning and the restriction falls back to the unrestricted default.
             },
             "hierarchy_node": str, OPTIONAL - preferred hierarchy target. Agents always spawn in level-0 ("0") and can later request transitions along the tree.

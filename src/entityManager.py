@@ -17,7 +17,7 @@ from typing import Optional
 from messagebus import MessageBusFactory
 from random import Random
 from geometry_utils.vector3D import Vector3D
-from arena_hierarchy import ArenaHierarchy
+from hierarchy_overlay import HierarchyOverlay
 
 logger = logging.getLogger("sim.entity_manager")
 
@@ -76,7 +76,7 @@ class EntityManager:
         agents: dict,
         arena_shape,
         wrap_config=None,
-        hierarchy: Optional[ArenaHierarchy] = None,
+        hierarchy: Optional[HierarchyOverlay] = None,
         snapshot_stride: int = 1,
         manager_id: int = 0,
         collisions: bool = False
