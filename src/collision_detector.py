@@ -7,7 +7,7 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-"""Collision detection utilities (asynchronous, all-to-all)."""
+"""Collision detection utilities (asynchronous, all-to-all, round-synchronous)."""
 from __future__ import annotations
 
 import logging
@@ -46,7 +46,7 @@ class _GridItem:
 
 class CollisionDetector:
     """
-    Asynchronous collision detector.
+    Asynchronous, round-synchronous collision detector.
 
     - When enabled (`collisions=True` in the Environment), it receives agent
       snapshots from all EntityManagers and an object description from the arena.
@@ -56,6 +56,12 @@ class CollisionDetector:
     - It does NOT handle arena boundary collisions: those are handled in
       EntityManager._clamp_to_arena(), which stays active regardless of the
       collisions flag.
+
+    Round-synchronous behaviour ("mode A"):
+    - In each logical "round", the detector waits until it has one snapshot
+      from every manager.
+    - Only when all managers have provided a snapshot it computes collisions
+      and sends back one correction payload per manager.
     """
 
     def __init__(self, arena_shape: Shape, collisions: bool, wrap_config: Optional[dict] = None) -> None:
@@ -64,8 +70,6 @@ class CollisionDetector:
         self.collisions = collisions
         self.wrap_config = wrap_config
 
-        # Latest snapshot of all agents (flattened across managers).
-        self.agents: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         # Objects: {obj_id: (shapes, positions)}
         self.objects: Dict[str, Tuple[List[Shape], List[Vector3D]]] = {}
 
@@ -151,10 +155,12 @@ class CollisionDetector:
         agent_inputs = dec_agents_in if isinstance(dec_agents_in, (list, tuple)) else [dec_agents_in]
         manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
 
-        # Round-based buffers
         num_managers = len(agent_inputs)
-        round_snapshots = {}
-        updated_flags = {i: False for i in range(num_managers)}
+
+        # Per-round buffers: one snapshot per manager per round.
+        round_snapshots: Dict[int, Dict[str, AgentCollisionPayload]] = {}
+        updated_flags: Dict[int, bool] = {i: False for i in range(num_managers)}
+
         while True:
             idle = True
 
@@ -170,10 +176,11 @@ class CollisionDetector:
                 except EOFError:
                     pass
 
-            # 2) Non-blocking snapshot collection (one snapshot per manager per tick)
+            # 2) Non-blocking snapshot collection (one snapshot per manager per round).
             for idx, q in enumerate(agent_inputs):
                 if q is None:
                     continue
+
                 if self._poll(q, 0.0):
                     try:
                         snap = q.get()
@@ -183,16 +190,18 @@ class CollisionDetector:
                     snap = None
 
                 if snap:
-                    round_snapshots[idx] = snap.get("agents", {})
-                    updated_flags[idx] = True
+                    # snap: {"manager_id": int, "agents": {...}}
+                    manager_id = int(snap.get("manager_id", idx))
+                    agents_payload = snap.get("agents", {}) or {}
+
+                    round_snapshots[manager_id] = agents_payload
+                    updated_flags[manager_id] = True
                     idle = False
 
-            # Round is ready only when EVERY manager produced one snapshot
+            # 3) Ready for a "round" only when EVERY manager provided one snapshot.
             ready_for_round = all(updated_flags[i] for i in range(num_managers))
 
-            # -------------------------------------------------------------
-            # 3) Compute and send corrections ONLY when the round is ready
-            # -------------------------------------------------------------
+            # 4) Compute and send corrections ONLY when the round is ready.
             if ready_for_round and self.collisions:
                 try:
                     corrections = self._compute_all_corrections(round_snapshots)
@@ -200,27 +209,27 @@ class CollisionDetector:
                     logger.exception("CollisionDetector: error in collision computation: %s", exc)
                     corrections = {}
 
-                # Send corrections to the appropriate manager queue
+                # Send corrections to the appropriate manager queue.
                 for manager_id, mgr_corr in corrections.items():
+                    if not manager_outputs:
+                        break
                     target_q = (
                         manager_outputs[manager_id]
                         if 0 <= manager_id < len(manager_outputs)
                         else manager_outputs[0]
                     )
+                    if target_q is None:
+                        continue
                     try:
                         target_q.put(mgr_corr)
                     except Exception:
                         logger.debug("CollisionDetector: failed to send corrections to manager %d", manager_id)
 
-                # Reset round buffers
+                # Reset round buffers for next round.
                 round_snapshots = {}
                 updated_flags = {i: False for i in range(num_managers)}
 
-
-
-            # -------------------------------------------------------------
-            # Idle sleep when nothing interesting happened
-            # -------------------------------------------------------------
+            # 5) Idle sleep when nothing interesting happened.
             if idle:
                 time.sleep(0.001)
 

@@ -580,14 +580,15 @@ class EntityManager:
                     bus.reset_mailboxes()
                     bus.sync_agents(entities)
 
-            # First snapshot for GUI.
-            agents_data = {
+            # First snapshot for GUI (before t=1).
+            initial_snapshot = {
                 "status": [0, ticks_per_second],
                 "agents_shapes": self.get_agent_shapes(),
                 "agents_spins": self.get_agent_spins(),
                 "agents_metadata": metadata_snapshot,
             }
-            agents_queue.put(agents_data)
+            agents_queue.put(initial_snapshot)
+            metadata_sent = True
 
             t = 1
             while True:
@@ -607,14 +608,15 @@ class EntityManager:
                             break
                     else:
                         time.sleep(0.001)
-                    agents_data = {
+
+                    # Optional GUI update while waiting (only if queue is empty).
+                    sync_payload = {
                         "status": [t, ticks_per_second],
                         "agents_shapes": self.get_agent_shapes(),
                         "agents_spins": self.get_agent_spins(),
-                        "agents_metadata": self.get_agent_metadata(),
                     }
                     if agents_queue.qsize() == 0:
-                        agents_queue.put(agents_data)
+                        agents_queue.put(sync_payload)
                 if reset:
                     break
 
@@ -628,7 +630,7 @@ class EntityManager:
                     if bus:
                         bus.sync_agents(entities)
 
-                # Messaging: send then receive.
+                # Messaging: send then receive, then main agent step.
                 for _, entities in self.agents.values():
                     for entity in entities:
                         if getattr(entity, "msg_enable", False) and entity.message_bus:
@@ -643,42 +645,28 @@ class EntityManager:
                     if agent_barrier is not None:
                         agent_barrier.wait()
 
-                # ----------------------------------------------------------
-                # SNAPSHOT (MANDATORY FOR COLLISION-DETECTOR ROUND SYNC)
-                # ----------------------------------------------------------
-                detector_data = {
-                    "manager_id": self.manager_id,
-                    "agents": self.pack_detector_data(),
-                }
-                # Send snapshot to GUI BEFORE collisions
-                agents_queue.put({
-                    "status": [t, ticks_per_second],
-                    "agents_shapes": self.get_agent_shapes(),
-                    "agents_spins": self.get_agent_spins(),
-                    **(
-                        {"agents_metadata": metadata_snapshot}
-                        if not metadata_sent else {}
-                    )
-                })
-                metadata_sent = True
-
                 # ------------------------------------------------------------------
-                # Asynchronous collision corrections.
+                # Collision detector snapshot and corrections.
                 # ------------------------------------------------------------------
                 dec_data_in: dict = {}
 
                 if self.collisions and dec_agents_in is not None and dec_agents_out is not None:
                     if t % self.snapshot_stride == 0:
-                        # Send snapshot.
+                        # Send snapshot for this manager.
+                        detector_data = {
+                            "manager_id": self.manager_id,
+                            "agents": self.pack_detector_data(),
+                        }
                         try:
                             dec_agents_in.put(detector_data)
                         except Exception:
                             pass
 
-                        # Try to read corrections (non-blocking with small timeout).
+                        # Wait for corrections from detector for this round.
                         dec_data_in = self._blocking_get(dec_agents_out)
                         if not isinstance(dec_data_in, dict):
                             dec_data_in = {}
+
                 # Apply collision corrections (or call post_step(None) if none).
                 for _, entities in self.agents.values():
                     if not entities:
@@ -687,7 +675,6 @@ class EntityManager:
                     group_corr = dec_data_in.get(group_key, None)  # list of corrections or None
 
                     if isinstance(group_corr, list):
-                        # Correct lookup: corrections come as a list indexed by entity position
                         for idx, entity in enumerate(entities):
                             corr_vec = group_corr[idx] if idx < len(group_corr) else None
                             entity.post_step(corr_vec)
@@ -701,7 +688,9 @@ class EntityManager:
                     if agent_barrier is not None:
                         agent_barrier.wait()
 
-                # Prepare snapshot for GUI.
+                # ------------------------------------------------------------------
+                # GUI snapshot AFTER collision corrections.
+                # ------------------------------------------------------------------
                 agents_data = {
                     "status": [t, ticks_per_second],
                     "agents_shapes": self.get_agent_shapes(),
@@ -710,6 +699,8 @@ class EntityManager:
                 if not metadata_sent:
                     agents_data["agents_metadata"] = metadata_snapshot
                     metadata_sent = True
+
+                agents_queue.put(agents_data)
                 t += 1
 
             if t < ticks_limit and not reset:
