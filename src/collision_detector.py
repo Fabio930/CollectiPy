@@ -7,7 +7,7 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-"""Collision detection utilities (asynchronous, all-to-all, round-synchronous)."""
+"""Collision detection utilities (asynchronous, all-to-all)."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +23,7 @@ logger = logging.getLogger("sim.collision")
 # Tuple exchanged between EntityManager and CollisionDetector for each group.
 AgentCollisionPayload = Tuple[
     List[Shape],        # shapes
-    List[float],        # max velocities (currently unused in response)
+    List[float],        # speed-like values (e.g., current or max velocities, used for damping)
     List[Vector3D],     # forward vectors
     List[Vector3D],     # positions
     List[str]           # agent names
@@ -46,7 +46,7 @@ class _GridItem:
 
 class CollisionDetector:
     """
-    Asynchronous, round-synchronous collision detector.
+    Asynchronous collision detector.
 
     - When enabled (`collisions=True` in the Environment), it receives agent
       snapshots from all EntityManagers and an object description from the arena.
@@ -56,13 +56,14 @@ class CollisionDetector:
     - It does NOT handle arena boundary collisions: those are handled in
       EntityManager._clamp_to_arena(), which stays active regardless of the
       collisions flag.
-
-    Round-synchronous behaviour ("mode A"):
-    - In each logical "round", the detector waits until it has one snapshot
-      from every manager.
-    - Only when all managers have provided a snapshot it computes collisions
-      and sends back one correction payload per manager.
     """
+
+    # Fraction of the maximum penetration used to select "significant" responses.
+    SIGNIFICANT_PENETRATION_FRACTION: float = 0.1
+
+    # How much of the non-max significant responses to accumulate with the max one.
+    # With 0.25, we do: final = max_response + 0.25 * sum(other_significant_responses)
+    SECONDARY_RESPONSE_BLEND: float = 0.3
 
     def __init__(self, arena_shape: Shape, collisions: bool, wrap_config: Optional[dict] = None) -> None:
         """Initialize the instance."""
@@ -122,6 +123,31 @@ class CollisionDetector:
         except Exception:
             return 0.0
 
+    def _velocity_damping_factor(self, speed: float) -> float:
+        """
+        Compute a friction-like damping factor based on a speed-like value.
+
+        - For larger speeds, the damping factor approaches 1.0 (little damping).
+        - For very small speeds, the factor is smaller, helping to "lock" agents
+          and reduce sliding in dense clusters.
+        """
+        if speed <= 0.0:
+            # Stronger damping when the agent is effectively still.
+            return 0.5
+
+        # Simple monotonic mapping: alpha in (0, 1].
+        # You can tune the "k" parameter to change how aggressively damping reacts to speed.
+        k = 1.0
+        alpha = 1.0 / (1.0 + k * speed)
+
+        # Clamp to a reasonable range to avoid freezing or over-damping.
+        if alpha < 0.3:
+            alpha = 0.3
+        elif alpha > 1.0:
+            alpha = 1.0
+
+        return alpha
+
     # ------------------------------------------------------------------
     # Core run loop
     # ------------------------------------------------------------------
@@ -156,8 +182,7 @@ class CollisionDetector:
         manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
 
         num_managers = len(agent_inputs)
-
-        # Per-round buffers: one snapshot per manager per round.
+        # Per-round buffers (one snapshot per manager per simulation tick).
         round_snapshots: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         updated_flags: Dict[int, bool] = {i: False for i in range(num_managers)}
 
@@ -176,11 +201,10 @@ class CollisionDetector:
                 except EOFError:
                     pass
 
-            # 2) Non-blocking snapshot collection (one snapshot per manager per round).
+            # 2) Non-blocking snapshot collection: one snapshot per manager per "round".
             for idx, q in enumerate(agent_inputs):
                 if q is None:
                     continue
-
                 if self._poll(q, 0.0):
                     try:
                         snap = q.get()
@@ -190,18 +214,17 @@ class CollisionDetector:
                     snap = None
 
                 if snap:
-                    # snap: {"manager_id": int, "agents": {...}}
-                    manager_id = int(snap.get("manager_id", idx))
+                    # We expect the manager to send:
+                    # {"manager_id": int, "agents": {club: (shapes, vels, fwd, pos, names)}}
                     agents_payload = snap.get("agents", {}) or {}
-
-                    round_snapshots[manager_id] = agents_payload
-                    updated_flags[manager_id] = True
+                    round_snapshots[idx] = agents_payload
+                    updated_flags[idx] = True
                     idle = False
 
-            # 3) Ready for a "round" only when EVERY manager provided one snapshot.
+            # A "round" is ready when every manager produced a snapshot.
             ready_for_round = all(updated_flags[i] for i in range(num_managers))
 
-            # 4) Compute and send corrections ONLY when the round is ready.
+            # 3) Compute and send corrections ONLY when the round is ready.
             if ready_for_round and self.collisions:
                 try:
                     corrections = self._compute_all_corrections(round_snapshots)
@@ -209,29 +232,29 @@ class CollisionDetector:
                     logger.exception("CollisionDetector: error in collision computation: %s", exc)
                     corrections = {}
 
-                # Send corrections to the appropriate manager queue.
+                # Send per-manager corrections.
                 for manager_id, mgr_corr in corrections.items():
-                    if not manager_outputs:
-                        break
-                    target_q = (
-                        manager_outputs[manager_id]
-                        if 0 <= manager_id < len(manager_outputs)
-                        else manager_outputs[0]
-                    )
-                    if target_q is None:
-                        continue
-                    try:
-                        target_q.put(mgr_corr)
-                    except Exception:
-                        logger.debug("CollisionDetector: failed to send corrections to manager %d", manager_id)
+                    if manager_id < 0 or manager_id >= len(manager_outputs):
+                        # Fallback: send to first queue if indexing is out of range.
+                        target_q = manager_outputs[0] if manager_outputs else None
+                    else:
+                        target_q = manager_outputs[manager_id]
+                    if target_q:
+                        try:
+                            target_q.put(mgr_corr)
+                        except Exception:
+                            logger.debug(
+                                "CollisionDetector: failed to send corrections to manager %d",
+                                manager_id
+                            )
 
-                # Reset round buffers for next round.
+                # Reset round buffers for the next simulation tick.
                 round_snapshots = {}
                 updated_flags = {i: False for i in range(num_managers)}
 
-            # 5) Idle sleep when nothing interesting happened.
+            # 4) Idle sleep when nothing interesting happened.
             if idle:
-                time.sleep(0.001)
+                time.sleep(0.00001)
 
     # ------------------------------------------------------------------
     # Collision computation (broad-phase via SpatialGrid, narrow-phase via shapes)
@@ -242,6 +265,16 @@ class CollisionDetector:
     ) -> Dict[int, Dict[str, List[Optional[Vector3D]]]]:
         """
         Compute collision corrections for all managers at once.
+
+        Strategy:
+        - Broad-phase with a spatial grid (circle-based).
+        - Narrow-phase with shape overlap checks.
+        - For each agent, we collect all collision responses (agent–agent and
+          agent–object), determine the maximum penetration response, and then:
+              final = max_response + SECONDARY_RESPONSE_BLEND * sum(other_significant_responses)
+          where "significant" means |resp| >= SIGNIFICANT_PENETRATION_FRACTION * |max_response|.
+        - A friction-like damping based on a speed-like value (from the payload)
+          is then applied to the final correction vector to reduce sliding.
 
         Returns:
             {manager_id: {club: [Vector3D | None, ...]}}
@@ -255,6 +288,15 @@ class CollisionDetector:
                 for idx, shape in enumerate(shapes):
                     pos = positions[idx]
                     radius = self._shape_radius(shape)
+
+                    # vels is a list of floats (speed-like values, e.g. current or max speeds).
+                    speed = 0.0
+                    if idx < len(vels):
+                        try:
+                            speed = float(vels[idx])
+                        except (TypeError, ValueError):
+                            speed = 0.0
+
                     record = {
                         "manager_id": manager_id,
                         "club": club,
@@ -264,6 +306,7 @@ class CollisionDetector:
                         "forward": fwds[idx],
                         "name": names[idx],
                         "radius": radius,
+                        "speed": speed,
                     }
                     flat_records.append(record)
                     radii.append(radius)
@@ -284,9 +327,8 @@ class CollisionDetector:
             grid_items.append(item)
             grid.insert(item)
 
-        # Prepare accumulation for responses per record.
-        response_sum: List[Vector3D] = [Vector3D(0, 0, 0) for _ in range(n)]
-        response_count: List[int] = [0 for _ in range(n)]
+        # For each agent we collect all candidate corrections as (vector, length).
+        all_responses: List[List[Tuple[Vector3D, float]]] = [[] for _ in range(n)]
 
         # ------------------------------------------------------------------
         # Agent–agent collisions (all-to-all across managers)
@@ -339,16 +381,17 @@ class CollisionDetector:
                     continue
 
                 normal = delta.normalize()
-                penetration = sum_r - dist + 1e-3
+                penetration = sum_r - dist + 1e-3  # small epsilon to avoid zero
 
                 # Split the correction equally between the two agents.
                 corr_i = normal * (penetration * 0.5)
                 corr_j = normal * (-penetration * 0.5)
 
-                response_sum[i] += corr_i
-                response_count[i] += 1
-                response_sum[j] += corr_j
-                response_count[j] += 1
+                len_i = corr_i.magnitude()
+                len_j = corr_j.magnitude()
+
+                all_responses[i].append((corr_i, len_i))
+                all_responses[j].append((corr_j, len_j))
 
         # ------------------------------------------------------------------
         # Agent–object collisions (objects do not move, only agents are corrected)
@@ -360,8 +403,6 @@ class CollisionDetector:
                 fwd = rec["forward"]
                 r = rec["radius"]
                 name = rec["name"]
-
-                local_responses: List[Vector3D] = []
 
                 for obj_id, (shapes, positions) in self.objects.items():
                     for s_idx, obj_shape in enumerate(shapes):
@@ -389,22 +430,17 @@ class CollisionDetector:
                         normal = delta.normalize()
                         penetration = sum_r - dist + 1e-3
                         resp = normal * penetration
-                        local_responses.append(resp)
+                        resp_len = resp.magnitude()
 
-                        logger.debug("Collision agent-object: %s -> %s depth=%.4f", name, obj_id, penetration)
+                        all_responses[idx].append((resp, resp_len))
 
-                if local_responses:
-                    # Average local responses and add to global sum.
-                    avg_resp = Vector3D()
-                    for rvec in local_responses:
-                        avg_resp += rvec
-                    avg_resp /= float(len(local_responses))
-
-                    response_sum[idx] += avg_resp
-                    response_count[idx] += 1
+                        logger.debug(
+                            "Collision agent-object: %s -> %s depth=%.4f",
+                            name, obj_id, penetration
+                        )
 
         # ------------------------------------------------------------------
-        # Build per-manager output: average accumulated responses.
+        # Build per-manager output.
         # ------------------------------------------------------------------
         corrections: Dict[int, Dict[str, List[Optional[Vector3D]]]] = {}
 
@@ -415,13 +451,41 @@ class CollisionDetector:
                 mgr_out[club] = [None] * len(shapes)
             corrections[manager_id] = mgr_out
 
-        # Fill them.
+        # For each agent, combine max + 25% of other significant responses, then apply damping.
         for idx, rec in enumerate(flat_records):
-            cnt = response_count[idx]
-            if cnt == 0:
+            responses = all_responses[idx]
+            if not responses:
                 continue
-            summed = response_sum[idx]
-            corr = summed / float(cnt)
+
+            # Find the maximum penetration length and its index.
+            max_len = 0.0
+            max_index = -1
+            for i, (_, length) in enumerate(responses):
+                if length > max_len:
+                    max_len = length
+                    max_index = i
+
+            if max_len <= 0.0 or max_index < 0:
+                continue
+
+            max_vec = responses[max_index][0]
+            threshold = self.SIGNIFICANT_PENETRATION_FRACTION * max_len
+
+            # Sum secondary significant responses (excluding the max itself).
+            secondary_sum = Vector3D(0.0, 0.0, 0.0)
+            for i, (vec, length) in enumerate(responses):
+                if i == max_index:
+                    continue
+                if length >= threshold:
+                    secondary_sum += vec
+
+            # final = max_vec + 0.25 * secondary_sum
+            combined = max_vec + secondary_sum * self.SECONDARY_RESPONSE_BLEND
+
+            # Apply a friction-like damping based on the agent's speed-like value.
+            speed = float(rec.get("speed", 0.0))
+            alpha = self._velocity_damping_factor(speed)
+            final_corr = combined * alpha
 
             m_id = rec["manager_id"]
             club = rec["club"]
@@ -433,6 +497,6 @@ class CollisionDetector:
             club_list = mgr_corr.get(club)
             if club_list is None or local_index >= len(club_list):
                 continue
-            club_list[local_index] = corr
+            club_list[local_index] = final_corr
 
         return corrections
