@@ -481,7 +481,7 @@ class Environment:
                         _safe_terminate(detector_process)
                         _safe_terminate(gui_process)
                         break
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:

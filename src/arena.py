@@ -570,7 +570,7 @@ class SolidArena(Arena):
                                 q.put(arena_data)
                             if dec_arena_in is not None:
                                 dec_arena_in.put(detector_data)
-                        time.sleep(0.001)
+                        time.sleep(0.0001)
 
                     for idx, q in enumerate(agents_queues):
                         latest = self._maybe_get(q, timeout=0.0)

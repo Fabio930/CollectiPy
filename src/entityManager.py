@@ -607,7 +607,7 @@ class EntityManager:
                             reset = True
                             break
                     else:
-                        time.sleep(0.001)
+                        time.sleep(0.0001)
 
                     # Optional GUI update while waiting (only if queue is empty).
                     sync_payload = {
