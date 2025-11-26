@@ -352,8 +352,9 @@ class Environment:
             )
             agent_blocks = self._split_agents(agents, n_agent_procs)
             n_blocks = len(agent_blocks)
-            agent_barrier = ctx.Barrier(n_blocks)
-
+            agent_barrier = None
+            if n_blocks > 1:
+                agent_barrier = ctx.Barrier(n_blocks)
             # Detector input/output queues
             dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
             dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
@@ -406,8 +407,18 @@ class Environment:
                 )
                 )
                 manager_processes.append(proc)
-            det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
-            det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
+            # Prepare detector input/output arguments.
+            # If collisions are disabled → the detector should not receive any queue.
+            if not self.collisions:
+                det_in_arg = None
+                det_out_arg = None
+            else:
+                # Collisions active:
+                # - If multiple managers → pass list of queues (one per manager)
+                # - If single manager  → pass the single queue directly
+                det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
+                det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
+
             detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
             pattern = {
                 "arena": 2,

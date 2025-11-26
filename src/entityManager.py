@@ -640,8 +640,6 @@ class EntityManager:
                             entity.receive_messages(t)
                         # Main agent step.
                         entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
-                        self._apply_wrap(entity)
-                        self._clamp_to_arena(entity)
                     if agent_barrier is not None:
                         agent_barrier.wait()
                 # Prepare snapshot for GUI.
@@ -676,18 +674,20 @@ class EntityManager:
                             pass
 
                         # Try to read corrections (non-blocking with small timeout).
-                        dec_data_in = self._maybe_get(dec_agents_out, timeout=0.05) or {}
-
+                        dec_data_in = self._blocking_get(dec_agents_out)
+                        if not isinstance(dec_data_in, dict):
+                            dec_data_in = {}
                 # Apply collision corrections (or call post_step(None) if none).
                 for _, entities in self.agents.values():
                     if not entities:
                         continue
                     group_key = entities[0].entity()
-                    group_corr = dec_data_in.get(group_key, None)
+                    group_corr = dec_data_in.get(group_key, None)  # list of corrections or None
 
-                    if group_corr is not None:
-                        for n, entity in enumerate(entities):
-                            corr_vec = group_corr[n] if n < len(group_corr) else None
+                    if isinstance(group_corr, list):
+                        # Correct lookup: corrections come as a list indexed by entity position
+                        for idx, entity in enumerate(entities):
+                            corr_vec = group_corr[idx] if idx < len(group_corr) else None
                             entity.post_step(corr_vec)
                             self._apply_wrap(entity)
                             self._clamp_to_arena(entity)
