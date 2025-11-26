@@ -549,6 +549,7 @@ class EntityManager:
         agents_queue: mp.Queue,
         dec_agents_in: Optional[mp.Queue],
         dec_agents_out: Optional[mp.Queue],
+        agent_barrier=None
     ):
         """Run the simulation routine."""
         ticks_per_second = 1
@@ -641,7 +642,8 @@ class EntityManager:
                         entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
                         self._apply_wrap(entity)
                         self._clamp_to_arena(entity)
-
+                    if agent_barrier is not None:
+                        agent_barrier.wait()
                 # Prepare snapshot for GUI.
                 agents_data = {
                     "status": [t, ticks_per_second],
@@ -694,6 +696,8 @@ class EntityManager:
                             entity.post_step(None)
                             self._apply_wrap(entity)
                             self._clamp_to_arena(entity)
+                    if agent_barrier is not None:
+                        agent_barrier.wait()
 
                 t += 1
 

@@ -352,6 +352,8 @@ class Environment:
             )
             agent_blocks = self._split_agents(agents, n_agent_procs)
             n_blocks = len(agent_blocks)
+            agent_barrier = ctx.Barrier(n_blocks)
+
             # Detector input/output queues
             dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
             dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
@@ -399,7 +401,8 @@ class Environment:
                         arena_queue_list[idx_block],
                         agents_queue_list[idx_block],
                         dec_agents_in_list[idx_block],
-                        dec_agents_out_list[idx_block]
+                        dec_agents_out_list[idx_block],
+                        agent_barrier
                 )
                 )
                 manager_processes.append(proc)
