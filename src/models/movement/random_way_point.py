@@ -65,22 +65,104 @@ class RandomWayPointMovement(MovementModel):
 
     def _random_goal(self, arena_shape):
         """Return a new goal position."""
-        center = getattr(self.agent, "position", None) or self.agent.get_start_position()
-        radius = None
-        distribution = "uniform"
-        params = getattr(self.agent, "spawn_params", None)
-        if params:
-            center = params[0] or center
-            radius = params[1]
-            distribution = params[2] or "uniform"
-        if radius is None:
-            if self.wrap_config and self.wrap_config.get("unbounded"):
-                width = float(self.wrap_config.get("width", 1.0))
-                height = float(self.wrap_config.get("height", width))
-                radius = max(0.1, min(width, height) * 0.5)
+        agent = self.agent
+        shape = agent.get_shape()
+        dx = float(shape.max_vert().x - shape.min_vert().x)
+        dy = float(shape.max_vert().y - shape.min_vert().y)
+        agent_radius = 0.5 * max(abs(dx), abs(dy))
+        wrap_cfg = self.wrap_config or getattr(agent, "wrap_config", None)
+        unbounded = bool(wrap_cfg and wrap_cfg.get("unbounded"))
+        if unbounded:
+            center = getattr(agent, "position", None) or agent.get_start_position()
+            factor = getattr(agent, "random_waypoint_radius_factor", 5.0)
+            radius = max(agent_radius * factor, agent_radius * 1.5)
+            distribution = getattr(agent, "random_waypoint_distribution", "uniform")
+            return self._sample_spawn(center, radius, distribution)
+
+        min_v = arena_shape.min_vert()
+        max_v = arena_shape.max_vert()
+        min_x = float(min_v.x)
+        max_x = float(max_v.x)
+        min_y = float(min_v.y)
+        max_y = float(max_v.y)
+
+        hierarchy = getattr(agent, "hierarchy_context", None)
+        node_id = getattr(agent, "hierarchy_node", None)
+        info = getattr(hierarchy, "information_scope", None) if hierarchy is not None else None
+        use_node_bounds = (
+            hierarchy is not None
+            and isinstance(info, dict)
+            and info.get("over")
+            and "movement" in info.get("over")
+            and node_id is not None
+        )
+
+        if use_node_bounds:
+            try:
+                node = hierarchy.get_node(node_id)
+            except Exception:
+                node = None
+            if node and getattr(node, "bounds", None):
+                b = node.bounds
+                min_x = float(getattr(b, "x_min", min_x))
+                min_y = float(getattr(b, "y_min", min_y))
+                max_x = float(getattr(b, "x_max", max_x))
+                max_y = float(getattr(b, "y_max", max_y))
+
+        margin_factor = getattr(agent, "random_waypoint_margin_factor", 1.0)
+        margin = agent_radius * margin_factor
+        min_x += margin
+        max_x -= margin
+        min_y += margin
+        max_y -= margin
+
+        if min_x > max_x:
+            cx_full = (min_v.x + max_v.x) * 0.5
+            min_x = max_x = cx_full
+        if min_y > max_y:
+            cy_full = (min_v.y + max_v.y) * 0.5
+            min_y = max_y = cy_full
+
+        cx = 0.5 * (min_x + max_x)
+        cy = 0.5 * (min_y + max_y)
+
+        distribution = getattr(agent, "random_waypoint_distribution", "uniform")
+        distribution = (distribution or "uniform").lower()
+
+        rng = agent.get_random_generator()
+
+        if distribution == "gaussian":
+            span_x = max_x - min_x
+            span_y = max_y - min_y
+            std_x = span_x / 6.0 if span_x > 0.0 else 0.0
+            std_y = span_y / 6.0 if span_y > 0.0 else 0.0
+            gx = rng.gauss(cx, std_x) if std_x > 0.0 else cx
+            gy = rng.gauss(cy, std_y) if std_y > 0.0 else cy
+            gx = min(max(gx, min_x), max_x)
+            gy = min(max(gy, min_y), max_y)
+        elif distribution == "ring":
+            half_w = max_x - min_x
+            half_h = max_y - min_y
+            r_max = 0.5 * min(half_w, half_h)
+            if r_max <= 0.0:
+                gx, gy = cx, cy
             else:
-                radius = 1.0
-        return self._sample_spawn(center, radius, distribution)
+                r_min = 0.5 * r_max
+                r = rng.uniform(r_min, r_max)
+                theta = rng.uniform(0.0, 2.0 * math.pi)
+                gx = cx + r * math.cos(theta)
+                gy = cy + r * math.sin(theta)
+                gx = min(max(gx, min_x), max_x)
+                gy = min(max(gy, min_y), max_y)
+
+        else:
+            gx = rng.uniform(min_x, max_x)
+            gy = rng.uniform(min_y, max_y)
+
+        gz = abs(agent.get_shape().min_vert().z)
+        goal = Vector3D(gx, gy, gz)
+        return goal
+
 
     def _wrapped_vector_to_goal(self, agent):
         """Return the shortest vector towards the goal accounting for wrap."""

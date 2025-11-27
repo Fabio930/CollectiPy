@@ -188,13 +188,23 @@ class Arena():
         """Create hierarchy."""
         if not self._hierarchy_enabled or self._hierarchy_config is None:
             return None
+
         cfg = self._hierarchy_config or {}
         depth = int(cfg.get("depth", 0))
         branches = int(cfg.get("branches", 1))
+        info_scope_cfg = cfg.get("information_scope")
+
         try:
-            return ArenaHierarchy(bounds, depth=depth, branches=branches)
+            return HierarchyOverlay(
+                bounds, # type: ignore
+                depth=depth,
+                branches=branches,
+                owner_id="arena",
+                info_scope_config=info_scope_cfg,
+            )
         except ValueError as exc:
             raise ValueError(f"Invalid hierarchy configuration: {exc}") from exc
+
 
 
 class AbstractArena(Arena):

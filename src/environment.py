@@ -18,6 +18,8 @@ from arena import ArenaFactory
 from gui import GuiFactory
 from entityManager import EntityManager
 from collision_detector import CollisionDetector
+from message_server import run_message_server
+
 
 used_cores = set()
 
@@ -382,6 +384,13 @@ class Environment:
             )
             # Managers
             manager_processes = []
+
+            message_channels = []
+            for _ in range(n_blocks):
+                message_tx = ctx.Queue()
+                message_rx = ctx.Queue()
+                message_channels.append((message_tx, message_rx))
+
             for idx_block, block in enumerate(agent_blocks):
                 block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
                 entity_manager = EntityManager(
@@ -391,7 +400,9 @@ class Environment:
                     hierarchy=arena_hierarchy,
                     snapshot_stride=self.snapshot_stride,
                     manager_id=idx_block,
-                    collisions=self.collisions
+                    collisions=self.collisions,
+                    message_tx=message_channels[idx_block][0],
+                    message_rx=message_channels[idx_block][1],
                 )
                 proc = mp.Process(
                     target=entity_manager.run,
@@ -406,6 +417,12 @@ class Environment:
                 )
                 )
                 manager_processes.append(proc)
+            # Message server process (one per environment).
+            fully_connected = arena_id in ("abstract", "none", None)
+            message_server_process = mp.Process(
+                target=run_message_server,
+                args=(message_channels, fully_connected),
+            )
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
             if not self.collisions:
@@ -423,7 +440,8 @@ class Environment:
                 "arena": 2,
                 "agents": 3,
                 "detector": 3,
-                "gui": 2
+                "gui": 2,
+                "messages": 2,
             }
             killed = 0
             if render_enabled:
@@ -443,24 +461,30 @@ class Environment:
                     )
                 )
                 gui_process.start()
+
+                message_server_process.start()
+
                 if detector_process and arena_id not in ("abstract", "none", None):
                     detector_process.start()
                 for proc in manager_processes:
                     proc.start()
                 arena_process.start()
-                set_affinity_safely(arena_process,   pattern["arena"])
-                # Agent processes share a capped core set (2 cores per proc) within remaining CPU budget.
+
+                set_affinity_safely(arena_process, pattern["arena"])
+                # Agent processes share a capped core set (2 cores per proc)...
                 available_remaining = max(1, total_cores - len(used_cores))
                 agent_core_budget = min(n_blocks * 2, available_remaining)
                 agent_core_budget = max(agent_core_budget, 1)
                 set_shared_affinity(manager_processes, agent_core_budget)
                 if detector_process:
                     set_affinity_safely(detector_process, pattern["detector"])
-                set_affinity_safely(gui_process,        pattern["gui"])
+                set_affinity_safely(gui_process, pattern["gui"])
+                set_affinity_safely(message_server_process, pattern["messages"])
+
                 # Supervision loop
                 while True:
                     exit_failure = next(
-                        (p for p in [arena_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
                         None
                     )
                     arena_alive = arena_process.is_alive()
@@ -472,6 +496,7 @@ class Environment:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
                         _safe_terminate(gui_process)
+                        _safe_terminate(message_server_process)
                         break
                     if not arena_alive or not gui_alive:
                         if arena_alive:
@@ -480,6 +505,7 @@ class Environment:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
                         _safe_terminate(gui_process)
+                        _safe_terminate(message_server_process)
                         break
                     time.sleep(0.5)
                 # Join all processes
@@ -488,7 +514,9 @@ class Environment:
                     _safe_join(proc)
                 _safe_join(detector_process)
                 _safe_join(gui_process)
+                _safe_join(message_server_process)
             else:
+                message_server_process.start()
                 if detector_process and arena_id not in ("abstract", "none", None):
                     detector_process.start()
                 for proc in manager_processes:
@@ -501,6 +529,7 @@ class Environment:
                 set_shared_affinity(manager_processes, agent_core_budget)
                 if detector_process:
                     set_affinity_safely(detector_process, pattern["detector"])
+                set_affinity_safely(message_server_process, pattern["messages"])
                 while arena_process.is_alive() and all(proc.is_alive() for proc in manager_processes):
                     _safe_join(arena_process, timeout=0.1)
                     for proc in manager_processes:
@@ -517,13 +546,14 @@ class Environment:
                     for proc in manager_processes:
                         _safe_terminate(proc)
                     _safe_terminate(detector_process)
+                _safe_terminate(message_server_process)
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:
                     _safe_join(proc)
                 if detector_process:
-                    _safe_terminate(detector_process)
                     _safe_join(detector_process)
+                _safe_join(message_server_process)
                 arena.close()
                 if killed == 1:
                     raise RuntimeError("A subprocess exited unexpectedly.")

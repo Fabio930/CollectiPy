@@ -14,10 +14,11 @@ import multiprocessing as mp
 import time
 from typing import Optional
 
-from messagebus import MessageBusFactory
 from random import Random
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
+from message_proxy import MessageProxy, NullMessageProxy
+
 
 logger = logging.getLogger("sim.entity_manager")
 
@@ -79,7 +80,9 @@ class EntityManager:
         hierarchy: Optional[HierarchyOverlay] = None,
         snapshot_stride: int = 1,
         manager_id: int = 0,
-        collisions: bool = False
+        collisions: bool = False,
+        message_tx = None,
+        message_rx = None,
     ):
         """Initialize the instance."""
         self.agents = agents
@@ -89,56 +92,45 @@ class EntityManager:
         self.snapshot_stride = max(1, snapshot_stride)
         self.manager_id = manager_id
         self.collisions = collisions
+        self.message_tx = message_tx
+        self.message_rx = message_rx
 
-        self.message_buses = {}
+        # Single message proxy shared by all messaging-enabled entities
+        # in this manager. When None, messaging is effectively disabled.
+        self._message_proxy = None
         self._global_min = self.arena_shape.min_vert()
         self._global_max = self.arena_shape.max_vert()
         self._invalid_hierarchy_nodes = set()
 
-        bus_context = {
-            "arena_shape": self.arena_shape,
-            "wrap_config": self.wrap_config,
-            "hierarchy": self.hierarchy,
-        }
+        all_entities = []
+        for _, (_, entities) in self.agents.items():
+            all_entities.extend(entities)
 
-        # Try to use a shared bus when message configs match across groups.
-        msg_configs = []
-        for cfg, ents in self.agents.values():
+        any_msg_enabled_global = False
+        for cfg, _ in self.agents.values():
             mc = cfg.get("messages", {}) if isinstance(cfg, dict) else {}
-            msg_configs.append(mc)
+            if mc:
+                any_msg_enabled_global = True
+                break
 
-        shared_bus = None
-        if msg_configs and all(mc == msg_configs[0] for mc in msg_configs):
-            any_msg_enabled = len(msg_configs[0]) > 0
-            if any_msg_enabled:
-                all_entities = []
-                for (_, entities) in self.agents.values():
-                    all_entities.extend(entities)
-                shared_bus = MessageBusFactory.create(all_entities, msg_configs[0], bus_context)
+        if any_msg_enabled_global and self.message_tx is not None and self.message_rx is not None:
+            self._message_proxy = MessageProxy(
+                all_entities, self.message_tx, self.message_rx, manager_id=self.manager_id
+            )
+        else:
+            self._message_proxy = None
 
-        for agent_type, (config, entities) in self.agents.items():
-            any_msg_enabled = len(config.get("messages", {})) > 0
-            if shared_bus:
-                bus = shared_bus
-                self.message_buses[agent_type] = bus
-                for e in entities:
-                    if hasattr(e, "set_message_bus"):
-                        e.set_message_bus(bus)
-            elif any_msg_enabled:
-                bus = MessageBusFactory.create(entities, config.get("messages", {}), bus_context)
-                self.message_buses[agent_type] = bus
-                for e in entities:
-                    if hasattr(e, "set_message_bus"):
-                        e.set_message_bus(bus)
-            else:
-                self.message_buses[agent_type] = None
-
-            for entity in entities:
-                entity.wrap_config = self.wrap_config
-                if hasattr(entity, "set_hierarchy_context"):
-                    entity.set_hierarchy_context(self.hierarchy)
+        for _, (config, entities) in self.agents.items():
+            msg_cfg = config.get("messages", {}) if isinstance(config, dict) else {}
+            use_proxy = bool(msg_cfg) and self._message_proxy is not None
+            for e in entities:
+                e.wrap_config = self.wrap_config
+                if hasattr(e, "set_hierarchy_context"):
+                    e.set_hierarchy_context(self.hierarchy)
                 else:
-                    setattr(entity, "hierarchy_context", self.hierarchy)
+                    setattr(e, "hierarchy_context", self.hierarchy)
+                if use_proxy and hasattr(e, "set_message_bus"):
+                    e.set_message_bus(self._message_proxy)
 
         logger.info("EntityManager ready with agent groups: %s", list(self.agents.keys()))
         self._initialize_hierarchy_markers()
@@ -164,17 +156,89 @@ class EntityManager:
         seed_counter = 0
         placed_shapes = []
 
+        # Track group-level spawn disks (center, radius) to reduce overlap.
+        group_spawn_specs = []
+
         # Move everything far away before placement.
         for (_, entities) in self.agents.values():
             for entity in entities:
                 entity.set_position(Vector3D(999, 0, 0), False)
 
+        # Global arena metrics used for spawn defaults.
+        width = self._global_max.x - self._global_min.x
+        height = self._global_max.y - self._global_min.y
+        unbounded = bool(self.wrap_config and self.wrap_config.get("unbounded"))
+
         for (config, entities) in self.agents.values():
+            # ------------------------------------------------------------------
+            # Group-level spawn configuration: center, radius, distribution.
+            # ------------------------------------------------------------------
+            spawn_cfg = config.get("spawn", {}) if isinstance(config, dict) else {}
+            center_spec = spawn_cfg.get("center", [0.0, 0.0])
+            if not isinstance(center_spec, (list, tuple)) or len(center_spec) < 2:
+                center_spec = [0.0, 0.0]
+            base_cx = float(center_spec[0])
+            base_cy = float(center_spec[1])
+            radius = spawn_cfg.get("radius", None)
+            distribution = spawn_cfg.get("distribution", "uniform")
+
+            if radius is None:
+                if unbounded:
+                    # Rough estimate: radius grows with sqrt of group size.
+                    n = max(1, len(entities))
+                    radius = max(1.0, math.sqrt(float(n)))
+                else:
+                    # Default to an "inradius" of the arena bounds.
+                    radius = 0.5 * min(width, height) if width > 0 and height > 0 else 1.0
+
+            radius = float(radius) if radius is not None else 1.0
+
+            # Try to separate spawn disks of different groups if they overlap.
+            cx, cy = base_cx, base_cy
+            max_attempts = 16
+            attempt = 0
+            overlap = False
+            while attempt < max_attempts:
+                overlap = False
+                for (pcx, pcy, pr) in group_spawn_specs:
+                    dx = cx - pcx
+                    dy = cy - pcy
+                    dist = math.hypot(dx, dy)
+                    if dist < (radius + pr):
+                        overlap = True
+                        # Push the new center away from the previous one.
+                        if dist == 0.0:
+                            dx, dy = 1.0, 0.0
+                            dist = 1.0
+                        scale = (radius + pr) * 1.1 / dist
+                        cx = pcx + dx * scale
+                        cy = pcy + dy * scale
+                        break
+                if not overlap:
+                    break
+                attempt += 1
+
+            if overlap:
+                logger.warning(
+                    "Spawn disks for different groups still overlap after %s attempts; "
+                    "placement will rely on per-agent collision checks.",
+                    max_attempts,
+                )
+
+            group_spawn_specs.append((cx, cy, radius))
+
+            # ------------------------------------------------------------------
+            # Per-entity initialisation (random generator, reset, spawn params).
+            # ------------------------------------------------------------------
             for entity in entities:
                 entity_seed = random_seed + seed_counter if random_seed is not None else seed_counter
                 seed_counter += 1
                 entity.set_random_generator(entity_seed)
                 entity.reset()
+
+                # Per-entity spawn params used by movement models (e.g. random_way_point).
+                # Z will be adjusted later based on shape min_vert().
+                entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
 
                 # Orientation.
                 if not entity.get_orientation_from_dict():
@@ -264,13 +328,21 @@ class EntityManager:
 
     def close(self):
         """Close resources."""
-        for agent_type, (config, entities) in self.agents.items():
-            bus = self.message_buses.get(agent_type)
-            if bus:
-                bus.close()
+        # Close shared message proxy, if any.
+        if self._message_proxy is not None:
+            try:
+                self._message_proxy.close()
+            except Exception:
+                pass
+
+        # Close all entities.
+        for _, (_, entities) in self.agents.items():
             for entity in entities:
-                entity.close()
-        self.message_buses.clear()
+                try:
+                    entity.close()
+                except Exception:
+                    pass
+
         logger.info("EntityManager closed all resources")
 
     # ----------------------------------------------------------------------
@@ -300,6 +372,43 @@ class EntityManager:
             )
         except Exception:
             return 0.05
+        
+    @staticmethod
+    def _sample_spawn_point(entity, center: Vector3D, radius: float, distribution: str, bounds):
+        """Sample a spawn position inside a disk and clamp it to the given bounds."""
+        rng = entity.get_random_generator()
+        dist = str(distribution).lower() if distribution is not None else "uniform"
+
+        if radius <= 0.0:
+            x = center.x
+            y = center.y
+        else:
+            if dist == "gaussian":
+                std = radius / 3.0
+                x = rng.gauss(center.x, std)
+                y = rng.gauss(center.y, std)
+            elif dist == "ring":
+                r = rng.uniform(radius * 0.5, radius)
+                theta = rng.uniform(0.0, 2.0 * math.pi)
+                x = center.x + r * math.cos(theta)
+                y = center.y + r * math.sin(theta)
+            else:
+                r = math.sqrt(rng.uniform(0.0, 1.0)) * radius
+                theta = rng.uniform(0.0, 2.0 * math.pi)
+                x = center.x + r * math.cos(theta)
+                y = center.y + r * math.sin(theta)
+
+        min_x, min_y, max_x, max_y = bounds
+        if min_x > max_x:
+            min_x, max_x = max_x, min_x
+        if min_y > max_y:
+            min_y, max_y = max_y, min_y
+
+        x = min(max(x, min_x), max_x)
+        y = min(max(y, min_y), max_y)
+
+        z = abs(entity.get_shape().min_vert().z)
+        return Vector3D(x, y, z)
 
     def _clamp_vector_to_entity_bounds(self, entity, vector: Vector3D):
         """Clamp the vector to the hierarchy bounds (if any)."""
@@ -315,7 +424,15 @@ class EntityManager:
 
     def _get_entity_xy_bounds(self, entity, pad: float = 0.0):
         """Return xy bounds padded inward by `pad` to keep placements inside walls."""
-        if not self.hierarchy:
+        use_hierarchy = False
+        if self.hierarchy:
+            info = getattr(self.hierarchy, "information_scope", None)
+            if info and isinstance(info, dict):
+                over = info.get("over")
+                if over and "movement" in over:
+                    use_hierarchy = True
+
+        if not use_hierarchy:
             min_x, min_y, max_x, max_y = (
                 self._global_min.x,
                 self._global_min.y,
@@ -574,11 +691,13 @@ class EntityManager:
             if data_in["status"][0] == 0:
                 self.initialize(data_in["random_seed"], data_in["objects"])
 
-            for agent_type, (_, entities) in self.agents.items():
-                bus = self.message_buses.get(agent_type)
-                if bus:
-                    bus.reset_mailboxes()
-                    bus.sync_agents(entities)
+            if self._message_proxy is not None:
+                all_entities = []
+                for _, (_, entities) in self.agents.items():
+                    all_entities.extend(entities)
+                self._message_proxy.reset_mailboxes()
+                self._message_proxy.sync_agents(all_entities)
+
 
             # First snapshot for GUI (before t=1).
             initial_snapshot = {
@@ -624,11 +743,13 @@ class EntityManager:
                 if latest is not None:
                     data_in = latest
 
-                # Synchronize message buses.
-                for agent_type, (_, entities) in self.agents.items():
-                    bus = self.message_buses.get(agent_type)
-                    if bus:
-                        bus.sync_agents(entities)
+                # Synchronize message proxy with updated agent positions.
+                if self._message_proxy is not None:
+                    all_entities = []
+                    for _, (_, entities) in self.agents.items():
+                        all_entities.extend(entities)
+                    self._message_proxy.sync_agents(all_entities)
+
 
                 # Messaging: send then receive, then main agent step.
                 for _, entities in self.agents.values():

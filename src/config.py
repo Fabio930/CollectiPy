@@ -118,7 +118,7 @@ class Config:
 
         object_required_fields = ['_id', 'number']
         object_optional_fields = [
-            'strength', 'uncertainty','position','orientation','hierarchy_node'
+            'strength', 'uncertainty','position','orientation','hierarchy_node','hierarchy'
         ]
         try:
             for k, v in environment['objects'].items():

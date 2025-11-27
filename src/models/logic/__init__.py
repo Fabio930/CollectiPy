@@ -9,4 +9,3 @@
 
 """Internal logic plugins shipped with the simulator."""
 
-from . import hierarchy_confinement  # noqa: F401  # ensure registration side effects

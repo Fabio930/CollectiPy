@@ -1850,16 +1850,43 @@ class GUI_2D(QWidget):
 
     def _should_link_messages(self, meta_a, meta_b, distance):
         """Return True if two agents can exchange messages."""
+        # Messaging must be enabled on both sides.
         enable_a = bool(meta_a.get("msg_enable"))
         enable_b = bool(meta_b.get("msg_enable"))
         if not (enable_a and enable_b):
             return False
+
+        # Range-based visibility (symmetric).
         range_a = float(meta_a.get("msg_comm_range", 0.0))
         range_b = float(meta_b.get("msg_comm_range", 0.0))
         if range_a <= 0 or range_b <= 0:
             return False
         limit = min(range_a, range_b)
-        return math.isinf(limit) or distance <= limit
+        if not (math.isinf(limit) or distance <= limit):
+            return False
+
+        # Message type / kind compatibility.
+        msg_type_a = str(meta_a.get("msg_type") or "").strip().lower()
+        msg_type_b = str(meta_b.get("msg_type") or "").strip().lower()
+        msg_kind_a = str(meta_a.get("msg_kind") or "").strip().lower()
+        msg_kind_b = str(meta_b.get("msg_kind") or "").strip().lower()
+
+        # Handshake vs non-handshake live on separate "worlds":
+        # - agents with type "hand_shake" can only talk to other hand_shake agents
+        # - agents with broadcast / rebroadcast never connect to hand_shake ones
+        handshake_a = (msg_type_a == "hand_shake")
+        handshake_b = (msg_type_b == "hand_shake")
+        if handshake_a != handshake_b:
+            return False
+
+        # Anonymous vs id-aware:
+        # if both ends declare a kind and they differ, we treat them as incompatible.
+        if msg_kind_a and msg_kind_b and msg_kind_a != msg_kind_b:
+            return False
+
+        # Otherwise, the link is allowed.
+        return True
+
 
     def _should_link_detection(self, meta_a, meta_b, distance):
         """Return True if either agent can detect the other."""

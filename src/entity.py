@@ -289,10 +289,16 @@ class Agent(Entity):
         self._info_scope_cache = {}
         self.hierarchy_context = None
 
-    def set_message_bus(self, bus):
-        """Set the message bus."""
-        self.message_bus = bus
-        logger.info("%s attached to message bus %s", self.get_name(), type(bus).__name__)
+    def set_message_bus(self, backend):
+        """
+        Attach the messaging backend used by this entity.
+
+        In the current core this is typically a MessageProxy instance
+        provided by the EntityManager, but any object exposing
+        `send_message` and `receive_messages` is accepted.
+        """
+        self.message_bus = backend
+        logger.info("%s attached to messaging backend %s", self.get_name(), type(backend).__name__)
 
     def set_hierarchy_context(self, hierarchy):
         """Attach the arena hierarchy reference."""
@@ -829,11 +835,15 @@ class Agent(Entity):
         return filtered
 
     def _parse_information_restrictions(self, config):
-        """Normalize hierarchy-based restrictions for detection/messages."""
+        """Normalize hierarchy-based restrictions for detection/messages/movement."""
         restrictions = {}
         if not config:
             return restrictions
-        channels = ("messages", "detection")
+
+        # Local, per-entity restrictions; overlay-level information_scope is handled
+        # separately via the hierarchy context.
+        channels = ("messages", "detection", "movement")
+
         has_explicit = isinstance(config, dict) and any(key in config for key in channels)
         if has_explicit:
             for channel in channels:
@@ -844,8 +854,9 @@ class Agent(Entity):
             normalized = self._normalize_scope_value(config)
             if normalized:
                 for channel in channels:
-                    restrictions[channel] = dict(normalized)
+                    restrictions[channel] = normalized
         return restrictions
+
 
     def _normalize_scope_value(self, value):
         """Normalize textual/dict scope descriptors."""
@@ -888,19 +899,78 @@ class Agent(Entity):
         self._info_scope_cache = {}
 
     def _allowed_nodes_for_channel(self, channel: str, hierarchy, scope: dict | None = None):
-        """Return cached set of allowed nodes for the provided channel."""
+        """Return cached set of allowed nodes for the provided channel.
+
+        The returned set reflects:
+        - overlay-level information_scope (if defined on the hierarchy), and
+        - per-entity information_restrictions (if defined for this channel).
+
+        If neither is present, None is returned to signal "no restriction".
+        """
+        if not self.hierarchy_node:
+            return None
+
+        hierarchy = hierarchy or self.hierarchy_context
+        if hierarchy is None:
+            return None
+
+        # ------------------------------------------------------------------
+        # Overlay-level scope (hierarchy.information_scope).
+        # ------------------------------------------------------------------
+        overlay_scope = None
+        overlay_info = getattr(hierarchy, "information_scope", None)
+        if isinstance(overlay_info, dict):
+            overlay_channels = overlay_info.get("over")
+            # overlay_info["over"] is usually a set in HierarchyOverlay, but
+            # we treat it generically as an iterable of channel names.
+            if overlay_channels and channel in overlay_channels:
+                overlay_scope = {
+                    "mode": overlay_info.get("mode"),
+                    "direction": overlay_info.get("direction", "both"),
+                }
+
+        # ------------------------------------------------------------------
+        # Per-entity local scope (self.information_restrictions).
+        # ------------------------------------------------------------------
         if scope is None:
             scope = self.information_restrictions.get(channel)
-        if not scope or not self.hierarchy_node:
+
+        # If neither overlay nor local scope exists, the channel is unrestricted.
+        if overlay_scope is None and not scope:
             return None
+
         cache = self._info_scope_cache.setdefault(channel, {})
-        cache_key = (self.hierarchy_node, scope.get("mode"), scope.get("direction"))
+        cache_key = (
+            self.hierarchy_node,
+            # overlay-level
+            overlay_scope.get("mode") if overlay_scope else None,
+            overlay_scope.get("direction") if overlay_scope else None,
+            # local, per-entity
+            scope.get("mode") if scope else None,
+            scope.get("direction") if scope else None,
+        )
+
         if cache.get("key") == cache_key:
             return cache.get("nodes")
-        allowed = self._compute_scope_nodes(scope, hierarchy)
+
+        allowed_sets = []
+
+        if overlay_scope:
+            allowed_sets.append(self._compute_scope_nodes(overlay_scope, hierarchy))
+        if scope:
+            allowed_sets.append(self._compute_scope_nodes(scope, hierarchy))
+
+        if not allowed_sets:
+            allowed = None
+        else:
+            allowed = allowed_sets[0]
+            for subset in allowed_sets[1:]:
+                allowed = allowed & subset
+
         cache["key"] = cache_key
         cache["nodes"] = allowed
         return allowed
+
 
     def _compute_scope_nodes(self, scope: dict, hierarchy) -> set[str]:
         """Compute which hierarchy nodes are visible for the provided scope."""
@@ -1031,19 +1101,21 @@ class Agent(Entity):
         return getattr(self, "detection_range", 0.1)
 
     def allows_hierarchical_link(self, target_node: str | None, channel: str, hierarchy=None) -> bool:
-        """Return True if hierarchy constraints allow interacting with `target_node`."""
-        scope = self.information_restrictions.get(channel)
-        if not scope:
-            return True
+        """Return True if hierarchy/overlay constraints allow interacting with `target_node`."""
         hierarchy = hierarchy or self.hierarchy_context
         if hierarchy is None or not self.hierarchy_node:
             return True
-        allowed = self._allowed_nodes_for_channel(channel, hierarchy, scope)
+
+        allowed = self._allowed_nodes_for_channel(channel, hierarchy)
         if allowed is None:
+            # No restriction for this channel (no overlay and no local scope).
             return True
         if target_node is None:
+            # When restrictions exist but the target has no known node, treat it
+            # as not allowed by default.
             return False
         return target_node in allowed
+
 
     def run(self,tick,arena_shape,objects,agents):
         """Run the simulation routine."""
