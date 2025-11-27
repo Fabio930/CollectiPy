@@ -13,7 +13,7 @@ This module has been extended with a minimal plugin
 system for movement models. The original behaviour is
 preserved when no plugins are registered.
 """
-import hashlib, logging, math
+import hashlib, math, logging
 from typing import Optional
 import numpy as np
 from random import Random
@@ -23,7 +23,9 @@ from plugin_registry import get_logic_model, get_movement_model, get_motion_mode
 from models.utils import normalize_angle
 import models  # noqa: F401  # ensure built-in models register themselves
 
-logger = logging.getLogger("sim.entity")
+from logging_utils import get_logger, configure_logging
+
+logger = get_logger("entity")
 
 VALID_MESSAGE_CHANNELS = {"single", "dual"}
 CHANNEL_TYPE_MATRIX = {
@@ -50,8 +52,13 @@ class EntityFactory:
     
     """Entity factory."""
     @staticmethod
-    def create_entity(entity_type:str,config_elem: dict,_id:int=0):
+    def create_entity(entity_type:str,config_elem: dict,specs,_id:int=0):
         """Create entity."""
+        configure_logging(
+            settings = specs[0],
+            config_path = specs[1],
+            project_root = specs[2],
+        )
         check_type = entity_type.split('_')[0]+'_'+entity_type.split('_')[1]
         if check_type == "agent_static":
             entity = StaticAgent(entity_type,config_elem,_id)

@@ -52,12 +52,13 @@ def main(argv):
         )
         # Load any external plugins declared in the config (optional).
         load_plugins_from_config(my_config)
-        my_env = EnvironmentFactory.create_environment(my_config)
+        my_env = EnvironmentFactory.create_environment(my_config,config_path_resolved)
         my_env.start()
     except Exception as e:
         logging.fatal(f"Failed to create environment: {e}")
         import traceback
         traceback.print_exc()
+    finally:
         sys.exit(1)
 
 if __name__ == "__main__":

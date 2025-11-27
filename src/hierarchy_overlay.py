@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger("sim.hierarchy")
+from logging_utils import get_logger
+
+logger = get_logger("hierarchy")
 
 
 class Bounds2D:

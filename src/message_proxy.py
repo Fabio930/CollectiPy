@@ -15,7 +15,10 @@ import logging
 import queue
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-logger = logging.getLogger("sim.messages.proxy")
+
+from logging_utils import get_logger,configure_logging
+
+logger = get_logger("message_proxy")
 
 
 def _safe_entity_uid(entity: Any) -> str:
@@ -70,8 +73,13 @@ class MessageProxy:
     protocol logic and message lifetime are handled by the Entity itself.
     """
 
-    def __init__(self, agents: Iterable[Any], message_tx: Any, message_rx: Any, manager_id: int = 0):
+    def __init__(self, agents: Iterable[Any], message_tx: Any, message_rx: Any, specs, manager_id: int = 0):
         """Initialize the instance."""
+        configure_logging(
+            settings = specs[0],
+            config_path = specs[1],
+            project_root = specs[2],
+        )
         self._agents: List[Any] = list(agents)
         self._uid_to_agent: Dict[str, Any] = {}
         self._inboxes: Dict[str, List[Dict[str, Any]]] = {}

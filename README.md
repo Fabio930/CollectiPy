@@ -68,8 +68,9 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
         "snapshots_per_second": int, //DEFAULT:1 (1 = end-of-second only, 2 = mid-second + end-second captures).
     },
     "logging":{ //DEFAULT:{} default logging
-        "file_level": str, //DEFAULT:"WARNING" - severity written to disk (WARNING/ERROR by //DEFAULT),
-        "console_level": bool, //DEFAULT:"WARNING" - echo logs to stdout
+        "base_path": str, //DEFAULT:"../logs/" (only used when this block is present; does not enable dumps by itself),
+        "level": str, //DEFAULT:"WARNING" - severity written to disk (WARNING/ERROR by //DEFAULT),
+        "to_file": bool, //DEFAULT:false - echo logs only to stdout
     },
     "gui":{ //DEFAULT:{} empty dict -> no rendering
         "_id": str, //DEFAULT:"2D"

@@ -18,9 +18,9 @@ from random import Random
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
 from message_proxy import MessageProxy, NullMessageProxy
+from logging_utils import get_logger, configure_logging
 
-
-logger = logging.getLogger("sim.entity_manager")
+logger = get_logger("entity_manager")
 
 
 class EntityManager:
@@ -76,6 +76,7 @@ class EntityManager:
         self,
         agents: dict,
         arena_shape,
+        specs,
         wrap_config=None,
         hierarchy: Optional[HierarchyOverlay] = None,
         snapshot_stride: int = 1,
@@ -84,7 +85,13 @@ class EntityManager:
         message_tx = None,
         message_rx = None,
     ):
+        self.specs = specs
         """Initialize the instance."""
+        configure_logging(
+            settings = specs[0],
+            config_path = specs[1],
+            project_root = specs[2],
+        )
         self.agents = agents
         self.arena_shape = arena_shape
         self.wrap_config = wrap_config
@@ -115,7 +122,7 @@ class EntityManager:
 
         if any_msg_enabled_global and self.message_tx is not None and self.message_rx is not None:
             self._message_proxy = MessageProxy(
-                all_entities, self.message_tx, self.message_rx, manager_id=self.manager_id
+                all_entities, self.message_tx, self.message_rx, self.specs, manager_id=self.manager_id
             )
         else:
             self._message_proxy = None

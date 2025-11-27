@@ -19,6 +19,9 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraph
 from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF, Signal
 from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut, QResizeEvent
 
+from logging_utils import get_logger,configure_logging
+
+logger = get_logger("gui")
 # Help static analyzers with Qt dynamic attributes/constants.
 Qt = cast(Any, Qt)
 QSizePolicy = cast(Any, QSizePolicy)
@@ -28,8 +31,13 @@ class GuiFactory():
 
     """Gui factory."""
     @staticmethod
-    def create_gui(config_elem:Any,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def create_gui(config_elem:Any,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, specs, wrap_config=None, hierarchy_overlay=None):
         """Create gui."""
+        configure_logging(
+            settings = specs[0],
+            config_path = specs[1],
+            project_root = specs[2],
+        )
         if config_elem.get("_id") in ("2D","abstract"):
             return QApplication([]),GUI_2D(
                 config_elem,
@@ -354,7 +362,8 @@ class GUI_2D(QWidget):
         self.timer = QTimer(self)
         self.connection = self.timer.timeout.connect(self.update_data)
         self.timer.start(1)
-        logging.info("GUI created successfully")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("GUI created successfully")
 
     def eventFilter(self, watched, event):
         """Handle Qt event filtering."""

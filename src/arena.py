@@ -7,7 +7,7 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import logging, time, math, random
+import time, math, random
 from typing import Optional, Any
 import multiprocessing as mp
 from config import Config
@@ -17,31 +17,39 @@ from entity import EntityFactory
 from geometry_utils.vector3D import Vector3D
 from dataHandling import DataHandlingFactory
 from hierarchy_overlay import HierarchyOverlay, Bounds2D
+from logging_utils import get_logger, configure_logging
 
+logger = get_logger("arena")
 class ArenaFactory():
 
     """Arena factory."""
     @staticmethod
-    def create_arena(config_elem:Config):
+    def create_arena(config_elem:Config,specs):
         """Create arena."""
+        configure_logging(
+            settings = specs[0],
+            config_path = specs[1],
+            project_root = specs[2],
+        )
         if config_elem.arena.get("_id") in ("abstract", "none", None):
-            return AbstractArena(config_elem)
+            return AbstractArena(config_elem,specs)
         elif config_elem.arena.get("_id") == "circle":
-            return CircularArena(config_elem)
+            return CircularArena(config_elem,specs)
         elif config_elem.arena.get("_id") == "rectangle":
-            return RectangularArena(config_elem)
+            return RectangularArena(config_elem,specs)
         elif config_elem.arena.get("_id") == "square":
-            return SquareArena(config_elem)
+            return SquareArena(config_elem,specs)
         elif config_elem.arena.get("_id") == "unbounded":
-            return UnboundedArena(config_elem)
+            return UnboundedArena(config_elem,specs)
         else:
             raise ValueError(f"Invalid shape type: {config_elem.arena['_id']} valid types are: none, abstract, circle, rectangle, square, unbounded")
 
 class Arena():
     
     """Arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
+        self.log_specs = specs
         self.random_generator = Random()
         self._seed_random = random.SystemRandom()
         self.ticks_per_second = int(config_elem.environment.get("ticks_per_second", 3))
@@ -159,7 +167,7 @@ class Arena():
         self.reset()
         for key,(config,entities) in self.objects.items():
             for n in range(config["number"]):
-                entities.append(EntityFactory.create_entity(entity_type="object_"+key,config_elem=config,_id=n))
+                entities.append(EntityFactory.create_entity(entity_type="object_"+key,config_elem=config, specs=self.log_specs,_id=n))
                 
     def run(self,num_runs,time_limit, arena_queue:mp.Queue, agents_queue:mp.Queue, gui_in_queue:mp.Queue, dec_arena_in:mp.Queue, gui_control_queue:mp.Queue, render:bool=False):
         """Run the simulation routine."""
@@ -210,10 +218,10 @@ class Arena():
 class AbstractArena(Arena):
     
     """Abstract arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
-        super().__init__(config_elem)
-        logging.info("Abstract arena created successfully")
+        super().__init__(config_elem,specs)
+        logger.info("Abstract arena created successfully")
         self._hierarchy = self._create_hierarchy(None)
     
     def get_shape(self):
@@ -232,9 +240,9 @@ PLACEMENT_MARGIN_EPS = 0.002
 class SolidArena(Arena):
     
     """Solid arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
-        super().__init__(config_elem)
+        super().__init__(config_elem,specs)
         self._grid_origin = None
         self._grid_cell_size = None
         self.shape = self._build_arena_shape(config_elem)
@@ -295,7 +303,7 @@ class SolidArena(Arena):
                     entity.set_start_position(target)
                     shape = entity.get_shape()
                     if shape.check_overlap(self.shape)[0]:
-                        logging.warning(
+                        logger.warning(
                             "Configured position for object %s overlaps arena walls; re-sampling position.",
                             entity.entity()
                         )
@@ -459,7 +467,7 @@ class SolidArena(Arena):
             self._gui_backpressure_active = False
             return
         if not self._gui_backpressure_active:
-            logging.warning("GUI rendering is %s frames behind; slowing down ticks", backlog)
+            logger.warning("GUI rendering is %s frames behind; slowing down ticks", backlog)
             self._gui_backpressure_active = True
         while True:
             try:
@@ -503,7 +511,7 @@ class SolidArena(Arena):
         ticks_limit = time_limit*self.ticks_per_second + 1 if time_limit > 0 else 0
         run = 1
         while run < num_runs + 1:
-            logging.info(f"Run number {run} started")
+            logger.info(f"Run number {run} started")
             arena_data = {
                 "status": [0,self.ticks_per_second],
                 "objects": self.pack_objects_data()
@@ -727,7 +735,7 @@ class SolidArena(Arena):
 class UnboundedArena(SolidArena):
     
     """Unbounded arena rendered as a large square without wrap-around."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
         raw = config_elem.arena.get("diameter", None)
         try:
@@ -738,8 +746,8 @@ class UnboundedArena(SolidArena):
             self.diameter = self._estimate_initial_diameter(config_elem)
         if self.diameter <= 0:
             raise ValueError("UnboundedArena could not derive a positive initial diameter")
-        super().__init__(config_elem)
-        logging.info(
+        super().__init__(config_elem,specs)
+        logger.info(
             "Unbounded arena created (diameter=%.3f, square side=%.3f)",
             self.diameter,
             self.diameter
@@ -807,35 +815,35 @@ class UnboundedArena(SolidArena):
 class CircularArena(SolidArena):
     
     """Circular arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
-        super().__init__(config_elem)
+        super().__init__(config_elem,specs)
         self.height = config_elem.arena.get("height", 1)
         self.radius = config_elem.arena.get("radius", 1)
         self.color = config_elem.arena.get("color", "white")
-        logging.info("Circular arena created successfully")
+        logger.info("Circular arena created successfully")
     
 
 class RectangularArena(SolidArena):
     
     """Rectangular arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
-        super().__init__(config_elem)
+        super().__init__(config_elem,specs)
         self.height = config_elem.arena.get("height", 1)
         self.length = config_elem.arena.get("length", 1)
         self.width = config_elem.arena.get("width", 1)
         self.color = config_elem.arena.get("color", "white")
-        logging.info("Rectangular arena created successfully")
+        logger.info("Rectangular arena created successfully")
     
 class SquareArena(SolidArena):
     
     """Square arena."""
-    def __init__(self, config_elem:Config):
+    def __init__(self, config_elem:Config,specs):
         """Initialize the instance."""
-        super().__init__(config_elem)
+        super().__init__(config_elem,specs)
         self.height = config_elem.arena.get("height", 1)
         self.side = config_elem.arena.get("side", 1)
         self.color = config_elem.arena.get("color", "white")
-        logging.info("Square arena created successfully")
+        logger.info("Square arena created successfully")
     

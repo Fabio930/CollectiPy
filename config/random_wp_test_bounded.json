@@ -3,7 +3,7 @@
         "collisions": true,
         "time_limit": 50,
         "num_runs": 1,
-        "logging":{"file_level":"DEBUG"},
+        "logging":{"level":"DEBUG"},
         "arenas":{
             "arena_0":{
                 "random_seed": 0,

@@ -8,8 +8,9 @@
 # ------------------------------------------------------------------------------
 
 """Environment: process-level orchestration of the simulation."""
-import logging, psutil, gc, time
+import psutil, gc, time, logging
 import multiprocessing as mp
+from pathlib import Path
 from multiprocessing.context import BaseContext
 from typing import Any, Dict
 from config import Config
@@ -19,7 +20,7 @@ from gui import GuiFactory
 from entityManager import EntityManager
 from collision_detector import CollisionDetector
 from message_server import run_message_server
-
+from logging_utils import shutdown_logging, configure_logging
 
 used_cores = set()
 
@@ -111,10 +112,10 @@ class EnvironmentFactory:
     """Environment factory."""
 
     @staticmethod
-    def create_environment(config_elem: Config):
+    def create_environment(config_elem: Config, config_path):
         """Create environment."""
         if config_elem.environment:
-            return Environment(config_elem)
+            return Environment(config_elem,config_path)
         else:
             raise ValueError(
                 f"Invalid environment configuration: "
@@ -126,7 +127,7 @@ class EnvironmentFactory:
 class Environment:
     """Environment."""
 
-    def __init__(self, config_elem: Config):
+    def __init__(self, config_elem: Config,config_path:Path):
         """Initialize the instance."""
         self.experiments = tuple(config_elem.parse_experiments())
         self.num_runs = int(config_elem.environment.get("num_runs", 1))
@@ -148,17 +149,26 @@ class Environment:
         self.collisions = config_elem.environment.get("collisions", False)
         if not self.render[0] and self.time_limit == 0:
             raise Exception("Invalid configuration: infinite experiment with no GUI.")
+        self._log_set = config_elem.environment.get("logging")
+        self._log_path = config_path.expanduser().resolve()
+        self._log_root = Path(__file__).resolve().parents[1]
+        self.log_specs = (self._log_set,self._log_path,self._log_root)
+        configure_logging(
+            settings = self._log_set,
+            config_path = self._log_path,
+            project_root = self._log_root
+        )
         logging.info("Environment created successfully")
 
-    def arena_init(self, exp: Config):
+    def arena_init(self, exp: Config,specs):
         """Arena init."""
-        arena = ArenaFactory.create_arena(exp)
+        arena = ArenaFactory.create_arena(exp,specs)
         if self.num_runs > 1 and arena.get_seed() < 0:
             arena.reset_seed()
         arena.initialize()
         return arena
 
-    def agents_init(self, exp: Config):
+    def agents_init(self, exp: Config,specs):
         """Agents init."""
         agents_cfg = exp.environment.get("agents") or {}
         if not isinstance(agents_cfg, dict):
@@ -182,6 +192,7 @@ class Environment:
                     EntityFactory.create_entity(
                         entity_type="agent_" + agent_type,
                         config_elem=config,
+                        specs=specs,
                         _id=n
                     )
                 )
@@ -294,6 +305,7 @@ class Environment:
         arena_color: str,
         gui_in_queue,
         gui_control_queue,
+        log_specs,
         wrap_config=None,
         hierarchy_overlay=None
     ):
@@ -304,6 +316,7 @@ class Environment:
             arena_color,
             gui_in_queue,
             gui_control_queue,
+            log_specs,
             wrap_config=wrap_config,
             hierarchy_overlay=hierarchy_overlay
         )
@@ -338,12 +351,12 @@ class Environment:
             dec_arena_in = _PipeQueue(ctx)
             gui_in_queue = _PipeQueue(ctx)
             gui_control_queue = _PipeQueue(ctx)
-            arena = self.arena_init(exp)
+            arena = self.arena_init(exp,self.log_specs)
             try:
                 arena.quiet = self.quiet
             except Exception:
                 pass
-            agents = self.agents_init(exp)
+            agents = self.agents_init(exp,self.log_specs)
             render_enabled = self.render[0]
             n_agent_procs = self._compute_agent_processes(agents)
             logging.info(
@@ -368,7 +381,7 @@ class Environment:
             arena_id = arena.get_id()
             wrap_config = arena.get_wrap_config()
             arena_hierarchy = arena.get_hierarchy()
-            collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
+            collision_detector = CollisionDetector(arena_shape, self.collisions,self.log_specs, wrap_config=wrap_config)
             arena_process = mp.Process(
                 target=arena.run,
                 args=(
@@ -379,7 +392,7 @@ class Environment:
                     gui_in_queue,
                     dec_arena_in,
                     gui_control_queue,
-                    render_enabled
+                    render_enabled,
                 )
             )
             # Managers
@@ -396,6 +409,7 @@ class Environment:
                 entity_manager = EntityManager(
                     block_filtered,
                     arena_shape,
+                    self.log_specs,
                     wrap_config=wrap_config,
                     hierarchy=arena_hierarchy,
                     snapshot_stride=self.snapshot_stride,
@@ -421,7 +435,7 @@ class Environment:
             fully_connected = True #arena_id in ("abstract", "none", None)
             message_server_process = mp.Process(
                 target=run_message_server,
-                args=(message_channels, fully_connected),
+                args=(message_channels, self.log_specs, fully_connected),
             )
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
@@ -456,6 +470,7 @@ class Environment:
                         arena_shape.color(),
                         gui_in_queue,
                         gui_control_queue,
+                        self.log_specs,
                         wrap_config,
                         hierarchy_overlay
                     )
@@ -561,5 +576,7 @@ class Environment:
                 _safe_join(message_server_process)
                 if killed == 1:
                     raise RuntimeError("A subprocess exited unexpectedly.")
+            shutdown_logging()
+
             gc.collect()
         logging.info("All experiments completed successfully")
