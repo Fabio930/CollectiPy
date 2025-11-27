@@ -1,9 +1,14 @@
 {
     "environment":{
         "collisions": true,
-        "time_limit": 50,
+        "time_limit": 0,
         "num_runs": 1,
-        "logging":{"level":"DEBUG"},
+        "logging":{},
+        "gui":{
+            "_id": "2D",
+            "on_click": ["messages"],
+            "view": ["messages"]
+        },
         "arenas":{
             "arena_0":{
                 "random_seed": 0,

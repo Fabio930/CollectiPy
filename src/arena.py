@@ -499,7 +499,7 @@ class SolidArena(Arena):
                 for grp, vals in snap.get("agents_spins", {}).items():
                     spins.setdefault(grp, []).extend(vals)
                 for grp, vals in snap.get("agents_metadata", {}).items():
-                    metadata[grp] = list(vals)
+                    metadata.setdefault(grp, []).extend(vals)
             # If no metadata arrived in this batch, keep cached metadata.
             return shapes, spins, metadata
 

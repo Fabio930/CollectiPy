@@ -375,7 +375,6 @@ class Environment:
         arena_color: str,
         gui_in_queue,
         gui_control_queue,
-        log_specs,
         wrap_config=None,
         hierarchy_overlay=None
     ):
