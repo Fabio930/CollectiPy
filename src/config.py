@@ -155,7 +155,7 @@ class Config:
                     experiment = {
                         "environment": {
                             "collisions": environment.get("collisions", False),
-                            "ticks_per_second": environment.get("ticks_per_second", 1),
+                            "ticks_per_second": environment.get("ticks_per_second", 3),
                             "time_limit": environment.get("time_limit", 0),
                             "num_runs": environment.get("num_runs", 1),
                             "results": environment.get("results",{}),

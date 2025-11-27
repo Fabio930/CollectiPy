@@ -418,7 +418,7 @@ class Environment:
                 )
                 manager_processes.append(proc)
             # Message server process (one per environment).
-            fully_connected = arena_id in ("abstract", "none", None)
+            fully_connected = True #arena_id in ("abstract", "none", None)
             message_server_process = mp.Process(
                 target=run_message_server,
                 args=(message_channels, fully_connected),
@@ -530,31 +530,35 @@ class Environment:
                 if detector_process:
                     set_affinity_safely(detector_process, pattern["detector"])
                 set_affinity_safely(message_server_process, pattern["messages"])
-                while arena_process.is_alive() and all(proc.is_alive() for proc in manager_processes):
-                    _safe_join(arena_process, timeout=0.1)
-                    for proc in manager_processes:
-                        _safe_join(proc, timeout=0.1)
                 killed = 0
-                if arena_process.exitcode not in (None, 0):
-                    killed = 1
-                    for proc in manager_processes:
-                        _safe_terminate(proc)
-                    _safe_terminate(detector_process)
-                elif any(proc.exitcode not in (None, 0) for proc in manager_processes):
-                    killed = 1
-                    _safe_terminate(arena_process)
-                    for proc in manager_processes:
-                        _safe_terminate(proc)
-                    _safe_terminate(detector_process)
-                _safe_terminate(message_server_process)
+                # Supervision loop
+                while True:
+                    exit_failure = next(
+                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                        None
+                    )
+                    arena_alive = arena_process.is_alive()
+                    if exit_failure:
+                        killed = 1
+                        _safe_terminate(arena_process)
+                        for proc in manager_processes:
+                            _safe_terminate(proc)
+                        _safe_terminate(detector_process)
+                        _safe_terminate(message_server_process)
+                        break
+                    if not arena_alive:
+                        for proc in manager_processes:
+                            _safe_terminate(proc)
+                        _safe_terminate(detector_process)
+                        _safe_terminate(message_server_process)
+                        break
+                    time.sleep(0.5)
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:
                     _safe_join(proc)
-                if detector_process:
-                    _safe_join(detector_process)
+                _safe_join(detector_process)
                 _safe_join(message_server_process)
-                arena.close()
                 if killed == 1:
                     raise RuntimeError("A subprocess exited unexpectedly.")
             gc.collect()

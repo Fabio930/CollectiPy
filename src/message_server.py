@@ -160,6 +160,12 @@ class MessageServer:
         agents = packet.get("agents") or []
         manager_id = int(packet.get("manager_id", 0))
 
+        logger.debug(
+            "[MS] snapshot from manager %d: %d agents: %s",
+            manager_id,
+            len(agents),
+            [str(a.get("uid")) for a in agents],
+        )
         # Update internal registry.
         for info in agents:
             name = str(info.get("uid"))
@@ -199,49 +205,65 @@ class MessageServer:
 
     def _handle_tx(self, packet: dict[str, Any]) -> None:
         """Route a TX packet to all compatible receivers."""
-        sender_name = str(packet.get("sender_uid"))
+        sender_uid = str(packet.get("sender_uid"))
         payload = packet.get("payload")
-        if not sender_name or payload is None:
+        if not sender_uid or payload is None:
             return
 
-        sender_info = self._agents.get(sender_name)
+        sender_info = self._agents.get(sender_uid)
         if sender_info is None:
+            logger.debug("[MS] TX from %s ignored: sender not in registry", sender_uid)
             return
 
-        # Always refresh message metadata
-        msg_type = (packet.get("msg_type") or sender_info.msg_type or "").lower()
-        msg_kind = (packet.get("msg_kind") or sender_info.msg_kind or "").lower()
 
-        # Candidate selection: fully-connected or grid-based
-        candidates = []
+        # Se la rete è fully connected → tutti tranne il mittente
         if self.fully_connected:
-            candidates = [info for name, info in self._agents.items() if name != sender_name]
+            candidates = [
+                info
+                for name, info in self._agents.items()
+                if name != sender_uid
+            ]
         else:
+            # Usiamo il wrapper _GridAgent per parlare col SpatialGrid
             grid_agent = _GridAgent(sender_info.name, sender_info.pos)
+            candidates: list[_AgentInfo] = []
+
+            # neighbors() restituisce _GridAgent (con .name e get_position)
             for neighbor in self._grid.neighbors(grid_agent, sender_info.comm_range):
-                if neighbor.name == sender_name:
+                # Per sicurezza saltiamo il mittente
+                if neighbor.name == sender_uid:
                     continue
                 info = self._agents.get(neighbor.name)
                 if info is not None:
                     candidates.append(info)
 
+        logger.debug(
+            "[MS] TX from %s (mgr %d) candidates: %s",
+            sender_uid,
+            sender_info.manager_id,
+            [(c.name, c.manager_id) for c in candidates],
+        )
+        # Loop finale: filtro gerarchico + consegna
         for target in candidates:
-            # Skip self, or agents without snapshot yet
+            # (opzionale, ma sicuro) salta self e snapshot incompleti
             if target is sender_info:
                 continue
             if target.pos is None:
                 continue
 
-            # Check protocol compatibility
-            if not self._protocols_compatible(msg_type, msg_kind, sender_info, target):
-                continue
-
-            # Check hierarchy restrictions (if any)
+            # SOLO filtro gerarchico simulator-level (se usi overlay)
             if not self._hierarchy_compatible(sender_info, target):
                 continue
-
-            # Deliver
+            
+            logger.debug(
+                "[MS] delivering to %s (mgr %d)",
+                target.name,
+                target.manager_id,
+            )
+            # Consegna al target
             self._deliver_to_target(target, payload)
+
+
 
     def _deliver_to_target(self, target: _AgentInfo, payload: Dict[str, Any]) -> None:
         """Send a message to a single target agent."""
@@ -257,14 +279,10 @@ class MessageServer:
             "payload": dict(payload)
         }
         try:
+            logger.debug("[MS] RX packet enqueued for %s -> mgr %d", target.name, target.manager_id)
             downlink.put(packet)
         except Exception as exc:
-            logger.warning(
-                "Failed to deliver message to manager %s (agent %s): %s",
-                target.manager_id,
-                target.name,
-                exc
-            )
+            logger.warning("Failed to deliver message to target %s: %s", target.name, exc)
 
     @staticmethod
     def _protocols_compatible(

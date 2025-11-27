@@ -1,6 +1,6 @@
 {
     "environment":{
-        "collisions": false,
+        "collisions": true,
         "time_limit": 0,
         "num_runs": 1,
         "results":{

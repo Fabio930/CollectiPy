@@ -1,6 +1,6 @@
 {
     "environment":{
-        "collisions": false,
+        "collisions": true,
         "time_limit": 0,
         "num_runs": 1,
         "gui":{
@@ -20,7 +20,7 @@
         },
         "agents":{
             "movable_0":{
-                "number": [10],
+                "number": [40],
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 10,
@@ -29,12 +29,12 @@
                 "color": "blue",
                 "detection": {
                     "type": "GPS",
-                    "range": 0.5
+                    "range": 0.6
                 },
                 "moving_behavior":"spin_model",
                 "spin_model":{
                     "perception_width": 0.2,
-                    "perception_global_inhibition": 0.2,
+                    "perception_global_inhibition": 0.3,
                     "T": 0.3,
                     "J": 30,
                     "nu": 0.4,

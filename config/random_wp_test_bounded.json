@@ -1,11 +1,9 @@
 {
     "environment":{
         "collisions": true,
-        "time_limit": 0,
+        "time_limit": 50,
         "num_runs": 1,
-        "gui":{
-            "_id": "2D"
-        },
+        "logging":{"file_level":"DEBUG"},
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
@@ -35,7 +33,7 @@
                 "color": "blue",
                 "moving_behavior":"random_way_point",
                 "messages": {
-                    "comm_range": 0.1,
+                    "comm_range": 0.6,
                     "type": "broadcast",
                     "kind": "anonymous"
                 }      

@@ -276,10 +276,12 @@ class _CompressedLogHandler(logging.Handler):
         try:
             if self._stream:
                 self._stream.close()
-            if self._zip:
-                self._zip.close()
         finally:
             self._stream = None
             self._inner_stream = None
+        try:
+            if self._zip:
+                self._zip.close()
+        finally:
             self._zip = None
         super().close()

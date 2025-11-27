@@ -125,6 +125,7 @@ class MessageProxy:
             "payload": payload
         }
         try:
+            logger.debug("[MP %d] TX from %s to server: %s", self._manager_id, sender_uid, payload)
             self._tx.put(packet)
         except Exception as exc:
             logger.warning("Failed to send message to server: %s", exc)
@@ -219,9 +220,15 @@ class MessageProxy:
             "agents": snapshot
         }
         try:
+            logger.debug(
+                "[MP %d] sending snapshot with %d agents: %s",
+                self._manager_id,
+                len(snapshot),
+                [a["uid"] for a in snapshot],
+            )
             self._tx.put(packet)
         except Exception as exc:
-            logger.warning("Failed to send agents snapshot to message server: %s", exc)
+            logger.warning("Failed to send agents snapshot to server: %s", exc)
 
     def _drain_from_server(self) -> None:
         """Move all pending packets from the server into local inboxes."""
@@ -246,6 +253,12 @@ class MessageProxy:
             payload = packet.get("payload")
             if receiver_uid is None or payload is None:
                 continue
-
+            
+            logger.debug(
+                "[MP %d] RX for %s: %s",
+                self._manager_id,
+                receiver_uid,
+                payload,
+            )
             inbox = self._get_inbox(str(receiver_uid))
             inbox.append(dict(payload))
