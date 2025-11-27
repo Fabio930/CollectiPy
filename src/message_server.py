@@ -204,16 +204,17 @@ class MessageServer:
         """Route a TX packet to all compatible receivers."""
         sender_uid = str(packet.get("sender_uid"))
         payload = packet.get("payload")
+        msg_type = packet.get("msg_type")
+        msg_kind = packet.get("msg_kind")
         if not sender_uid or payload is None:
             return
 
         sender_info = self._agents.get(sender_uid)
+        is_anonymous = ((msg_kind or "").lower() == "anonymous")
         if sender_info is None:
             logger.debug("[MS] TX from %s ignored: sender not in registry", sender_uid)
             return
 
-
-        # Se la rete è fully connected → tutti tranne il mittente
         if self.fully_connected:
             candidates = [
                 info
@@ -221,13 +222,10 @@ class MessageServer:
                 if name != sender_uid
             ]
         else:
-            # Usiamo il wrapper _GridAgent per parlare col SpatialGrid
             grid_agent = _GridAgent(sender_info.name, sender_info.pos)
             candidates: list[_AgentInfo] = []
 
-            # neighbors() restituisce _GridAgent (con .name e get_position)
             for neighbor in self._grid.neighbors(grid_agent, sender_info.comm_range):
-                # Per sicurezza saltiamo il mittente
                 if neighbor.name == sender_uid:
                     continue
                 info = self._agents.get(neighbor.name)
@@ -240,15 +238,13 @@ class MessageServer:
             sender_info.manager_id,
             [(c.name, c.manager_id) for c in candidates],
         )
-        # Loop finale: filtro gerarchico + consegna
         for target in candidates:
-            # (opzionale, ma sicuro) salta self e snapshot incompleti
             if target is sender_info:
                 continue
             if target.pos is None:
                 continue
-
-            # SOLO filtro gerarchico simulator-level (se usi overlay)
+            if not self._protocols_compatible(msg_type, msg_kind, sender_info, target):
+                continue
             if not self._hierarchy_compatible(sender_info, target):
                 continue
             
@@ -257,12 +253,16 @@ class MessageServer:
                 target.name,
                 target.manager_id,
             )
-            # Consegna al target
-            self._deliver_to_target(target, payload)
+            self._deliver_to_target(target, payload, is_anonymous)
 
 
 
-    def _deliver_to_target(self, target: _AgentInfo, payload: Dict[str, Any]) -> None:
+    def _deliver_to_target(
+        self,
+        target: _AgentInfo,
+        payload: Dict[str, Any],
+        anonymize: bool = False,
+    ) -> None:
         """Send a message to a single target agent."""
         try:
             _, downlink = self.channels[target.manager_id]
@@ -270,16 +270,26 @@ class MessageServer:
             logger.warning("Invalid manager_id %s for agent %s", target.manager_id, target.name)
             return
 
+        # Copia il payload per non toccare l’originale usato per altri target
+        data = dict(payload)
+
+        if anonymize:
+            # Elenco dei campi da “spegnere”
+            for key in ("agent_id", "source_agent", "last_forward_by", "from", "_sender_uid"):
+                if key in data:
+                    data[key] = None
+
         packet = {
             "kind": "rx",
             "receiver_uid": target.name,
-            "payload": dict(payload)
+            "payload": data,
         }
         try:
             logger.debug("[MS] RX packet enqueued for %s -> mgr %d", target.name, target.manager_id)
             downlink.put(packet)
         except Exception as exc:
             logger.warning("Failed to deliver message to target %s: %s", target.name, exc)
+
 
     @staticmethod
     def _protocols_compatible(
