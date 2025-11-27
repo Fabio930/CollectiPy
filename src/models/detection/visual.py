@@ -11,8 +11,9 @@ import logging
 import numpy as np
 from plugin_base import DetectionModel
 from plugin_registry import register_detection_model
+from logging_utils import get_logger
 
-logger = logging.getLogger("sim.detection.visual")
+logger = get_logger("detection.visual")
 
 class VisualDetectionModel(DetectionModel):
     """

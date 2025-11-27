@@ -14,8 +14,9 @@ from plugin_registry import register_movement_model
 from models.movement.common import apply_motion_state
 from models.utils import normalize_angle
 from geometry_utils.vector3D import Vector3D
+from logging_utils import get_logger
 
-logger = logging.getLogger("sim.movement.random_way_point")
+logger = get_logger("movement.random_way_point")
 
 class RandomWayPointMovement(MovementModel):
     """Random way point movement."""

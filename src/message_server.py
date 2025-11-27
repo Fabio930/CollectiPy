@@ -10,18 +10,14 @@
 """Central message server for agent communication."""
 
 from __future__ import annotations
-
-import logging
 import queue
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
-from logging_utils import get_logger,configure_logging
+from logging_utils import get_logger
 
 logger = get_logger("message_server")
-
 
 class _GridAgent:
     """Light wrapper used by the SpatialGrid."""
@@ -80,7 +76,6 @@ class MessageServer:
     def __init__(
         self,
         channels: Sequence[Tuple[Any, Any]],
-        specs,
         fully_connected: bool = False,
         cell_size: float = 1.0
     ):
@@ -92,11 +87,6 @@ class MessageServer:
                                 SpatialGrid is not used for range filtering.
         :param cell_size: SpatialGrid cell size when ``fully_connected`` is False.
         """
-        configure_logging(
-            settings = specs[0],
-            config_path = specs[1],
-            project_root = specs[2],
-        )
         self.channels = list(channels)
         self.fully_connected = bool(fully_connected)
 
@@ -352,7 +342,7 @@ class MessageServer:
         return False
 
 
-def run_message_server(channels: Iterable[Tuple[Any, Any]], specs,fully_connected: bool = False, cell_size: float = 1.0) -> None:
+def run_message_server(channels: Iterable[Tuple[Any, Any]],fully_connected: bool = False, cell_size: float = 1.0) -> None:
     """
     Convenience function used as a multiprocessing target.
 
@@ -360,5 +350,5 @@ def run_message_server(channels: Iterable[Tuple[Any, Any]], specs,fully_connecte
     :param fully_connected: True to skip spatial filtering (typical for abstract arenas).
     :param cell_size: SpatialGrid cell size for non-abstract arenas.
     """
-    server = MessageServer(list(channels), specs, fully_connected=fully_connected, cell_size=cell_size)
+    server = MessageServer(list(channels), fully_connected=fully_connected, cell_size=cell_size)
     server.run()

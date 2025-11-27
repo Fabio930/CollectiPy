@@ -24,9 +24,7 @@ import csv
 import hashlib
 import logging
 import shutil
-import io
 import zipfile
-import os
 import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
@@ -261,18 +259,21 @@ class _CompressedLogHandler(logging.Handler):
         try:
             msg = self.format(record).encode("utf-8") + self.terminator
             self._inner_stream.write(msg)
+            self._inner_stream.flush()
         except Exception:
             self.handleError(record)
 
     def close(self):
         try:
             if self._inner_stream:
+                self._inner_stream.flush()
                 self._inner_stream.close()
         except:
             pass
 
         try:
             if self._zip:
+                self._zip.fp.flush()
                 self._zip.close()
         except:
             pass

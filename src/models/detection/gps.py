@@ -7,14 +7,14 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import logging
 import math
 import numpy as np
 from plugin_base import DetectionModel
 from plugin_registry import register_detection_model
 from models.utils import normalize_angle
+from logging_utils import get_logger
 
-logger = logging.getLogger("sim.detection.gps")
+logger = get_logger("detection.gps")
 
 class GPSDetectionModel(DetectionModel):
     """Gps detection model."""
@@ -60,14 +60,13 @@ class GPSDetectionModel(DetectionModel):
         self._apply_global_inhibition(agent_channel)
         self._apply_global_inhibition(object_channel)
         combined_channel = agent_channel + object_channel
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "%s GPS detection objects_max=%.4f agents_max=%.4f combined_max=%.4f",
-                agent.get_name(),
-                float(np.max(object_channel)) if object_channel.size else 0.0,
-                float(np.max(agent_channel)) if agent_channel.size else 0.0,
-                float(np.max(combined_channel)) if combined_channel.size else 0.0,
-            )
+        logger.debug(
+            "%s GPS detection objects_max=%.4f agents_max=%.4f combined_max=%.4f",
+            agent.get_name(),
+            float(np.max(object_channel)) if object_channel.size else 0.0,
+            float(np.max(agent_channel)) if agent_channel.size else 0.0,
+            float(np.max(combined_channel)) if combined_channel.size else 0.0,
+        )
         return {
             "objects": object_channel,
             "agents": agent_channel,

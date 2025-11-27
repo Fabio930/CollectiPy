@@ -7,7 +7,6 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import logging
 import math
 import numpy as np
 from typing import Optional
@@ -19,8 +18,9 @@ from plugin_registry import (
     register_movement_model,
 )
 from models.utils import normalize_angle
+from logging_utils import get_logger
 
-logger = logging.getLogger("sim.spin")
+logger = get_logger("movement.spin_model")
 
 class SpinMovementModel(MovementModel):
     """Spin movement model."""
@@ -123,14 +123,13 @@ class SpinMovementModel(MovementModel):
         scaling_factor = np.clip(scaling_factor, 0.0, 1.0)
         self.agent.linear_velocity_cmd = self.agent.max_absolute_velocity * scaling_factor
         self.agent.angular_velocity_cmd = angle_deg
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "%s spin direction updated -> angle=%.2f width=%.4f scaling=%.3f",
-                self.agent.get_name(),
-                angle_deg,
-                width,
-                scaling_factor
-            )
+        logger.debug(
+            "%s spin direction updated -> angle=%.2f width=%.4f scaling=%.3f",
+            self.agent.get_name(),
+            angle_deg,
+            width,
+            scaling_factor
+        )
 
     def _update_perception(self, objects: dict, agents: dict, tick: int | None = None, arena_shape=None) -> None:
         """Update perception."""
@@ -150,13 +149,12 @@ class SpinMovementModel(MovementModel):
             selected, channel_name = snapshot, "raw"
         self.perception = selected
         self._active_perception_channel = channel_name
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "%s perception snapshot channel=%s mean=%.3f",
-                self.agent.get_name(),
-                channel_name,
-                float(np.mean(self.perception)) if self.perception is not None else 0.0,
-            )
+        logger.debug(
+            "%s perception snapshot channel=%s mean=%.3f",
+            self.agent.get_name(),
+            channel_name,
+            float(np.mean(self.perception)) if self.perception is not None else 0.0,
+        )
 
     def _select_perception_channel(self, snapshot: dict[str, np.ndarray]) -> tuple[np.ndarray, str]:
         """Select the perception channel matching the current task."""
@@ -246,8 +244,7 @@ class SpinMovementModel(MovementModel):
         if self._fallback_model is None:
             logger.warning("%s has no fallback movement model configured", self.agent.get_name())
             return
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s fallback to %s", self.agent.get_name(), behavior)
+        logger.debug("%s fallback to %s", self.agent.get_name(), behavior)
         self._fallback_model.step(self.agent, tick, arena_shape, objects, agents)
 
     def get_spin_system_data(self):

@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 
 """Environment: process-level orchestration of the simulation."""
-import psutil, gc, time, logging
+import psutil, time, gc
 import multiprocessing as mp
 from pathlib import Path
 from multiprocessing.context import BaseContext
@@ -17,12 +17,88 @@ from config import Config
 from entity import EntityFactory
 from arena import ArenaFactory
 from gui import GuiFactory
-from entityManager import EntityManager
 from collision_detector import CollisionDetector
-from message_server import run_message_server
-from logging_utils import shutdown_logging, configure_logging
+from logging_utils import get_logger, shutdown_logging
+logger = get_logger("environment")
 
 used_cores = set()
+
+# ---------------------------
+# Logging wrappers for processes
+# ---------------------------
+
+def _run_arena_process(arena, num_runs, time_limit,
+                       arena_queue_list, agents_queue_list,
+                       gui_in_queue, dec_arena_in,
+                       gui_control_queue, render_enabled,
+                       log_specs):
+    from logging_utils import configure_logging
+    settings, cfg_path, root = log_specs
+    configure_logging(settings, cfg_path, root)
+    arena.run(
+        num_runs, time_limit,
+        arena_queue_list, agents_queue_list,
+        gui_in_queue, dec_arena_in,
+        gui_control_queue, render_enabled
+    )
+
+def _run_manager_process(block_filtered, arena_shape, log_specs,
+                         wrap_config, hierarchy, snapshot_stride, manager_id,
+                         collisions, message_tx, message_rx,
+                         num_runs, time_limit,
+                         arena_queue, agents_queue,
+                         dec_agents_in, dec_agents_out,
+                         agent_barrier):
+    from logging_utils import configure_logging
+    settings, cfg_path, root = log_specs
+    configure_logging(settings, cfg_path, root)
+
+    from entityManager import EntityManager
+    mgr = EntityManager(
+        block_filtered, arena_shape,
+        wrap_config=wrap_config,
+        hierarchy=hierarchy,
+        snapshot_stride=snapshot_stride,
+        manager_id=manager_id,
+        collisions=collisions,
+        message_tx=message_tx,
+        message_rx=message_rx
+    )
+    mgr.run(
+        num_runs, time_limit,
+        arena_queue, agents_queue,
+        dec_agents_in, dec_agents_out,
+        agent_barrier
+    )
+
+def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs):
+    from logging_utils import configure_logging
+    settings, cfg_path, root = log_specs
+    configure_logging(settings, cfg_path, root)
+    collision_detector.run(det_in_arg, det_out_arg, dec_arena_in)
+
+def _run_message_server(channels, log_specs, fully_connected):
+    from logging_utils import configure_logging
+    settings, cfg_path, root = log_specs
+    configure_logging(settings, cfg_path, root)
+    from message_server import run_message_server
+    run_message_server(channels, fully_connected)
+
+def _run_gui_process(config, arena_vertices, arena_color,
+                     gui_in_queue, gui_control_queue,
+                     log_specs, wrap_config, hierarchy_overlay):
+    from logging_utils import configure_logging
+    settings, cfg_path, root = log_specs
+    configure_logging(settings, cfg_path, root)
+    from gui import GuiFactory
+    app, gui = GuiFactory.create_gui(
+        config, arena_vertices, arena_color,
+        gui_in_queue, gui_control_queue,
+        wrap_config=wrap_config,
+        hierarchy_overlay=hierarchy_overlay
+    )
+    gui.show()
+    app.exec()
 
 
 def pick_least_used_free_cores(num):
@@ -51,7 +127,7 @@ def set_affinity_safely(proc, num_cores):
     try:
         selected = pick_least_used_free_cores(num_cores)
         if not selected:
-            logging.warning("[WARNING] No free cores: fallback to all cores")
+            logger.warning("[WARNING] No free cores: fallback to all cores")
             fallback_count = psutil.cpu_count(logical=True) or 1
             selected = list(range(fallback_count))
         p = psutil.Process(proc.pid)
@@ -59,7 +135,7 @@ def set_affinity_safely(proc, num_cores):
         used_cores.update(selected)
         # print(f"[AFFINITY] PID {proc.pid} -> {selected}")
     except Exception as e:
-        logging.error(f"[AFFINITY ERROR] PID {proc.pid}: {e}")
+        logger.error(f"[AFFINITY ERROR] PID {proc.pid}: {e}")
 
 
 def set_shared_affinity(processes, num_cores):
@@ -83,7 +159,7 @@ def set_shared_affinity(processes, num_cores):
         used_cores.update(selected)
         # print(f"[AFFINITY] Shared -> {selected}")
     except Exception as e:
-        logging.error(f"[AFFINITY ERROR] shared for {[p.pid for p in processes if p]}: {e}")
+        logger.error(f"[AFFINITY ERROR] shared for {[p.pid for p in processes if p]}: {e}")
 
 
 class _PipeQueue:
@@ -153,16 +229,11 @@ class Environment:
         self._log_path = config_path.expanduser().resolve()
         self._log_root = Path(__file__).resolve().parents[1]
         self.log_specs = (self._log_set,self._log_path,self._log_root)
-        configure_logging(
-            settings = self._log_set,
-            config_path = self._log_path,
-            project_root = self._log_root
-        )
-        logging.info("Environment created successfully")
+        logger.info("Environment created successfully")
 
     def arena_init(self, exp: Config,specs):
         """Arena init."""
-        arena = ArenaFactory.create_arena(exp,specs)
+        arena = ArenaFactory.create_arena(exp)
         if self.num_runs > 1 and arena.get_seed() < 0:
             arena.reset_seed()
         arena.initialize()
@@ -192,12 +263,11 @@ class Environment:
                     EntityFactory.create_entity(
                         entity_type="agent_" + agent_type,
                         config_elem=config,
-                        specs=specs,
                         _id=n
                     )
                 )
         totals = {name: len(ents) for name, (_, ents) in agents.items()}
-        logging.info("Agents initialized: total=%s groups=%s", sum(totals.values()), totals)
+        logger.info("Agents initialized: total=%s groups=%s", sum(totals.values()), totals)
         return agents
 
     def _split_agents(
@@ -316,7 +386,6 @@ class Environment:
             arena_color,
             gui_in_queue,
             gui_control_queue,
-            log_specs,
             wrap_config=wrap_config,
             hierarchy_overlay=hierarchy_overlay
         )
@@ -336,7 +405,7 @@ class Environment:
                 psutil.Process().cpu_affinity(env_core)
                 used_cores.update(env_core)
         except Exception as e:
-            logging.warning("Could not set environment CPU affinity: %s", e)
+            logger.warning("Could not set environment CPU affinity: %s", e)
 
         for exp in self.experiments:
 
@@ -359,7 +428,7 @@ class Environment:
             agents = self.agents_init(exp,self.log_specs)
             render_enabled = self.render[0]
             n_agent_procs = self._compute_agent_processes(agents)
-            logging.info(
+            logger.info(
                 "Agent process auto-split: total_...=%d -> processes=%d",
                 self._count_agents(agents),
                 n_agent_procs
@@ -381,20 +450,22 @@ class Environment:
             arena_id = arena.get_id()
             wrap_config = arena.get_wrap_config()
             arena_hierarchy = arena.get_hierarchy()
-            collision_detector = CollisionDetector(arena_shape, self.collisions,self.log_specs, wrap_config=wrap_config)
+            collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
             arena_process = mp.Process(
-                target=arena.run,
-                args=(
-                    self.num_runs,
-                    self.time_limit,
-                    arena_queue_list,
-                    agents_queue_list,
-                    gui_in_queue,
-                    dec_arena_in,
-                    gui_control_queue,
-                    render_enabled,
-                )
+            target=_run_arena_process,
+            args=(
+                arena,
+                self.num_runs,
+                self.time_limit,
+                arena_queue_list,
+                agents_queue_list,
+                gui_in_queue,
+                dec_arena_in,
+                gui_control_queue,
+                render_enabled,
+                self.log_specs
             )
+        )
             # Managers
             manager_processes = []
 
@@ -406,37 +477,37 @@ class Environment:
 
             for idx_block, block in enumerate(agent_blocks):
                 block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
-                entity_manager = EntityManager(
-                    block_filtered,
-                    arena_shape,
-                    self.log_specs,
-                    wrap_config=wrap_config,
-                    hierarchy=arena_hierarchy,
-                    snapshot_stride=self.snapshot_stride,
-                    manager_id=idx_block,
-                    collisions=self.collisions,
-                    message_tx=message_channels[idx_block][0],
-                    message_rx=message_channels[idx_block][1],
-                )
                 proc = mp.Process(
-                    target=entity_manager.run,
+                    target=_run_manager_process,
                     args=(
+                        block_filtered,
+                        arena_shape,
+                        self.log_specs,
+                        wrap_config,
+                        arena_hierarchy,
+                        self.snapshot_stride,
+                        idx_block,
+                        self.collisions,
+                        message_channels[idx_block][0],
+                        message_channels[idx_block][1],
                         self.num_runs,
                         self.time_limit,
                         arena_queue_list[idx_block],
                         agents_queue_list[idx_block],
                         dec_agents_in_list[idx_block],
                         dec_agents_out_list[idx_block],
-                        agent_barrier
+                        agent_barrier,
+                    )
                 )
-                )
+
                 manager_processes.append(proc)
             # Message server process (one per environment).
             fully_connected = True #arena_id in ("abstract", "none", None)
             message_server_process = mp.Process(
-                target=run_message_server,
+                target=_run_message_server,
                 args=(message_channels, self.log_specs, fully_connected),
             )
+
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
             if not self.collisions:
@@ -449,7 +520,11 @@ class Environment:
                 det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
                 det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
 
-            detector_process = mp.Process(target=collision_detector.run, args=(det_in_arg, det_out_arg, dec_arena_in))
+            detector_process = mp.Process(
+                target=_run_detector_process,
+                args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, self.log_specs)
+            )
+
             pattern = {
                 "arena": 2,
                 "agents": 3,
@@ -463,7 +538,7 @@ class Environment:
                 render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
                 hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
                 gui_process = mp.Process(
-                    target=self.run_gui,
+                    target=_run_gui_process,
                     args=(
                         render_config,
                         arena_shape.vertices(),
@@ -476,9 +551,7 @@ class Environment:
                     )
                 )
                 gui_process.start()
-
                 message_server_process.start()
-
                 if detector_process and arena_id not in ("abstract", "none", None):
                     detector_process.start()
                 for proc in manager_processes:
@@ -577,6 +650,5 @@ class Environment:
                 if killed == 1:
                     raise RuntimeError("A subprocess exited unexpectedly.")
             shutdown_logging()
-
             gc.collect()
-        logging.info("All experiments completed successfully")
+        logger.info("All experiments completed successfully")

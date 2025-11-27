@@ -8,17 +8,15 @@
 # ------------------------------------------------------------------------------
 
 """EntityManager: synchronises agents and arena."""
-import logging
 import math
 import multiprocessing as mp
 import time
 from typing import Optional
-
 from random import Random
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
 from message_proxy import MessageProxy, NullMessageProxy
-from logging_utils import get_logger, configure_logging
+from logging_utils import get_logger
 
 logger = get_logger("entity_manager")
 
@@ -76,7 +74,6 @@ class EntityManager:
         self,
         agents: dict,
         arena_shape,
-        specs,
         wrap_config=None,
         hierarchy: Optional[HierarchyOverlay] = None,
         snapshot_stride: int = 1,
@@ -85,13 +82,7 @@ class EntityManager:
         message_tx = None,
         message_rx = None,
     ):
-        self.specs = specs
         """Initialize the instance."""
-        configure_logging(
-            settings = specs[0],
-            config_path = specs[1],
-            project_root = specs[2],
-        )
         self.agents = agents
         self.arena_shape = arena_shape
         self.wrap_config = wrap_config
@@ -122,7 +113,7 @@ class EntityManager:
 
         if any_msg_enabled_global and self.message_tx is not None and self.message_rx is not None:
             self._message_proxy = MessageProxy(
-                all_entities, self.message_tx, self.message_rx, self.specs, manager_id=self.manager_id
+                all_entities, self.message_tx, self.message_rx, manager_id=self.manager_id
             )
         else:
             self._message_proxy = None
@@ -351,6 +342,7 @@ class EntityManager:
                     pass
 
         logger.info("EntityManager closed all resources")
+        return
 
     # ----------------------------------------------------------------------
     # Geometry helpers
@@ -562,8 +554,7 @@ class EntityManager:
             positions = [entity.get_position() for entity in entities]
             names = [entity.get_name() for entity in entities]
             out[entities[0].entity()] = (shapes, velocities, vectors, positions, names)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Pack detector data prepared for %d groups", len(out))
+        logger.debug("Pack detector data prepared for %d groups", len(out))
         return out
 
     # ----------------------------------------------------------------------
@@ -594,8 +585,7 @@ class EntityManager:
             shape.translate_attachments(entity.get_orientation().z)
         except Exception:
             pass
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s wrapped to %s", entity.get_name(), (wrapped.x, wrapped.y, wrapped.z))
+        logger.debug("%s wrapped to %s", entity.get_name(), (wrapped.x, wrapped.y, wrapped.z))
 
     def _clamp_to_arena(self, entity):
         """
@@ -655,12 +645,11 @@ class EntityManager:
                 shape.translate_attachments(entity.get_orientation().z)
             except Exception:
                 pass
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "%s clamped to arena bounds %s",
-                    entity.get_name(),
-                    (clamped_pos.x, clamped_pos.y, clamped_pos.z),
-                )
+            logger.debug(
+                "%s clamped to arena bounds %s",
+                entity.get_name(),
+                (clamped_pos.x, clamped_pos.y, clamped_pos.z),
+            )
 
     # ----------------------------------------------------------------------
     # Main loop

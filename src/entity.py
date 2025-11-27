@@ -13,7 +13,7 @@ This module has been extended with a minimal plugin
 system for movement models. The original behaviour is
 preserved when no plugins are registered.
 """
-import hashlib, math, logging
+import hashlib, math
 from typing import Optional
 import numpy as np
 from random import Random
@@ -22,8 +22,7 @@ from bodies.shapes3D import Shape3DFactory
 from plugin_registry import get_logic_model, get_movement_model, get_motion_model
 from models.utils import normalize_angle
 import models  # noqa: F401  # ensure built-in models register themselves
-
-from logging_utils import get_logger, configure_logging
+from logging_utils import get_logger
 
 logger = get_logger("entity")
 
@@ -52,13 +51,8 @@ class EntityFactory:
     
     """Entity factory."""
     @staticmethod
-    def create_entity(entity_type:str,config_elem: dict,specs,_id:int=0):
+    def create_entity(entity_type:str,config_elem: dict,_id:int=0):
         """Create entity."""
-        configure_logging(
-            settings = specs[0],
-            config_path = specs[1],
-            project_root = specs[2],
-        )
         check_type = entity_type.split('_')[0]+'_'+entity_type.split('_')[1]
         if check_type == "agent_static":
             entity = StaticAgent(entity_type,config_elem,_id)
@@ -347,8 +341,7 @@ class Agent(Entity):
         self.message_bus.send_message(self, payload)
         self._message_custom_fields.clear()
         self._last_tx_tick = tick
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s sent message at tick %s: %s", self.get_name(), tick, payload)
+        logger.debug("%s sent message at tick %s: %s", self.get_name(), tick, payload)
 
     def receive_messages(self, tick):
         """Receive messages."""
@@ -375,8 +368,7 @@ class Agent(Entity):
         self._msg_receive_budget = max(0.0, self._msg_receive_budget - len(messages))
         self.messages.extend(messages)
         self._invalidate_message_indexes()
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s received %d messages", self.get_name(), len(messages))
+        logger.debug("%s received %d messages", self.get_name(), len(messages))
         return messages
 
     def clear_message_buffers(self) -> None:
@@ -1229,6 +1221,7 @@ class StaticObject(Object):
     def close(self):
         """Close the component resources."""
         del self.shape
+        return
 
     def get_shape(self):
         """Return the shape."""
@@ -1316,7 +1309,8 @@ class StaticAgent(Agent):
     def close(self):
         """Close the component resources."""
         del self.shape
-
+        return
+    
     def get_shape(self):
         """Return the shape."""
         return self.shape
@@ -1489,13 +1483,12 @@ class MovableAgent(StaticAgent):
             self.shape.translate(self.position)
             self.shape.translate_attachments(self.orientation.z)
 
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "%s position corrected by detector with delta %s -> new pos %s",
-                    self.get_name(),
-                    position_correction,
-                    (self.position.x, self.position.y, self.position.z),
-                )
+            logger.debug(
+                "%s position corrected by detector with delta %s -> new pos %s",
+                self.get_name(),
+                position_correction,
+                (self.position.x, self.position.y, self.position.z),
+            )
 
     def run(self,tick:int,arena_shape:Shape3DFactory,objects:dict,agents:dict):
         """Run the simulation routine."""
@@ -1508,8 +1501,7 @@ class MovableAgent(StaticAgent):
             self.forward_vector = Vector3D()
         if hasattr(self, "delta_orientation"):
             self.delta_orientation = Vector3D()
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s starting run tick=%s behavior=%s", self.get_name(), tick, self.moving_behavior)
+        logger.debug("%s starting run tick=%s behavior=%s", self.get_name(), tick, self.moving_behavior)
         if self._logic_plugin:
             self._logic_plugin.step(self, tick, arena_shape, objects, agents)
         if not self._movement_plugin:
@@ -1531,14 +1523,13 @@ class MovableAgent(StaticAgent):
         self.shape.rotate(self.delta_orientation.z)
         self.shape.translate(self.position)
         self.shape.translate_attachments(self.orientation.z)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "%s applied motion -> position=%s orientation=%s delta=%s",
-                self.get_name(),
-                (self.position.x, self.position.y, self.position.z),
-                self.orientation.z,
-                (self.delta_orientation.x, self.delta_orientation.y, self.delta_orientation.z)
-            )
+        logger.debug(
+            "%s applied motion -> position=%s orientation=%s delta=%s",
+            self.get_name(),
+            (self.position.x, self.position.y, self.position.z),
+            self.orientation.z,
+            (self.delta_orientation.x, self.delta_orientation.y, self.delta_orientation.z)
+        )
 
     def _legacy_motion_step(self):
         """Fallback kinematic update preserving legacy behaviour."""

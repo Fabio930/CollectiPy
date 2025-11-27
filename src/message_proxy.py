@@ -11,12 +11,11 @@
 
 from __future__ import annotations
 
-import logging
 import queue
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
-from logging_utils import get_logger,configure_logging
+from logging_utils import get_logger
 
 logger = get_logger("message_proxy")
 
@@ -73,13 +72,8 @@ class MessageProxy:
     protocol logic and message lifetime are handled by the Entity itself.
     """
 
-    def __init__(self, agents: Iterable[Any], message_tx: Any, message_rx: Any, specs, manager_id: int = 0):
+    def __init__(self, agents: Iterable[Any], message_tx: Any, message_rx: Any, manager_id: int = 0):
         """Initialize the instance."""
-        configure_logging(
-            settings = specs[0],
-            config_path = specs[1],
-            project_root = specs[2],
-        )
         self._agents: List[Any] = list(agents)
         self._uid_to_agent: Dict[str, Any] = {}
         self._inboxes: Dict[str, List[Dict[str, Any]]] = {}
@@ -200,7 +194,7 @@ class MessageProxy:
                 y = 0.0
 
             # Communication range: optional attribute.
-            comm_range = float(getattr(agent, "msg_comm_range", 0.0))
+            comm_range = float(getattr(agent, "msg_comm_range", 0.1))
 
             # Hierarchy / overlay-related fields, optional.
             node = getattr(agent, "hierarchy_node", None)

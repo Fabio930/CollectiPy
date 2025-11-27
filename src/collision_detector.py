@@ -16,8 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from bodies.shapes3D import Shape
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
-
-from logging_utils import get_logger,configure_logging
+from logging_utils import get_logger
 
 logger = get_logger("collision")
 
@@ -66,13 +65,8 @@ class CollisionDetector:
     # With 0.25, we do: final = max_response + 0.25 * sum(other_significant_responses)
     SECONDARY_RESPONSE_BLEND: float = 0.3
 
-    def __init__(self, arena_shape: Shape, collisions: bool,specs, wrap_config: Optional[dict] = None) -> None:
+    def __init__(self, arena_shape: Shape, collisions: bool, wrap_config: Optional[dict] = None) -> None:
         """Initialize the instance."""
-        configure_logging(
-            settings = specs[0],
-            config_path = specs[1],
-            project_root = specs[2],
-        )
         self.arena_shape = arena_shape
         self.collisions = collisions
         self.wrap_config = wrap_config
