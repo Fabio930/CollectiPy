@@ -54,6 +54,7 @@ def main(argv):
             config_path=config_path_resolved,
             project_root=ROOT_DIR,
             base_path=session_folder / "main",
+            log_filename_prefix=None,
         )
 
         # Load optional plugins

@@ -42,6 +42,7 @@ def configure_logging(
     config_path: Optional[str | Path] = None,
     project_root: Optional[str | Path] = None,
     base_path: Optional[str | Path] = None,
+    log_filename_prefix: Optional[str] = None,
 ) -> None:
     """
     Configure logging for this process.
@@ -90,7 +91,12 @@ def configure_logging(
         if base_path is None:
             base_path = Path(root) / LOG_DIRNAME / proc_name
 
-        log_context = _prepare_log_artifacts(config_path, root, base_path)
+        log_context = _prepare_log_artifacts(
+            config_path,
+            root,
+            base_path,
+            filename_prefix=log_filename_prefix,
+        )
         file_handler = _CompressedLogHandler(log_context)
 
         # File handler accepts ALL levels (root decides)
@@ -128,7 +134,8 @@ def configure_logging(
 def _prepare_log_artifacts(
     config_path: Optional[str | Path],
     project_root: Path,
-    base_path: Optional[str | Path]
+    base_path: Optional[str | Path],
+    filename_prefix: Optional[str] = None,
 ) -> Dict[str, Path | str | bool | None]:
 
     log_dir = Path(base_path).expanduser().resolve()
@@ -136,8 +143,10 @@ def _prepare_log_artifacts(
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-
-    filename_parts = [timestamp]
+    filename_parts = []
+    if filename_prefix:
+        filename_parts.append(filename_prefix)
+    filename_parts.append(timestamp)
 
     log_stem = "_".join(filename_parts)
     inner_log_name = f"{log_stem}.log"
@@ -254,6 +263,7 @@ def initialize_process_console_logging(
         _settings_without_file(settings),
         config_path,
         project_root,
+        log_filename_prefix=None,
     )
 
 
@@ -267,28 +277,39 @@ def start_run_logging(
     config_path = log_specs.get("config_path") if log_specs else None
     project_root = log_specs.get("project_root") if log_specs else None
     runs_root = log_specs.get("runs_root") if log_specs else None
-    log_root_override = log_specs.get("log_root_override") if log_specs else None
     process_folder = log_specs.get("process_folder") if log_specs else None
-    if log_specs:
-        run_subdir = bool(log_specs.get("run_subdir", True))
-    else:
-        run_subdir = True
+    log_filename_prefix = log_specs.get("log_file_prefix") if log_specs else None
+    if not log_filename_prefix:
+        log_filename_prefix = process_name
 
-    if log_root_override:
-        base_root = Path(log_root_override)
-    elif runs_root:
-        base_root = Path(runs_root)
+    if process_folder is None:
+        folder_name = process_name
+    elif process_folder == "":
+        folder_name = None
+    else:
+        folder_name = process_folder
+
+    if runs_root:
+        base_root = Path(runs_root) / f"run_{run_number}"
+        if folder_name:
+            base_path = base_root / folder_name
+        else:
+            base_path = base_root
     else:
         base_root = Path(project_root or Path.cwd()) / LOG_DIRNAME
+        if folder_name:
+            base_root = base_root / folder_name
+        base_path = base_root / f"run_{run_number}"
 
-    if run_subdir:
-        base_root = base_root / f"run_{run_number}"
-
-    folder_name = process_folder if process_folder else process_name
-    base_path = base_root / folder_name
     base_path.mkdir(parents=True, exist_ok=True)
     shutdown_logging()
-    configure_logging(settings, config_path, project_root, base_path=base_path)
+    configure_logging(
+        settings,
+        config_path,
+        project_root,
+        base_path=base_path,
+        log_filename_prefix=log_filename_prefix,
+    )
 
 
 def shutdown_logging():

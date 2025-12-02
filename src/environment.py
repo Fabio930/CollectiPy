@@ -439,9 +439,6 @@ class Environment:
             base_path = self._log_set.get("base_path", "./logs")
             logs_root = Path(base_path).expanduser().resolve()
         logs_root.mkdir(parents=True, exist_ok=True)
-        session_log_root = self._session_log_root or logs_root
-        main_log_root = session_log_root / "main"
-        main_log_root.mkdir(parents=True, exist_ok=True)
         # Reserve a dedicated core for the environment/main process so workers use different ones.
         try:
             env_core = pick_least_used_free_cores(1)
@@ -469,13 +466,6 @@ class Environment:
                 "runs_root": runs_root,
             }
             assigned_worker_cores = set()
-            def _main_process_log_specs(proc_name: str) -> dict[str, Any]:
-                return {
-                    **self._base_log_specs,
-                    "log_root_override": main_log_root,
-                    "run_subdir": False,
-                    "process_folder": proc_name,
-                }
 
             def _safe_terminate(proc):
                 if proc and proc.is_alive():
@@ -519,9 +509,21 @@ class Environment:
             wrap_config = arena.get_wrap_config()
             arena_hierarchy = arena.get_hierarchy()
             collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
-            arena_log_specs = _main_process_log_specs("arena")
-            collision_log_specs = _main_process_log_specs("collision")
-            message_server_log_specs = _main_process_log_specs("message_server")
+            arena_log_specs = {
+                **exp_log_specs,
+                "process_folder": "",
+                "log_file_prefix": "arena",
+            }
+            collision_log_specs = {
+                **exp_log_specs,
+                "process_folder": "",
+                "log_file_prefix": "collision",
+            }
+            message_server_log_specs = {
+                **exp_log_specs,
+                "process_folder": "",
+                "log_file_prefix": "message_server",
+            }
             arena_process = mp.Process(
                 target=_run_arena_process,
                 args=(
