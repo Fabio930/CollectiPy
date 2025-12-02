@@ -115,7 +115,7 @@ def _run_message_server(channels, log_specs, fully_connected):
 def _run_gui_process(config, arena_vertices, arena_color,
                      gui_in_queue, gui_control_queue,
                      log_specs, wrap_config, hierarchy_overlay):
-    from logging_utils import initialize_process_console_logging
+    from logging_utils import initialize_process_console_logging, shutdown_logging
     settings = log_specs.get("settings")
     cfg_path = log_specs.get("config_path")
     root = log_specs.get("project_root")
@@ -125,10 +125,17 @@ def _run_gui_process(config, arena_vertices, arena_color,
         config, arena_vertices, arena_color,
         gui_in_queue, gui_control_queue,
         wrap_config=wrap_config,
-        hierarchy_overlay=hierarchy_overlay
+        hierarchy_overlay=hierarchy_overlay,
+        log_context={
+            "log_specs": log_specs,
+            "process_name": "gui"
+        }
     )
     gui.show()
-    app.exec()
+    try:
+        app.exec()
+    finally:
+        shutdown_logging()
 
 
 def pick_least_used_free_cores(num):
@@ -527,6 +534,11 @@ class Environment:
                 "process_folder": "",
                 "log_file_prefix": "message_server",
             }
+            gui_log_specs = {
+                **exp_log_specs,
+                "process_folder": "",
+                "log_file_prefix": "gui",
+            }
             arena_process = mp.Process(
                 target=_run_arena_process,
                 args=(
@@ -584,6 +596,7 @@ class Environment:
                 target=_run_message_server,
                 args=(message_channels, message_server_log_specs, fully_connected),
             )
+            gui_process = None
 
             def _signal_message_server_shutdown():
                 """Request the message server to stop via its queues."""
@@ -604,6 +617,25 @@ class Environment:
                     time.sleep(0.01)
                 if message_server_process.is_alive():
                     _safe_terminate(message_server_process)
+
+            def _signal_gui_shutdown():
+                """Request the GUI process to stop via its input queue."""
+                if gui_in_queue is None:
+                    return
+                try:
+                    gui_in_queue.put({"status": "shutdown"})
+                except Exception:
+                    pass
+
+            def _stop_gui_gracefully(timeout: float = 1.0):
+                """Signal shutdown and wait for the GUI to exit."""
+                nonlocal gui_process
+                if gui_process is None:
+                    return
+                _signal_gui_shutdown()
+                deadline = time.time() + timeout
+                while gui_process.is_alive() and time.time() < deadline:
+                    time.sleep(0.01)
 
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
@@ -663,7 +695,7 @@ class Environment:
                         arena_shape.color(),
                         gui_in_queue,
                         gui_control_queue,
-                        exp_log_specs,
+                        gui_log_specs,
                         wrap_config,
                         hierarchy_overlay
                     )
@@ -701,7 +733,9 @@ class Environment:
                         for proc in manager_processes:
                             _safe_terminate(proc)
                         _stop_detector_gracefully()
-                        _safe_terminate(gui_process)
+                        _stop_gui_gracefully()
+                        if gui_process.is_alive():
+                            _safe_terminate(gui_process)
                         _stop_message_server_gracefully()
                         break
                     if not arena_alive or not gui_alive:
@@ -710,11 +744,14 @@ class Environment:
                         for proc in manager_processes:
                             _safe_terminate(proc)
                         _stop_detector_gracefully()
-                        _safe_terminate(gui_process)
+                        _stop_gui_gracefully()
+                        if gui_process.is_alive():
+                            _safe_terminate(gui_process)
                         _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)
                 _stop_detector_gracefully()
+                _stop_gui_gracefully()
                 _stop_message_server_gracefully()
                 # Join all processes
                 _safe_join(arena_process)

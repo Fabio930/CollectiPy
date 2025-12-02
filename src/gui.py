@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 
 """Graphical user interface for the simulator."""
-import logging, math, time
+import math, time
 from typing import Any, Optional, cast
 import matplotlib.pyplot as plt
 from geometry_utils.vector3D import Vector3D
@@ -17,7 +17,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame, QSlider
 from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF, Signal
 from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut, QResizeEvent
-from logging_utils import get_logger
+from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("gui")
 # Help static analyzers with Qt dynamic attributes/constants.
@@ -29,7 +29,7 @@ class GuiFactory():
 
     """Gui factory."""
     @staticmethod
-    def create_gui(config_elem:Any,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def create_gui(config_elem:Any,arena_vertices:list,arena_color:str,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None, log_context=None):
         """Create gui."""
         if config_elem.get("_id") in ("2D","abstract"):
             return QApplication([]),GUI_2D(
@@ -39,7 +39,8 @@ class GuiFactory():
                 gui_in_queue,
                 gui_control_queue,
                 wrap_config=wrap_config,
-                hierarchy_overlay=hierarchy_overlay
+                hierarchy_overlay=hierarchy_overlay,
+                log_context=log_context
             )
         else:
             raise ValueError(f"Invalid gui type: {config_elem.get('_id')} valid types are '2D' or 'abstract'")
@@ -75,7 +76,7 @@ class DetachedPanelWindow(QWidget):
 
 class GUI_2D(QWidget):
     """2 d."""
-    def __init__(self, config_elem: Any,arena_vertices,arena_color,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None):
+    def __init__(self, config_elem: Any,arena_vertices,arena_color,gui_in_queue,gui_control_queue, wrap_config=None, hierarchy_overlay=None, log_context=None):
         """Initialize the instance."""
         super().__init__()
         self.gui_mode = config_elem.get("_id", "2D")
@@ -98,6 +99,11 @@ class GUI_2D(QWidget):
         self.arena_color = arena_color
         self.gui_in_queue = gui_in_queue
         self.gui_control_queue = gui_control_queue
+        log_context = log_context or {}
+        self._log_specs = log_context.get("log_specs")
+        self._process_name = log_context.get("process_name", "gui")
+        self._current_run: Optional[int] = None
+        self._last_tick: Optional[int] = None
         self.wrap_config = wrap_config
         self.unbounded_mode = bool(wrap_config and wrap_config.get("unbounded"))
         self._unbounded_rect: Optional[QRectF] = None
@@ -681,7 +687,33 @@ class GUI_2D(QWidget):
             app = QApplication.instance()
             if app is not None:
                 app.quit()
-        super().closeEvent(event)
+        try:
+            shutdown_logging()
+        finally:
+            super().closeEvent(event)
+
+    def stop_gracefully(self):
+        """Request a clean GUI shutdown (flush logs and stop Qt loop)."""
+        try:
+            logger.info("GUI shutdown requested")
+        except Exception:
+            pass
+        try:
+            self.running = False
+            self.step_requested = False
+            self.reset = False
+            timer = getattr(self, "timer", None)
+            if timer:
+                timer.stop()
+        except Exception:
+            pass
+        try:
+            shutdown_logging()
+        except Exception:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
     def _recompute_graph_layout(self):
         """Rebuild the graph layout using the current mode."""
         if not self.connection_graphs or not self.connection_graphs.get("messages"):
@@ -1408,11 +1440,70 @@ class GUI_2D(QWidget):
         self.figure.tight_layout()
         self.canvas.draw_idle()
 
+    def _pull_latest_gui_payload(self) -> Any:
+        """Return the most recent payload from the GUI queue (if any)."""
+        if self.gui_in_queue is None:
+            return None
+        if self.gui_in_queue.qsize() <= 0:
+            return None
+        data = self.gui_in_queue.get()
+        while self.gui_in_queue.qsize() > 0:
+            data = self.gui_in_queue.get()
+        return data
+
+    def _maybe_rotate_logs(self, payload: Any) -> None:
+        """Rotate GUI logging when a new run starts."""
+        if not isinstance(payload, dict):
+            return
+        status = payload.get("status")
+        tick_value = None
+        if isinstance(status, (list, tuple)) and status:
+            try:
+                tick_value = int(status[0])
+            except Exception:
+                tick_value = None
+
+        if self._log_specs is None:
+            if tick_value is not None:
+                self._last_tick = tick_value
+            return
+
+        run_value = payload.get("run")
+        try:
+            run_number = int(run_value) if run_value is not None else None
+        except (TypeError, ValueError):
+            run_number = None
+
+        next_run = None
+        if run_number is not None:
+            if self._current_run is None or run_number > self._current_run:
+                next_run = run_number
+            elif tick_value == 0 and (self._last_tick is None or self._last_tick > 0):
+                next_run = run_number
+        elif tick_value == 0:
+            if self._current_run is None:
+                next_run = 1
+            elif self._last_tick is not None and self._last_tick > 0:
+                next_run = self._current_run + 1
+
+        if next_run is not None:
+            start_run_logging(self._log_specs, self._process_name, next_run)
+            self._current_run = next_run
+            logger.info("GUI logging started for run %d", next_run)
+
+        if tick_value is not None:
+            self._last_tick = tick_value
+
     def update_data(self):
         """Update data."""
+        data = self._pull_latest_gui_payload()
+        if isinstance(data, dict) and data.get("status") == "shutdown":
+            self.stop_gracefully()
+            return
+
         if self.running or self.step_requested:
-            if self.gui_in_queue.qsize() > 0:
-                data = self.gui_in_queue.get()
+            if data:
+                self._maybe_rotate_logs(data)
                 self.time = data["status"][0]
                 o_shapes = {}
                 for key, item in data["objects"].items():

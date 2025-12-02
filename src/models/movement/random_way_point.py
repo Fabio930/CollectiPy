@@ -7,7 +7,6 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import logging
 import math
 from plugin_base import MovementModel
 from plugin_registry import register_movement_model
@@ -61,8 +60,7 @@ class RandomWayPointMovement(MovementModel):
             agent.motion = agent.RIGHT
         else:
             agent.motion = agent.FORWARD
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("%s steering %s (angle_to_goal=%.2f)", agent.get_name(), agent.motion, angle_to_goal)
+        logger.debug("%s steering %s (angle_to_goal=%.2f)", agent.get_name(), agent.motion, angle_to_goal)
 
     def _random_goal(self, arena_shape):
         """Return a new goal position."""

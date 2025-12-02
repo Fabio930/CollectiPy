@@ -568,7 +568,8 @@ class SolidArena(Arena):
                 initial_objects = self.pack_objects_data()
                 arena_data = {
                     "status": [0, self.ticks_per_second],
-                    "objects": initial_objects
+                    "objects": initial_objects,
+                    "run": run
                 }
                 detector_payload = {"objects": initial_objects, "run": run}
                 if dec_arena_in is not None:
@@ -637,7 +638,8 @@ class SolidArena(Arena):
                             cmd = self._maybe_get(gui_control_queue, timeout=0.0)
                     arena_data = {
                         "status": [t,self.ticks_per_second],
-                        "objects": self.pack_objects_data()
+                        "objects": self.pack_objects_data(),
+                        "run": run
                     }
                     if running or step_mode:
                         if not render and not getattr(self, "quiet", False):
@@ -714,7 +716,8 @@ class SolidArena(Arena):
                     if reset:
                         arena_data = {
                                     "status": "reset",
-                                    "objects": self.pack_objects_data()
+                                    "objects": self.pack_objects_data(),
+                                    "run": run
                         }
                         for q in arena_queues:
                             q.put(arena_data)
@@ -728,7 +731,8 @@ class SolidArena(Arena):
                     self.reset()
                     arena_data = {
                                 "status": "reset",
-                                "objects": self.pack_objects_data()
+                                "objects": self.pack_objects_data(),
+                                "run": run
                     }
                     for q in arena_queues:
                         q.put(arena_data)
