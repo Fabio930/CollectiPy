@@ -203,6 +203,7 @@ class CollisionDetector:
                             if run_id is not None and run_id != current_run:
                                 current_run = run_id
                                 start_run_logging(log_specs, process_name, current_run)
+                                logger.info("Collision detector logging started for run %s", current_run)
                             # Expected format: {"objects": {id: (shapes, positions)}}
                             self.objects = payload.get("objects", {}) or {}
                             logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))

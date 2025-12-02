@@ -563,10 +563,14 @@ class SolidArena(Arena):
             try:
                 logger.info(f"Run number {run} started")
                 self._log_object_positions(run, "tick 0")
+                initial_objects = self.pack_objects_data()
                 arena_data = {
-                    "status": [0,self.ticks_per_second],
-                    "objects": self.pack_objects_data()
+                    "status": [0, self.ticks_per_second],
+                    "objects": initial_objects
                 }
+                detector_payload = {"objects": initial_objects, "run": run}
+                if dec_arena_in is not None:
+                    dec_arena_in.put(detector_payload)
                 if render:
                     gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
                     self._apply_gui_backpressure(gui_in_queue)

@@ -581,6 +581,26 @@ class Environment:
                 args=(message_channels, message_server_log_specs, fully_connected),
             )
 
+            def _signal_message_server_shutdown():
+                """Request the message server to stop via its queues."""
+                shutdown_packet = {"kind": "shutdown"}
+                for tx, _ in message_channels:
+                    if tx is None:
+                        continue
+                    try:
+                        tx.put(shutdown_packet)
+                    except Exception:
+                        continue
+
+            def _stop_message_server_gracefully(timeout: float = 1.0):
+                """Signal shutdown, wait briefly, then terminate if still alive."""
+                _signal_message_server_shutdown()
+                deadline = time.time() + timeout
+                while message_server_process.is_alive() and time.time() < deadline:
+                    time.sleep(0.01)
+                if message_server_process.is_alive():
+                    _safe_terminate(message_server_process)
+
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
             if not self.collisions:
@@ -657,7 +677,7 @@ class Environment:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
                         _safe_terminate(gui_process)
-                        _safe_terminate(message_server_process)
+                        _stop_message_server_gracefully()
                         break
                     if not arena_alive or not gui_alive:
                         if arena_alive:
@@ -666,7 +686,7 @@ class Environment:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
                         _safe_terminate(gui_process)
-                        _safe_terminate(message_server_process)
+                        _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)
                 # Join all processes
@@ -705,13 +725,13 @@ class Environment:
                         for proc in manager_processes:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
-                        _safe_terminate(message_server_process)
+                        _stop_message_server_gracefully()
                         break
                     if not arena_alive:
                         for proc in manager_processes:
                             _safe_terminate(proc)
                         _safe_terminate(detector_process)
-                        _safe_terminate(message_server_process)
+                        _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)
                 # Join all processes

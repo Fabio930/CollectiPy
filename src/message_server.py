@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
-from logging_utils import get_logger, start_run_logging
+from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("message_server")
 
@@ -115,18 +115,20 @@ class MessageServer:
             len(self.channels),
             self.fully_connected
         )
-        while self._running:
-            any_packet = False
-            for manager_id, (uplink, _) in enumerate(self.channels):
-                processed = self._process_uplink(manager_id, uplink)
-                any_packet = any_packet or processed
+        try:
+            while self._running:
+                any_packet = False
+                for manager_id, (uplink, _) in enumerate(self.channels):
+                    processed = self._process_uplink(manager_id, uplink)
+                    any_packet = any_packet or processed
 
-            if not any_packet:
-                # Avoid busy waiting.
-                time.sleep(0.001)
-
-        logger.info("Message server shutting down")
-        self._grid.close()
+                if not any_packet:
+                    # Avoid busy waiting.
+                    time.sleep(0.0001)
+        finally:
+            logger.info("Message server shutting down")
+            self._grid.close()
+            shutdown_logging()
 
     # ------------------------------------------------------------------
     # Internal helpers
