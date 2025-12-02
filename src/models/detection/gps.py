@@ -22,8 +22,8 @@ class GPSDetectionModel(DetectionModel):
         """Initialize the instance."""
         self.agent = agent
         context = context or {}
-        self.num_groups = context.get("num_groups", 1)
-        self.num_spins_per_group = context.get("num_spins_per_group", 1)
+        self.num_groups = context.get("num_groups", 8)
+        self.num_spins_per_group = context.get("num_spins_per_group", 12)
         self.perception_width = context.get("perception_width", 0.5)
         self.group_angles = context.get("group_angles", np.linspace(0, 2 * math.pi, self.num_groups, endpoint=False))
         self.reference = context.get("reference", "egocentric")
