@@ -680,6 +680,11 @@ class EntityManager:
 
         while run < num_runs + 1:
             start_run_logging(log_specs, process_name, run)
+            if self.manager_id == 0 and self.message_tx is not None:
+                try:
+                    self.message_tx.put({"kind": "run_start", "run": int(run)})
+                except Exception as exc:
+                    logger.warning("Failed to notify message server about run %s: %s", run, exc)
             try:
                 metadata_sent = False
                 metadata_snapshot = self.get_agent_metadata()

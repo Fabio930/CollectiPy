@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
-from logging_utils import get_logger
+from logging_utils import get_logger, start_run_logging
 
 logger = get_logger("message_server")
 
@@ -76,6 +76,8 @@ class MessageServer:
     def __init__(
         self,
         channels: Sequence[Tuple[Any, Any]],
+        log_specs: Optional[Dict[str, Any]] = None,
+        process_name: str = "message_server",
         fully_connected: bool = False,
         cell_size: float = 1.0
     ):
@@ -89,6 +91,10 @@ class MessageServer:
         """
         self.channels = list(channels)
         self.fully_connected = bool(fully_connected)
+
+        self._log_specs = log_specs or {}
+        self._process_name = process_name
+        self._current_run = 0
 
         self._agents: Dict[str, _AgentInfo] = {}
         self._grid = SpatialGrid(cell_size)
@@ -147,10 +153,28 @@ class MessageServer:
             if kind == "agents_snapshot":
                 self._handle_agents_snapshot(packet)
                 processed_any = True
+            elif kind == "run_start":
+                self._handle_run_start(packet)
+                processed_any = True
             elif kind == "tx":
                 self._handle_tx(packet)
                 processed_any = True
         return processed_any
+
+    def _handle_run_start(self, packet: Dict[str, Any]) -> None:
+        """Rotate message server logging when a new run starts."""
+        if not self._log_specs:
+            return
+        run_value = packet.get("run")
+        try:
+            run_num = int(run_value)
+        except (TypeError, ValueError):
+            return
+        if run_num <= self._current_run:
+            return
+        self._current_run = run_num
+        start_run_logging(self._log_specs, self._process_name, run_num)
+        logger.info("Message server logging started for run %d", run_num)
 
     def _handle_agents_snapshot(self, packet: Dict[str, Any]) -> None:
         """Update agent registry from a snapshot packet."""
@@ -352,7 +376,12 @@ class MessageServer:
         return False
 
 
-def run_message_server(channels: Iterable[Tuple[Any, Any]],fully_connected: bool = False, cell_size: float = 1.0) -> None:
+def run_message_server(
+    channels: Iterable[Tuple[Any, Any]],
+    log_specs: Optional[Dict[str, Any]] = None,
+    fully_connected: bool = False,
+    cell_size: float = 1.0,
+) -> None:
     """
     Convenience function used as a multiprocessing target.
 
@@ -360,5 +389,11 @@ def run_message_server(channels: Iterable[Tuple[Any, Any]],fully_connected: bool
     :param fully_connected: True to skip spatial filtering (typical for abstract arenas).
     :param cell_size: SpatialGrid cell size for non-abstract arenas.
     """
-    server = MessageServer(list(channels), fully_connected=fully_connected, cell_size=cell_size)
+    server = MessageServer(
+        list(channels),
+        log_specs=log_specs,
+        process_name="message_server",
+        fully_connected=fully_connected,
+        cell_size=cell_size,
+    )
     server.run()

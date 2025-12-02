@@ -108,7 +108,7 @@ def _run_message_server(channels, log_specs, fully_connected):
     root = log_specs.get("project_root")
     initialize_process_console_logging(settings, cfg_path, root)
     from message_server import run_message_server
-    run_message_server(channels, fully_connected)
+    run_message_server(channels, log_specs, fully_connected)
 
 def _run_gui_process(config, arena_vertices, arena_color,
                      gui_in_queue, gui_control_queue,
