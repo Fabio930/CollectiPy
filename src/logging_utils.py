@@ -217,7 +217,12 @@ class _CompressedLogHandler(logging.Handler):
         self._context = context
         self._zip = None
         self._inner_stream = None
-        self._activate()
+        try:
+            self._activate()
+        except Exception:
+            # If we cannot activate the zip (e.g., interrupted run), fall back to NullHandler-like behaviour.
+            self._zip = None
+            self._inner_stream = None
 
     def _activate(self):
         archive_path: Path = self._context["log_path"]

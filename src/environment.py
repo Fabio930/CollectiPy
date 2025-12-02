@@ -718,131 +718,148 @@ class Environment:
                 "messages": 2,
             }
             killed = 0
-            if render_enabled:
-                render_config = dict(self.render[1])
-                render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
-                hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
-                gui_process = mp.Process(
-                    target=_run_gui_process,
-                    args=(
-                        render_config,
-                        arena_shape.vertices(),
-                        arena_shape.color(),
-                        gui_in_queue,
-                        gui_control_queue,
-                        gui_log_specs,
-                        wrap_config,
-                        hierarchy_overlay
+            try:
+                if render_enabled:
+                    render_config = dict(self.render[1])
+                    render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
+                    hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
+                    gui_process = mp.Process(
+                        target=_run_gui_process,
+                        args=(
+                            render_config,
+                            arena_shape.vertices(),
+                            arena_shape.color(),
+                            gui_in_queue,
+                            gui_control_queue,
+                            gui_log_specs,
+                            wrap_config,
+                            hierarchy_overlay
+                        )
                     )
-                )
-                gui_process.start()
-                message_server_process.start()
-                if detector_process and arena_id not in ("abstract", "none", None):
-                    detector_process.start()
-                for proc in manager_processes:
-                    proc.start()
-                arena_process.start()
+                    gui_process.start()
+                    message_server_process.start()
+                    if detector_process and arena_id not in ("abstract", "none", None):
+                        detector_process.start()
+                    for proc in manager_processes:
+                        proc.start()
+                    arena_process.start()
 
-                assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
-                # Agent processes share a capped core set (2 cores per proc)...
-                available_remaining = max(1, total_cores - len(used_cores))
-                agent_core_budget = min(n_blocks * 2, available_remaining)
-                agent_core_budget = max(agent_core_budget, 1)
-                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                if detector_process:
-                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
-                assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
-                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
+                    # Agent processes share a capped core set (2 cores per proc)...
+                    available_remaining = max(1, total_cores - len(used_cores))
+                    agent_core_budget = min(n_blocks * 2, available_remaining)
+                    agent_core_budget = max(agent_core_budget, 1)
+                    assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
+                    if detector_process:
+                        assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                    assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
+                    assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
 
-                # Supervision loop
-                while True:
-                    exit_failure = next(
-                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
-                        None
-                    )
-                    arena_alive = arena_process.is_alive()
-                    gui_alive = gui_process.is_alive()
-                    if exit_failure:
-                        killed = 1
-                        _safe_terminate(arena_process)
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _stop_detector_gracefully()
-                        _stop_gui_gracefully()
-                        if gui_process.is_alive():
-                            _safe_terminate(gui_process)
-                        _stop_message_server_gracefully()
-                        break
-                    if not arena_alive or not gui_alive:
-                        if arena_alive:
+                    # Supervision loop
+                    while True:
+                        exit_failure = next(
+                            (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                            None
+                        )
+                        arena_alive = arena_process.is_alive()
+                        gui_alive = gui_process.is_alive()
+                        if exit_failure:
+                            killed = 1
                             _safe_terminate(arena_process)
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _stop_detector_gracefully()
-                        _stop_gui_gracefully()
-                        if gui_process.is_alive():
-                            _safe_terminate(gui_process)
-                        _stop_message_server_gracefully()
-                        break
-                    time.sleep(0.5)
+                            for proc in manager_processes:
+                                _safe_terminate(proc)
+                            _stop_detector_gracefully()
+                            _stop_gui_gracefully()
+                            if gui_process.is_alive():
+                                _safe_terminate(gui_process)
+                            _stop_message_server_gracefully()
+                            break
+                        if not arena_alive or not gui_alive:
+                            if arena_alive:
+                                _safe_terminate(arena_process)
+                            for proc in manager_processes:
+                                _safe_terminate(proc)
+                            _stop_detector_gracefully()
+                            _stop_gui_gracefully()
+                            if gui_process.is_alive():
+                                _safe_terminate(gui_process)
+                            _stop_message_server_gracefully()
+                            break
+                        time.sleep(0.5)
+                    _stop_detector_gracefully()
+                    _stop_gui_gracefully()
+                    _stop_message_server_gracefully()
+                    # Join all processes
+                    _safe_join(arena_process)
+                    for proc in manager_processes:
+                        _safe_join(proc)
+                    _safe_join(detector_process)
+                    _safe_join(gui_process)
+                    _safe_join(message_server_process)
+                else:
+                    message_server_process.start()
+                    if detector_process and arena_id not in ("abstract", "none", None):
+                        detector_process.start()
+                    for proc in manager_processes:
+                        proc.start()
+                    arena_process.start()
+                    assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
+                    available_remaining = max(1, total_cores - len(used_cores))
+                    agent_core_budget = min(n_blocks * 2, available_remaining)
+                    agent_core_budget = max(agent_core_budget, 1)
+                    assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
+                    if detector_process:
+                        assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                    assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    killed = 0
+                    # Supervision loop
+                    while True:
+                        exit_failure = next(
+                            (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                            None
+                        )
+                        arena_alive = arena_process.is_alive()
+                        if exit_failure:
+                            killed = 1
+                            _safe_terminate(arena_process)
+                            for proc in manager_processes:
+                                _safe_terminate(proc)
+                            _stop_detector_gracefully()
+                            _stop_message_server_gracefully()
+                            break
+                        if not arena_alive:
+                            for proc in manager_processes:
+                                _safe_terminate(proc)
+                            _stop_detector_gracefully()
+                            _stop_message_server_gracefully()
+                            break
+                        time.sleep(0.5)
+                    _stop_detector_gracefully()
+                    _stop_message_server_gracefully()
+                    # Join all processes
+                    _safe_join(arena_process)
+                    for proc in manager_processes:
+                        _safe_join(proc)
+                    _safe_join(detector_process)
+                    _safe_join(message_server_process)
+                    if killed == 1:
+                        raise RuntimeError("A subprocess exited unexpectedly.")
+            finally:
                 _stop_detector_gracefully()
                 _stop_gui_gracefully()
                 _stop_message_server_gracefully()
-                # Join all processes
+                _safe_terminate(arena_process)
+                _safe_terminate(detector_process)
+                _safe_terminate(gui_process)
+                _safe_terminate(message_server_process)
+                for proc in manager_processes:
+                    _safe_terminate(proc)
                 _safe_join(arena_process)
                 for proc in manager_processes:
                     _safe_join(proc)
                 _safe_join(detector_process)
                 _safe_join(gui_process)
                 _safe_join(message_server_process)
-            else:
-                message_server_process.start()
-                if detector_process and arena_id not in ("abstract", "none", None):
-                    detector_process.start()
-                for proc in manager_processes:
-                    proc.start()
-                arena_process.start()
-                assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
-                available_remaining = max(1, total_cores - len(used_cores))
-                agent_core_budget = min(n_blocks * 2, available_remaining)
-                agent_core_budget = max(agent_core_budget, 1)
-                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                if detector_process:
-                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
-                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
-                killed = 0
-                # Supervision loop
-                while True:
-                    exit_failure = next(
-                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
-                        None
-                    )
-                    arena_alive = arena_process.is_alive()
-                    if exit_failure:
-                        killed = 1
-                        _safe_terminate(arena_process)
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _stop_detector_gracefully()
-                        _stop_message_server_gracefully()
-                        break
-                    if not arena_alive:
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _stop_detector_gracefully()
-                        _stop_message_server_gracefully()
-                        break
-                    time.sleep(0.5)
-                _stop_detector_gracefully()
-                _stop_message_server_gracefully()
-                # Join all processes
-                _safe_join(arena_process)
-                for proc in manager_processes:
-                    _safe_join(proc)
-                _safe_join(detector_process)
-                _safe_join(message_server_process)
-                if killed == 1:
-                    raise RuntimeError("A subprocess exited unexpectedly.")
             shutdown_logging()
             gc.collect()
             used_cores.difference_update(assigned_worker_cores)

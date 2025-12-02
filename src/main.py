@@ -39,6 +39,7 @@ def main(argv):
 
     config_path_resolved = Path(configfile).expanduser().resolve()
 
+    exit_code = 0
     try:
         # IMPORTANT: use the resolved path
         my_config = Config(config_path=config_path_resolved)
@@ -89,9 +90,10 @@ def main(argv):
         logging.fatal(f"Failed to create environment: {e}")
         import traceback
         traceback.print_exc()
+        exit_code = 1
 
     finally:
-        sys.exit(1)
+        sys.exit(exit_code)
 
 if __name__ == "__main__":
     main(sys.argv[1:])

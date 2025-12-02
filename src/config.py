@@ -235,9 +235,15 @@ def _validate_results_block(results):
 def _validate_logging_block(logging_cfg):
     if not isinstance(logging_cfg, dict):
         raise ValueError("The 'logging' block must be a dictionary")
-    level = logging_cfg.get("level")
-    if level is not None and level not in LOG_LEVELS:
-        raise ValueError(f"Invalid logging.level '{level}', must be one of {sorted(LOG_LEVELS)}")
+    level_raw = logging_cfg.get("level")
+    if level_raw is not None:
+        if isinstance(level_raw, str):
+            level = level_raw.upper()
+            if level not in LOG_LEVELS:
+                raise ValueError(f"Invalid logging.level '{level_raw}', must be one of {sorted(LOG_LEVELS)}")
+            logging_cfg["level"] = level
+        else:
+            raise ValueError(f"Invalid logging.level '{level_raw}', must be a string in {sorted(LOG_LEVELS)}")
     to_file = logging_cfg.get("to_file")
     if to_file is not None and not isinstance(to_file, bool):
         raise ValueError("'logging.to_file' must be a boolean")

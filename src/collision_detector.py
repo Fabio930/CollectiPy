@@ -462,7 +462,15 @@ class CollisionDetector:
                 r = rec["radius"]
                 name = rec["name"]
 
-                for obj_id, (shapes, positions) in self.objects.items():
+                for obj_id, obj_payload in self.objects.items():
+                    try:
+                        shapes, positions = obj_payload[:2]
+                    except Exception:
+                        # Accept legacy payloads with extra metadata.
+                        try:
+                            shapes, positions = obj_payload
+                        except Exception:
+                            continue
                     for s_idx, obj_shape in enumerate(shapes):
                         obj_pos = positions[s_idx]
 
