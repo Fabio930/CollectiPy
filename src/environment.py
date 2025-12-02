@@ -35,12 +35,18 @@ def _run_arena_process(arena, num_runs, time_limit,
     from logging_utils import configure_logging
     settings, cfg_path, root = log_specs
     configure_logging(settings, cfg_path, root)
-    arena.run(
-        num_runs, time_limit,
-        arena_queue_list, agents_queue_list,
-        gui_in_queue, dec_arena_in,
-        gui_control_queue, render_enabled
-    )
+    try:
+        arena.run(
+            num_runs, time_limit,
+            arena_queue_list, agents_queue_list,
+            gui_in_queue, dec_arena_in,
+            gui_control_queue, render_enabled
+        )
+    except Exception:
+        logger.exception("Arena process terminated with an error.")
+        raise
+    finally:
+        shutdown_logging()
 
 def _run_manager_process(block_filtered, arena_shape, log_specs,
                          wrap_config, hierarchy, snapshot_stride, manager_id,
@@ -64,25 +70,43 @@ def _run_manager_process(block_filtered, arena_shape, log_specs,
         message_tx=message_tx,
         message_rx=message_rx
     )
-    mgr.run(
-        num_runs, time_limit,
-        arena_queue, agents_queue,
-        dec_agents_in, dec_agents_out,
-        agent_barrier
-    )
+    try:
+        mgr.run(
+            num_runs, time_limit,
+            arena_queue, agents_queue,
+            dec_agents_in, dec_agents_out,
+            agent_barrier
+        )
+    except Exception:
+        logger.exception("Manager [%s] crashed unexpectedly.", manager_id)
+        raise
+    finally:
+        shutdown_logging()
 
 def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs):
     from logging_utils import configure_logging
     settings, cfg_path, root = log_specs
     configure_logging(settings, cfg_path, root)
-    collision_detector.run(det_in_arg, det_out_arg, dec_arena_in)
+    try:
+        collision_detector.run(det_in_arg, det_out_arg, dec_arena_in)
+    except Exception:
+        logger.exception("Collision detector failed.")
+        raise
+    finally:
+        shutdown_logging()
 
 def _run_message_server(channels, log_specs, fully_connected):
     from logging_utils import configure_logging
     settings, cfg_path, root = log_specs
     configure_logging(settings, cfg_path, root)
     from message_server import run_message_server
-    run_message_server(channels, fully_connected)
+    try:
+        run_message_server(channels, fully_connected)
+    except Exception:
+        logger.exception("Message server exited with an error.")
+        raise
+    finally:
+        shutdown_logging()
 
 def _run_gui_process(config, arena_vertices, arena_color,
                      gui_in_queue, gui_control_queue,
@@ -98,7 +122,13 @@ def _run_gui_process(config, arena_vertices, arena_color,
         hierarchy_overlay=hierarchy_overlay
     )
     gui.show()
-    app.exec()
+    try:
+        app.exec()
+    except Exception:
+        logger.exception("GUI process failed.")
+        raise
+    finally:
+        shutdown_logging()
 
 
 def pick_least_used_free_cores(num):
@@ -401,260 +431,270 @@ class Environment:
         # Reset affinity bookkeeping for each run to match the current machine state.
         used_cores.clear()
         total_cores = psutil.cpu_count(logical=True) or 1
-        # Reserve a dedicated core for the environment/main process so workers use different ones.
+
         try:
-            env_core = pick_least_used_free_cores(1)
-            if env_core:
-                psutil.Process().cpu_affinity(env_core)
-                used_cores.update(env_core)
-        except Exception as e:
-            logger.warning("Could not set environment CPU affinity: %s", e)
-
-        for exp in self.experiments:
-            assigned_worker_cores = set()
-
-            def _safe_terminate(proc):
-                if proc and proc.is_alive():
-                    proc.terminate()
-
-            def _safe_join(proc, timeout=None):
-                if proc and proc.pid is not None:
-                    proc.join(timeout=timeout)
-
-            dec_arena_in = _PipeQueue(ctx)
-            gui_in_queue = _PipeQueue(ctx)
-            gui_control_queue = _PipeQueue(ctx)
-            arena = self.arena_init(exp,self.log_specs)
+            # Reserve a dedicated core for the environment/main process so workers use different ones.
             try:
-                arena.quiet = self.quiet
-            except Exception:
-                pass
-            agents = self.agents_init(exp,self.log_specs)
-            render_enabled = self.render[0]
-            n_agent_procs = self._compute_agent_processes(agents)
-            logger.info(
-                "Agent process auto-split: total_...=%d -> processes=%d",
-                self._count_agents(agents),
-                n_agent_procs
-            )
-            agent_blocks = self._split_agents(agents, n_agent_procs)
-            n_blocks = len(agent_blocks)
-            agent_barrier = None
-            if n_blocks > 1:
-                agent_barrier = ctx.Barrier(n_blocks)
-            # Detector input/output queues
-            dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
-            dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
-            # Per-manager arena/agents queues
-            arena_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
-            agents_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
-            arena_shape = arena.get_shape()
-            if arena_shape is None:
-                raise ValueError("Arena shape was not initialized; cannot start environment.")
-            arena_id = arena.get_id()
-            wrap_config = arena.get_wrap_config()
-            arena_hierarchy = arena.get_hierarchy()
-            collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
-            arena_process = mp.Process(
-            target=_run_arena_process,
-            args=(
-                arena,
-                self.num_runs,
-                self.time_limit,
-                arena_queue_list,
-                agents_queue_list,
-                gui_in_queue,
-                dec_arena_in,
-                gui_control_queue,
-                render_enabled,
-                self.log_specs
-            )
-        )
-            # Managers
-            manager_processes = []
+                env_core = pick_least_used_free_cores(1)
+                if env_core:
+                    psutil.Process().cpu_affinity(env_core)
+                    used_cores.update(env_core)
+            except Exception as e:
+                logger.warning("Could not set environment CPU affinity: %s", e)
 
-            message_channels = []
-            for _ in range(n_blocks):
-                message_tx = ctx.Queue()
-                message_rx = ctx.Queue()
-                message_channels.append((message_tx, message_rx))
+            for exp in self.experiments:
+                assigned_worker_cores = set()
 
-            for idx_block, block in enumerate(agent_blocks):
-                block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
-                proc = mp.Process(
-                    target=_run_manager_process,
+                def _safe_terminate(proc):
+                    if proc and proc.is_alive():
+                        proc.terminate()
+
+                def _safe_join(proc, timeout=None):
+                    if proc and proc.pid is not None:
+                        proc.join(timeout=timeout)
+
+                dec_arena_in = _PipeQueue(ctx)
+                gui_in_queue = _PipeQueue(ctx)
+                gui_control_queue = _PipeQueue(ctx)
+                arena = self.arena_init(exp,self.log_specs)
+                try:
+                    arena.quiet = self.quiet
+                except Exception:
+                    pass
+                agents = self.agents_init(exp,self.log_specs)
+                render_enabled = self.render[0]
+                n_agent_procs = self._compute_agent_processes(agents)
+                logger.info(
+                    "Agent process auto-split: total_...=%d -> processes=%d",
+                    self._count_agents(agents),
+                    n_agent_procs
+                )
+                agent_blocks = self._split_agents(agents, n_agent_procs)
+                n_blocks = len(agent_blocks)
+                agent_barrier = None
+                if n_blocks > 1:
+                    agent_barrier = ctx.Barrier(n_blocks)
+                # Detector input/output queues
+                dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
+                dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
+                # Per-manager arena/agents queues
+                arena_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
+                agents_queue_list = [_PipeQueue(ctx) for _ in range(n_blocks)]
+                arena_shape = arena.get_shape()
+                if arena_shape is None:
+                    raise ValueError("Arena shape was not initialized; cannot start environment.")
+                arena_id = arena.get_id()
+                wrap_config = arena.get_wrap_config()
+                arena_hierarchy = arena.get_hierarchy()
+                collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config)
+                arena_process = mp.Process(
+                    target=_run_arena_process,
                     args=(
-                        block_filtered,
-                        arena_shape,
-                        self.log_specs,
-                        wrap_config,
-                        arena_hierarchy,
-                        self.snapshot_stride,
-                        idx_block,
-                        self.collisions,
-                        message_channels[idx_block][0],
-                        message_channels[idx_block][1],
+                        arena,
                         self.num_runs,
                         self.time_limit,
-                        arena_queue_list[idx_block],
-                        agents_queue_list[idx_block],
-                        dec_agents_in_list[idx_block],
-                        dec_agents_out_list[idx_block],
-                        agent_barrier,
-                    )
-                )
-
-                manager_processes.append(proc)
-            # Message server process (one per environment).
-            fully_connected = True #arena_id in ("abstract", "none", None)
-            message_server_process = mp.Process(
-                target=_run_message_server,
-                args=(message_channels, self.log_specs, fully_connected),
-            )
-
-            # Prepare detector input/output arguments.
-            # If collisions are disabled → the detector should not receive any queue.
-            if not self.collisions:
-                det_in_arg = None
-                det_out_arg = None
-            else:
-                # Collisions active:
-                # - If multiple managers → pass list of queues (one per manager)
-                # - If single manager  → pass the single queue directly
-                det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
-                det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
-
-            detector_process = mp.Process(
-                target=_run_detector_process,
-                args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, self.log_specs)
-            )
-
-            pattern = {
-                "arena": 2,
-                "agents": 3,
-                "detector": 3,
-                "gui": 2,
-                "messages": 2,
-            }
-            killed = 0
-            if render_enabled:
-                render_config = dict(self.render[1])
-                render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
-                hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
-                gui_process = mp.Process(
-                    target=_run_gui_process,
-                    args=(
-                        render_config,
-                        arena_shape.vertices(),
-                        arena_shape.color(),
+                        arena_queue_list,
+                        agents_queue_list,
                         gui_in_queue,
+                        dec_arena_in,
                         gui_control_queue,
-                        self.log_specs,
-                        wrap_config,
-                        hierarchy_overlay
+                        render_enabled,
+                        self.log_specs
                     )
                 )
-                gui_process.start()
-                message_server_process.start()
-                if detector_process and arena_id not in ("abstract", "none", None):
-                    detector_process.start()
-                for proc in manager_processes:
-                    proc.start()
-                arena_process.start()
+                # Managers
+                manager_processes = []
 
-                assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
-                # Agent processes share a capped core set (2 cores per proc)...
-                available_remaining = max(1, total_cores - len(used_cores))
-                agent_core_budget = min(n_blocks * 2, available_remaining)
-                agent_core_budget = max(agent_core_budget, 1)
-                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                if detector_process:
-                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
-                assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
-                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                message_channels = []
+                for _ in range(n_blocks):
+                    message_tx = ctx.Queue()
+                    message_rx = ctx.Queue()
+                    message_channels.append((message_tx, message_rx))
 
-                # Supervision loop
-                while True:
-                    exit_failure = next(
-                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
-                        None
+                for idx_block, block in enumerate(agent_blocks):
+                    block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
+                    proc = mp.Process(
+                        target=_run_manager_process,
+                        args=(
+                            block_filtered,
+                            arena_shape,
+                            self.log_specs,
+                            wrap_config,
+                            arena_hierarchy,
+                            self.snapshot_stride,
+                            idx_block,
+                            self.collisions,
+                            message_channels[idx_block][0],
+                            message_channels[idx_block][1],
+                            self.num_runs,
+                            self.time_limit,
+                            arena_queue_list[idx_block],
+                            agents_queue_list[idx_block],
+                            dec_agents_in_list[idx_block],
+                            dec_agents_out_list[idx_block],
+                            agent_barrier,
+                        )
                     )
-                    arena_alive = arena_process.is_alive()
-                    gui_alive = gui_process.is_alive()
-                    if exit_failure:
-                        killed = 1
-                        _safe_terminate(arena_process)
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _safe_terminate(detector_process)
-                        _safe_terminate(gui_process)
-                        _safe_terminate(message_server_process)
-                        break
-                    if not arena_alive or not gui_alive:
-                        if arena_alive:
-                            _safe_terminate(arena_process)
-                        for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _safe_terminate(detector_process)
-                        _safe_terminate(gui_process)
-                        _safe_terminate(message_server_process)
-                        break
-                    time.sleep(0.5)
-                # Join all processes
-                _safe_join(arena_process)
-                for proc in manager_processes:
-                    _safe_join(proc)
-                _safe_join(detector_process)
-                _safe_join(gui_process)
-                _safe_join(message_server_process)
-            else:
-                message_server_process.start()
-                if detector_process and arena_id not in ("abstract", "none", None):
-                    detector_process.start()
-                for proc in manager_processes:
-                    proc.start()
-                arena_process.start()
-                assigned_worker_cores.update(set_affinity_safely(arena_process,   pattern["arena"]))
-                available_remaining = max(1, total_cores - len(used_cores))
-                agent_core_budget = min(n_blocks * 2, available_remaining)
-                agent_core_budget = max(agent_core_budget, 1)
-                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                if detector_process:
-                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
-                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+
+                    manager_processes.append(proc)
+                # Message server process (one per environment).
+                fully_connected = True #arena_id in ("abstract", "none", None)
+                message_server_process = mp.Process(
+                    target=_run_message_server,
+                    args=(message_channels, self.log_specs, fully_connected),
+                )
+
+                # Prepare detector input/output arguments.
+                # If collisions are disabled → the detector should not receive any queue.
+                if not self.collisions:
+                    det_in_arg = None
+                    det_out_arg = None
+                else:
+                    # Collisions active:
+                    # - If multiple managers → pass list of queues (one per manager)
+                    # - If single manager  → pass the single queue directly
+                    det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
+                    det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
+
+                detector_process = mp.Process(
+                    target=_run_detector_process,
+                    args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, self.log_specs)
+                )
+
+                pattern = {
+                    "arena": 2,
+                    "agents": 3,
+                    "detector": 3,
+                    "gui": 2,
+                    "messages": 2,
+                }
                 killed = 0
-                # Supervision loop
-                while True:
-                    exit_failure = next(
-                        (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
-                        None
-                    )
-                    arena_alive = arena_process.is_alive()
-                    if exit_failure:
-                        killed = 1
-                        _safe_terminate(arena_process)
+
+                try:
+                    if render_enabled:
+                        render_config = dict(self.render[1])
+                        render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
+                        hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
+                        gui_process = mp.Process(
+                            target=_run_gui_process,
+                            args=(
+                                render_config,
+                                arena_shape.vertices(),
+                                arena_shape.color(),
+                                gui_in_queue,
+                                gui_control_queue,
+                                self.log_specs,
+                                wrap_config,
+                                hierarchy_overlay
+                            )
+                        )
+                        gui_process.start()
+                        message_server_process.start()
+                        if detector_process and arena_id not in ("abstract", "none", None):
+                            detector_process.start()
                         for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _safe_terminate(detector_process)
-                        _safe_terminate(message_server_process)
-                        break
-                    if not arena_alive:
+                            proc.start()
+                        arena_process.start()
+
+                        assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
+                        # Agent processes share a capped core set (2 cores per proc)...
+                        available_remaining = max(1, total_cores - len(used_cores))
+                        agent_core_budget = min(n_blocks * 2, available_remaining)
+                        agent_core_budget = max(agent_core_budget, 1)
+                        assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
+                        if detector_process:
+                            assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                        assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
+                        assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+
+                        # Supervision loop
+                        while True:
+                            exit_failure = next(
+                                (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                                None
+                            )
+                            arena_alive = arena_process.is_alive()
+                            gui_alive = gui_process.is_alive()
+                            if exit_failure:
+                                killed = 1
+                                _safe_terminate(arena_process)
+                                for proc in manager_processes:
+                                    _safe_terminate(proc)
+                                _safe_terminate(detector_process)
+                                _safe_terminate(gui_process)
+                                _safe_terminate(message_server_process)
+                                break
+                            if not arena_alive or not gui_alive:
+                                if arena_alive:
+                                    _safe_terminate(arena_process)
+                                for proc in manager_processes:
+                                    _safe_terminate(proc)
+                                _safe_terminate(detector_process)
+                                _safe_terminate(gui_process)
+                                _safe_terminate(message_server_process)
+                                break
+                            time.sleep(0.5)
+                        # Join all processes
+                        _safe_join(arena_process)
                         for proc in manager_processes:
-                            _safe_terminate(proc)
-                        _safe_terminate(detector_process)
-                        _safe_terminate(message_server_process)
-                        break
-                    time.sleep(0.5)
-                # Join all processes
-                _safe_join(arena_process)
-                for proc in manager_processes:
-                    _safe_join(proc)
-                _safe_join(detector_process)
-                _safe_join(message_server_process)
-                if killed == 1:
+                            _safe_join(proc)
+                        _safe_join(detector_process)
+                        _safe_join(gui_process)
+                        _safe_join(message_server_process)
+                    else:
+                        message_server_process.start()
+                        if detector_process and arena_id not in ("abstract", "none", None):
+                            detector_process.start()
+                        for proc in manager_processes:
+                            proc.start()
+                        arena_process.start()
+                        assigned_worker_cores.update(set_affinity_safely(arena_process,   pattern["arena"]))
+                        available_remaining = max(1, total_cores - len(used_cores))
+                        agent_core_budget = min(n_blocks * 2, available_remaining)
+                        agent_core_budget = max(agent_core_budget, 1)
+                        assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
+                        if detector_process:
+                            assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                        assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                        killed = 0
+                        # Supervision loop
+                        while True:
+                            exit_failure = next(
+                                (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
+                                None
+                            )
+                            arena_alive = arena_process.is_alive()
+                            if exit_failure:
+                                killed = 1
+                                _safe_terminate(arena_process)
+                                for proc in manager_processes:
+                                    _safe_terminate(proc)
+                                _safe_terminate(detector_process)
+                                _safe_terminate(message_server_process)
+                                break
+                            if not arena_alive:
+                                for proc in manager_processes:
+                                    _safe_terminate(proc)
+                                _safe_terminate(detector_process)
+                                _safe_terminate(message_server_process)
+                                break
+                            time.sleep(0.5)
+                        # Join all processes
+                        _safe_join(arena_process)
+                        for proc in manager_processes:
+                            _safe_join(proc)
+                        _safe_join(detector_process)
+                        _safe_join(message_server_process)
+
+                    if killed == 1:
+                        raise RuntimeError("A subprocess exited unexpectedly.")
+                finally:
+                    gc.collect()
                     used_cores.difference_update(assigned_worker_cores)
-                    raise RuntimeError("A subprocess exited unexpectedly.")
+        except Exception as exc:
+            logger.exception("Environment execution failed: %s", exc)
+            raise
+        else:
+            logger.info("All experiments completed successfully")
+        finally:
             shutdown_logging()
-            gc.collect()
-            used_cores.difference_update(assigned_worker_cores)
-        logger.info("All experiments completed successfully")
