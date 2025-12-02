@@ -12,10 +12,12 @@
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "width": 1,
-                "depth": 1,
                 "_id": "rectangle",
-                "color": "gray"
+                "color": "gray",
+                "dimensions":{
+                    "width": 1,
+                    "depth": 1
+                }
             }
         },
         "objects":{
@@ -23,8 +25,10 @@
                 "number": [3],
                 "_id": "idle",
                 "shape": "cylinder",
-                "height": 0.2,
-                "diameter": 0.05
+                "dimensions":{
+                    "height": 0.2,
+                    "diameter": 0.05
+                }
             }
         },
         "agents":{

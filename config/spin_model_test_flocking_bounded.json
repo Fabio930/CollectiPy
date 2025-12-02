@@ -11,9 +11,11 @@
         "arenas":{
             "arena_0":{
                 "random_seed": 0,
-                "radius": 1,
                 "_id": "circle",
-                "color": "gray"
+                "color": "gray",
+                "dimensions":{
+                    "radius": 1
+                }
             }
         },
         "objects":{

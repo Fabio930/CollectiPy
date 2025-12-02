@@ -9,9 +9,199 @@
 
 import json, itertools
 
+GUI_ON_CLICK_OPTIONS = {"messages", "detection", "spins"}
+GUI_VIEW_OPTIONS = {"messages", "detection"}
+
+ALLOWED_ARENA_IDS = {"rectangle", "square", "circle", "abstract", "unbounded"}
+ARENA_DIMENSION_CONSTRAINTS = {
+    "rectangle": {"width", "depth", "height"},
+    "square": {"side", "height"},
+    "circle": {"radius", "diameter", "height"},
+    "abstract": set(),
+    "unbounded": {"diameter", "radius", "height"},
+}
+
+ALLOWED_OBJECT_IDS = {"idle", "interactive"}
+ALLOWED_OBJECT_SHAPES = {"circle", "square", "rectangle", "sphere", "cube", "cylinder", "none"}
+OBJECT_DIMENSION_CONSTRAINTS = {
+    "circle": {"radius", "diameter", "height"},
+    "square": {"side", "height"},
+    "rectangle": {"width", "depth", "height"},
+    "sphere": {"radius", "diameter"},
+    "cube": {"side", "width", "height", "depth"},
+    "cylinder": {"radius", "diameter", "height"},
+    "none": set(),
+}
+
+ALLOWED_AGENT_SHAPES = {"sphere", "cube", "cylinder", "none"}
+AGENT_DIMENSION_CONSTRAINTS = OBJECT_DIMENSION_CONSTRAINTS
+
+RESULT_AGENT_SPECS = {"base", "spin_model"}
+RESULT_GROUP_SPECS = {"graph_messages", "graph_detection", "graphs"}
+
+LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+MESSAGE_TYPES = {"broadcast", "rebroadcast", "hand-shake"}
+MESSAGE_KINDS = {"anonymous", "id-aware"}
+MESSAGE_CHANNELS = {"single", "dual"}
+MESSAGE_TIMER_DISTRIBUTIONS = {"fixed", "uniform", "exp"}
+
+DIMENSION_SHAPES_WITH_DIAMETER = {"circle", "cylinder", "sphere", "unbounded"}
+
+_ENVIRONMENT_HOOKS: list[callable] = []
+_ENTITY_HOOKS = {
+    "arena": [],
+    "object": [],
+    "agent": []
+}
+
 def _clone_config_obj(obj):
     """Deep-clone config data without using copy module."""
     return json.loads(json.dumps(obj))
+
+def _populate_dimensions(entity: dict, shape_key: str | None = None):
+    """Merge a 'dimensions' block into the flat configuration fields."""
+    dims = entity.get("dimensions")
+    if isinstance(dims, dict):
+        for key, value in dims.items():
+            entity.setdefault(key, value)
+        entity.pop("dimensions", None)
+    if shape_key:
+        shape = entity.get(shape_key)
+    else:
+        shape = entity.get("_id")
+    if shape in DIMENSION_SHAPES_WITH_DIAMETER:
+        radius = entity.get("radius")
+        diameter = entity.get("diameter")
+        if diameter is None and isinstance(radius, (int, float)):
+            entity["diameter"] = float(radius) * 2
+
+def _validate_list_options(name: str, values, allowed: set[str]):
+    if not isinstance(values, list):
+        raise ValueError(f"'{name}' must be a list of strings")
+    invalid = [val for val in values if val not in allowed]
+    if invalid:
+        raise ValueError(f"Invalid entries for '{name}': {invalid}, allowed values: {sorted(allowed)}")
+
+def _validate_dimensions_block(shape_id: str, dims, constraints: dict, context: str):
+    if dims is None:
+        return
+    if not isinstance(dims, dict):
+        raise ValueError(f"The 'dimensions' block for {context} '{shape_id}' must be a dictionary")
+    allowed = constraints.get(shape_id)
+    if allowed is None:
+        raise ValueError(f"Unknown shape '{shape_id}' declared for {context}")
+    extras = set(dims) - allowed
+    if extras:
+        raise ValueError(f"{context.capitalize()} '{shape_id}' does not accept dimensions {sorted(list(extras))}")
+
+def _validate_results_block(results):
+    if not isinstance(results, dict):
+        raise ValueError("The 'results' block must be a dictionary")
+    agent_specs = results.get("agent_specs")
+    if agent_specs is not None:
+        _validate_list_options("results.agent_specs", agent_specs, RESULT_AGENT_SPECS)
+    group_specs = results.get("group_specs")
+    if group_specs is not None:
+        _validate_list_options("results.group_specs", group_specs, RESULT_GROUP_SPECS)
+
+def _validate_logging_block(logging_cfg):
+    if not isinstance(logging_cfg, dict):
+        raise ValueError("The 'logging' block must be a dictionary")
+    level = logging_cfg.get("level")
+    if level is not None and level not in LOG_LEVELS:
+        raise ValueError(f"Invalid logging.level '{level}', must be one of {sorted(LOG_LEVELS)}")
+    to_file = logging_cfg.get("to_file")
+    if to_file is not None and not isinstance(to_file, bool):
+        raise ValueError("'logging.to_file' must be a boolean")
+
+def _validate_gui_block(gui_cfg):
+    if not isinstance(gui_cfg, dict):
+        raise ValueError("The 'gui' block must be a dictionary")
+    gui_id = gui_cfg.get("_id")
+    if not gui_id or not isinstance(gui_id, str):
+        raise ValueError("The '_id' field is required in the gui block and must be a string")
+    if "on_click" in gui_cfg:
+        _validate_list_options("gui.on_click", gui_cfg["on_click"], GUI_ON_CLICK_OPTIONS)
+    if "view" in gui_cfg:
+        _validate_list_options("gui.view", gui_cfg["view"], GUI_VIEW_OPTIONS)
+
+def _validate_timer_block(timer_cfg):
+    if not isinstance(timer_cfg, dict):
+        raise ValueError("The 'timer' block inside messages must be a dictionary")
+    distribution = timer_cfg.get("distribution")
+    if distribution is not None and distribution not in MESSAGE_TIMER_DISTRIBUTIONS:
+        raise ValueError(f"Invalid messages.timer.distribution '{distribution}', allowed: {sorted(MESSAGE_TIMER_DISTRIBUTIONS)}")
+
+def _validate_messages_block(messages_cfg):
+    if not isinstance(messages_cfg, dict):
+        raise ValueError("The 'messages' block must be a dictionary")
+    if "type" in messages_cfg and messages_cfg["type"] not in MESSAGE_TYPES:
+        raise ValueError(f"Invalid messages.type '{messages_cfg['type']}', allowed: {sorted(MESSAGE_TYPES)}")
+    if "kind" in messages_cfg and messages_cfg["kind"] not in MESSAGE_KINDS:
+        raise ValueError(f"Invalid messages.kind '{messages_cfg['kind']}', allowed: {sorted(MESSAGE_KINDS)}")
+    if "channels" in messages_cfg and messages_cfg["channels"] not in MESSAGE_CHANNELS:
+        raise ValueError(f"Invalid messages.channels '{messages_cfg['channels']}', allowed: {sorted(MESSAGE_CHANNELS)}")
+    timer_cfg = messages_cfg.get("timer")
+    if timer_cfg is not None:
+        _validate_timer_block(timer_cfg)
+
+def _validate_arena_cfg(arena_cfg):
+    if "_id" not in arena_cfg or arena_cfg["_id"] not in ALLOWED_ARENA_IDS:
+        raise ValueError(f"Arena '_id' must be one of {sorted(ALLOWED_ARENA_IDS)}")
+    _validate_dimensions_block(arena_cfg["_id"], arena_cfg.get("dimensions"), ARENA_DIMENSION_CONSTRAINTS, "arena")
+
+def _validate_object_cfg(object_cfg):
+    if "_id" not in object_cfg or object_cfg["_id"] not in ALLOWED_OBJECT_IDS:
+        raise ValueError(f"Object '_id' must be one of {sorted(ALLOWED_OBJECT_IDS)}")
+    shape = object_cfg.get("shape")
+    if shape not in ALLOWED_OBJECT_SHAPES:
+        raise ValueError(f"Object 'shape' must be one of {sorted(ALLOWED_OBJECT_SHAPES)}")
+        _validate_dimensions_block(shape, object_cfg.get("dimensions"), OBJECT_DIMENSION_CONSTRAINTS, "object")
+
+def _validate_agent_cfg(agent_cfg):
+    shape = agent_cfg.get("shape")
+    if shape not in ALLOWED_AGENT_SHAPES:
+        raise ValueError(f"Agent 'shape' must be one of {sorted(ALLOWED_AGENT_SHAPES)}")
+    _validate_dimensions_block(shape, agent_cfg.get("dimensions"), AGENT_DIMENSION_CONSTRAINTS, "agent")
+    messages_cfg = agent_cfg.get("messages")
+    if messages_cfg is not None:
+        _validate_messages_block(messages_cfg)
+
+def register_environment_hook(func: callable):
+    """Allow plugins to mutate the environment before base validation."""
+    _ENVIRONMENT_HOOKS.append(func)
+    return func
+
+def register_entity_hook(entity_type: str, func: callable):
+    """Invoke `func(name, cfg)` before each arena/object/agent validation."""
+    if entity_type not in _ENTITY_HOOKS:
+        raise ValueError(f"Unknown entity type '{entity_type}' for hooks")
+    _ENTITY_HOOKS[entity_type].append(func)
+    return func
+
+def register_arena_shape(shape_id: str, allowed_dimensions: set[str]):
+    """Extend the supported arenas and their allowed dimensions."""
+    ALLOWED_ARENA_IDS.add(shape_id)
+    ARENA_DIMENSION_CONSTRAINTS[shape_id] = set(allowed_dimensions)
+
+def register_object_shape(shape_id: str, allowed_dimensions: set[str]):
+    """Extend the supported object shapes and their allowed dimensions."""
+    ALLOWED_OBJECT_SHAPES.add(shape_id)
+    OBJECT_DIMENSION_CONSTRAINTS[shape_id] = set(allowed_dimensions)
+
+def register_agent_shape(shape_id: str, allowed_dimensions: set[str]):
+    """Extend the supported agent shapes and their allowed dimensions."""
+    ALLOWED_AGENT_SHAPES.add(shape_id)
+    AGENT_DIMENSION_CONSTRAINTS[shape_id] = set(allowed_dimensions)
+
+def register_message_type(name: str):
+    """Allow plugins to define custom message flow types."""
+    MESSAGE_TYPES.add(name)
+
+def register_message_timer_distribution(name: str):
+    """Allow plugins to add new timer distributions to the messages.timer block."""
+    MESSAGE_TIMER_DISTRIBUTIONS.add(name)
 
 class Config:
     """Config."""
@@ -105,12 +295,27 @@ class Config:
         except KeyError:
             raise ValueError("The 'environment' field is required")
 
+        if 'results' in environment:
+            _validate_results_block(environment['results'])
+        if 'logging' in environment:
+            _validate_logging_block(environment['logging'])
+        if 'gui' in environment:
+            _validate_gui_block(environment['gui'])
+
+        for hook in _ENVIRONMENT_HOOKS:
+            hook(environment)
+
         try:
             for k, v in environment['arenas'].items():
                 if k.startswith('arena_'):
                     if '_id' not in v:
                         raise ValueError("Each arena must have an '_id' field")
-                    arenas.update({k: v})
+                    arena_cfg = _clone_config_obj(v)
+                    for hook in _ENTITY_HOOKS["arena"]:
+                        hook(k, arena_cfg)
+                    _validate_arena_cfg(arena_cfg)
+                    _populate_dimensions(arena_cfg, shape_key="_id")
+                    arenas.update({k: arena_cfg})
                 else:
                     raise KeyError
         except KeyError:
@@ -123,7 +328,12 @@ class Config:
         try:
             for k, v in environment['objects'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
-                    objects[k] = self._expand_entity(v, object_required_fields, object_optional_fields)
+                    object_cfg = _clone_config_obj(v)
+                    for hook in _ENTITY_HOOKS["object"]:
+                        hook(k, object_cfg)
+                    _validate_object_cfg(object_cfg)
+                    _populate_dimensions(object_cfg, shape_key="shape")
+                    objects[k] = self._expand_entity(object_cfg, object_required_fields, object_optional_fields)
                 else:
                     raise KeyError
         except KeyError:
@@ -134,7 +344,12 @@ class Config:
         try:
             for k, v in environment['agents'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
-                    agents[k] = self._expand_entity(v, agent_required_fields, agent_optional_fields)
+                    agent_cfg = _clone_config_obj(v)
+                    for hook in _ENTITY_HOOKS["agent"]:
+                        hook(k, agent_cfg)
+                    _validate_agent_cfg(agent_cfg)
+                    _populate_dimensions(agent_cfg, shape_key="shape")
+                    agents[k] = self._expand_entity(agent_cfg, agent_required_fields, agent_optional_fields)
                 else:
                     raise KeyError
         except KeyError:
@@ -159,7 +374,7 @@ class Config:
                             "time_limit": environment.get("time_limit", 0),
                             "num_runs": environment.get("num_runs", 1),
                             "results": environment.get("results",{}),
-                            "logging": environment.get("logging") or {},
+                            "logging": environment.get("logging",{}),
                             "gui": environment.get("gui",{}),
                             "arena": arena_value,
                             "objects": {},

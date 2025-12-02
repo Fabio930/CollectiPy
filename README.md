@@ -80,10 +80,8 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
     "arenas":{ //REQUIRED can define multiple arena to simulate sequentially
     "arena_0":{
         "random_seed": int, //DEFAULT:random
-        "width": int, //DEFAULT:1
-        "depth": int, //DEFAULT:1
         "_id": str, //REQUIRED - SUPPORTED:"rectangle","square","circle","abstract","unbounded". Abstract arena is a special class where ranges and velocities do not apply.
-        "diameter": float, //OPTIONAL for "_id":"unbounded"
+        "dimensions": dict, //DEFAULT: standard dict with height width radius and diamter assigned to 1 if present depending on "_id". For "_id":"unbounded" apply dimeter and radius
         "color": "gray", //DEFAULT:white
         "hierarchy": { //OPTIONAL - define the reversed-tree partition applied to this arena
             "depth": int, //DEFAULT:0 - number of additional levels (root is level 0)
@@ -107,8 +105,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             },
             "_id": str, //REQUIRED - SUPPORTED:idle|interactive
             "shape": str, //REQUIRED - SUPPORTED:circle,square,rectangle,sphere,cube,cylinder,none flat geometry can be used to define walkable areas in the arena
-            "height": float, //DEFAULT:1 width and depth used for not-round objects
-            "diameter": float, //DEFAULT:1 used for round objects
+            "dimensions": dict, //DEFAULT: standard dict with height width radius and diamter assigned to 1 if present depending on shape
             "color": str, //DEFAULT:"black"
             "strength": list(float), //DEFAULT:[10] one entry -> assign to all the objects the same value. Less entries tha objects -> missing values are equal to the last one
             "uncertainty": list(float), //DEFAULT:[0] one entry -> assign to all the objects the same value. Less entries tha objects -> missing values are equal to the last one
@@ -201,6 +198,22 @@ Objects and Agents apply the same rule nut they must contain "agent_" in abstrac
 ### Data
 
 Raw traces saved under `environment.results.base_path` obey the spec lists declared in `results.agent_specs` / `results.group_specs`. When an arena hierarchy is configured, each base row also includes the hierarchy node where the agent currently sits so downstream analysis can group by partition. Per-agent pickles (`<group>_<idx>.pkl`) are emitted only when `"base"` is present (sampled `[tick, pos x, pos y, pos z]` rows) and can //OPTIONALly append `"spin_model"` dumps (`<group>_<idx>_spins.pkl`). Snapshots are taken once per simulated second by DEFAULT (after the last tick in that second); setting `snapshots_per_second: 2` adds a mid-second capture. Tick `0` is always stored so consumers see the initial pose, and the very last tick is forced even if it does not align with the cadence. Group specs apply to global outputs: `"graph_messages"` / `"graph_detection"` write one pickle per tick under `graphs/<mode>/step_<tick>.pkl`, and the helper spec `"graphs"` enables both. Message edges require that the transmitter has range and a non-zero TX budget **and** the receiver advertises a non-zero RX budget; detection edges only appear when the sensing agent has a non-zero acquisition rate in addition to range. All per-step graph pickles are zipped into `{mode}_graphs.zip` at the end of the run, and finally the whole `run_<n>` folder is compressed so analysis scripts can ingest the pickles while storage stays compact.
+
+### Config extensions
+
+Plugins can extend or alter the default parsing rules in `src/config.py` by importing the helper functions and registering hooks before the main config is loaded. Available APIs include `register_environment_hook` (for mutating `environment` before validation), `register_entity_hook` (runs before each arena/object/agent validation), `register_arena_shape`, `register_object_shape`, `register_agent_shape` (to declare new allowable shape IDs and their dimension keys), and `register_message_type` / `register_message_timer_distribution` (to support custom message flows). Example:
+
+```python
+from src import config
+
+@config.register_environment_hook
+def enable_magic_logging(environment):
+    environment.setdefault("logging", {}).setdefault("level", "DEBUG")
+
+config.register_agent_shape("custom_prism", {"height", "width", "depth"})
+```
+
+The new entries run before `Config.parse_experiments` validates the JSON, so plugins can safely inject additional structures or override defaults while still benefiting from the built-in normalization.
 
 Each pickle is structured for quick DataFrame ingestion: the first record is a header carrying a `columns` list, and all subsequent `{"type": "row"}` entries are dictionaries keyed by those columns. Base traces expose `tick`, `pos x`, `pos y`, `pos z` (plus `hierarchy_node` when enabled). Spin dumps include `tick` and the spin-model fields (`states`, `angles`, `external_field`, `avg_direction_of_activity`). Graph pickles ship `columns: ["source", "target"]` with rows using those keys. Example loader:
 

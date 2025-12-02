@@ -20,8 +20,10 @@
                 "number": [3],
                 "_id": "idle",
                 "shape": "cylinder",
-                "height": 0.2,
-                "diameter": 0.05
+                "dimensions":{
+                    "height": 0.2,
+                    "diameter": 0.05
+                }
             }
         },
         "agents":{
