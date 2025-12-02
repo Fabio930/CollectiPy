@@ -11,6 +11,35 @@ import math
 from geometry_utils.vector3D import Vector3D
 
 _PI = math.pi
+
+
+def _merge_dimension_config(config_elem: dict) -> dict:
+    """Merge the explicit dimension block into the flat config copy."""
+    merged = dict(config_elem) if config_elem else {}
+    dimensions = merged.pop("dimensions", None)
+    if isinstance(dimensions, dict):
+        for key, value in dimensions.items():
+            if value is not None:
+                merged[key] = value
+    return merged
+
+
+def _resolve_dimension(config_elem: dict, name: str, fallback: str | None = None, fallback_scale: float = 1.0, default: float = 1.0) -> float:
+    """Return the requested dimension, using fallback (with scale) or default."""
+    value = config_elem.get(name)
+    if value is not None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+    if fallback:
+        value = config_elem.get(fallback)
+        if value is not None:
+            try:
+                return float(value) * fallback_scale
+            except (TypeError, ValueError):
+                pass
+    return default
 class Shape3DFactory:
     """Shape 3 d factory."""
 
@@ -65,17 +94,18 @@ class Shape3DFactory:
     @staticmethod
     def create_shape(_object:str, shape_type:str, config_elem:dict):
         """Create shape."""
+        normalized_cfg = _merge_dimension_config(config_elem)
         if shape_type == "sphere":
-            return Sphere(_object, shape_type, config_elem)
+            return Sphere(_object, shape_type, normalized_cfg)
         elif shape_type == "unbounded":
-            return UnboundedShape(_object, shape_type, config_elem)
+            return UnboundedShape(_object, shape_type, normalized_cfg)
         elif shape_type in ("square", "cube", "rectangle", "cuboid"):
-            normalized_cfg = Shape3DFactory._normalize_cuboid_config(shape_type, config_elem)
+            normalized_cfg = Shape3DFactory._normalize_cuboid_config(shape_type, normalized_cfg)
             return Cuboid(_object, shape_type, normalized_cfg)
         elif shape_type in ("circle", "cylinder"):
-            return Cylinder(_object, shape_type, config_elem)
+            return Cylinder(_object, shape_type, normalized_cfg)
         elif shape_type == "point" or shape_type == "none":
-            return Shape(config_elem)
+            return Shape(normalized_cfg)
         else:
             raise ValueError(f"Unknown shape type: {shape_type}")
 
@@ -254,7 +284,7 @@ class Sphere(Shape):
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
         self._id = shape_type
-        self.radius = config_elem.get("diameter", 1.0) * 0.5
+        self.radius = _resolve_dimension(config_elem, "radius", fallback="diameter", fallback_scale=0.5, default=1.0)
         self.set_vertices()
 
     def volume(self):
@@ -358,8 +388,8 @@ class Cylinder(Shape):
         super().__init__(config_elem=config_elem, center=center)
         self._object = _object
         self._id = shape_type
-        self.radius = config_elem.get("diameter", 1.0) * 0.5
-        self.height = config_elem.get("height", 1.0)
+        self.radius = _resolve_dimension(config_elem, "radius", fallback="diameter", fallback_scale=0.5, default=1.0)
+        self.height = _resolve_dimension(config_elem, "height", default=1.0)
         self.set_vertices()
 
     def volume(self):

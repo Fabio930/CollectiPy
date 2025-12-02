@@ -7,7 +7,10 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import json, itertools
+import itertools
+import json
+
+from logging_utils import get_logger
 
 GUI_ON_CLICK_OPTIONS = {"messages", "detection", "spins"}
 GUI_VIEW_OPTIONS = {"messages", "detection"}
@@ -48,6 +51,8 @@ MESSAGE_TIMER_DISTRIBUTIONS = {"fixed", "uniform", "exp"}
 
 DIMENSION_SHAPES_WITH_DIAMETER = {"circle", "cylinder", "sphere", "unbounded"}
 
+logger = get_logger("config")
+
 _ENVIRONMENT_HOOKS: list[callable] = []
 _ENTITY_HOOKS = {
     "arena": [],
@@ -55,17 +60,22 @@ _ENTITY_HOOKS = {
     "agent": []
 }
 
+_ALL_DIMENSION_KEYS = {"width", "depth", "height", "side", "radius", "diameter", "length"}
+
 def _clone_config_obj(obj):
     """Deep-clone config data without using copy module."""
     return json.loads(json.dumps(obj))
 
-def _populate_dimensions(entity: dict, shape_key: str | None = None):
+def _populate_dimensions(entity: dict, shape_key: str | None = None) -> set[str]:
     """Merge a 'dimensions' block into the flat configuration fields."""
+    provided = set()
     dims = entity.get("dimensions")
     if isinstance(dims, dict):
         for key, value in dims.items():
             entity.setdefault(key, value)
+            provided.add(key)
         entity.pop("dimensions", None)
+    provided.update(key for key in entity if key in _ALL_DIMENSION_KEYS)
     if shape_key:
         shape = entity.get(shape_key)
     else:
@@ -75,6 +85,123 @@ def _populate_dimensions(entity: dict, shape_key: str | None = None):
         diameter = entity.get("diameter")
         if diameter is None and isinstance(radius, (int, float)):
             entity["diameter"] = float(radius) * 2
+    return provided
+
+def _coerce_dimension_value(value):
+    """Return a float for numeric dimensions, skip booleans."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _values_almost_equal(a, b, rel_tol=1e-9):
+    """Compare floats with a small tolerance."""
+    return abs(a - b) <= rel_tol * max(1.0, abs(a), abs(b))
+
+
+def _radius_diameter_resolver(source_key, source_value):
+    """Derive radius/diameter pair from the canonical value."""
+    value = float(source_value)
+    if source_key == "diameter":
+        return {"diameter": value, "radius": value / 2.0}
+    return {"radius": value, "diameter": value * 2.0}
+
+
+def _make_equal_resolver(keys):
+    """Create resolver that sets every dimension in keys to the canonical value."""
+    def resolver(_source_key, source_value):
+        normalized = float(source_value)
+        return {key: normalized for key in keys}
+    return resolver
+
+
+_RADIUS_DIAMETER_KEYS = ("diameter", "radius")
+_CUBE_DIMENSION_KEYS = ("depth", "height", "side", "width")
+
+_SHAPE_DIMENSION_RULES = {
+    "circle": [(_RADIUS_DIAMETER_KEYS, _radius_diameter_resolver)],
+    "cylinder": [(_RADIUS_DIAMETER_KEYS, _radius_diameter_resolver)],
+    "sphere": [(_RADIUS_DIAMETER_KEYS, _radius_diameter_resolver)],
+    "unbounded": [(_RADIUS_DIAMETER_KEYS, _radius_diameter_resolver)],
+    "cube": [(_CUBE_DIMENSION_KEYS, _make_equal_resolver(_CUBE_DIMENSION_KEYS))],
+}
+
+
+_DEFAULT_DIMENSION_VALUE = 1.0
+
+
+def _apply_dimension_rule(entity, shape_id, context, entity_key, keys, resolver, provided_keys: set[str] | None):
+    """Apply a single congruency rule and log when values disagree."""
+    sorted_keys = sorted(keys)
+    canonical_key = None
+    canonical_value = None
+    provided_keys = provided_keys or set()
+    for key in sorted_keys:
+        if provided_keys and key not in provided_keys:
+            continue
+        candidate = _coerce_dimension_value(entity.get(key))
+        if candidate is not None:
+            canonical_key = key
+            canonical_value = candidate
+            break
+    if canonical_key is None:
+        canonical_key = sorted_keys[0]
+        canonical_value = _DEFAULT_DIMENSION_VALUE
+    resolved = resolver(canonical_key, canonical_value)
+    conflicts = []
+    for target_key, target_value in resolved.items():
+        new_value = float(target_value)
+        prev_raw = entity.get(target_key)
+        prev_value = _coerce_dimension_value(prev_raw)
+        if (
+            target_key in provided_keys
+            and prev_raw is not None
+            and (prev_value is None or not _values_almost_equal(prev_value, new_value))
+        ):
+            conflicts.append((target_key, prev_raw if prev_value is None else prev_value, new_value))
+        entity[target_key] = new_value
+    if conflicts:
+        conflict_desc = "; ".join(f"{key} ({old} -> {new})" for key, old, new in conflicts)
+        shape_label = "/".join(sorted_keys)
+        logger.warning(
+            "%s '%s' shape '%s': enforced %s congruency from '%s'=%.9g, overwrote %s",
+            context.capitalize(),
+            entity_key or "<unknown>",
+            shape_id,
+            shape_label,
+            canonical_key,
+            canonical_value,
+            conflict_desc,
+        )
+
+
+def _enforce_dimension_congruency(entity, shape_field, context, entity_key, provided_keys: set[str] | None):
+    """Ensure any related dimensions defined for `shape_field` agree."""
+    shape_id = entity.get(shape_field)
+    if not shape_id:
+        return
+    rules = _SHAPE_DIMENSION_RULES.get(shape_id)
+    if not rules:
+        return
+    for keys, resolver in rules:
+        _apply_dimension_rule(entity, shape_id, context, entity_key, keys, resolver, provided_keys)
+
+
+def _finalize_dimensions(entity: dict, allowed_keys: set[str]):
+    """Produce a dimensions dict containing only the allowed keys."""
+    dims = {}
+    for key in sorted(allowed_keys):
+        value = _coerce_dimension_value(entity.get(key))
+        dims[key] = value if value is not None else _DEFAULT_DIMENSION_VALUE
+    entity["dimensions"] = dims
+    for key in _ALL_DIMENSION_KEYS:
+        entity.pop(key, None)
+
 
 def _validate_list_options(name: str, values, allowed: set[str]):
     if not isinstance(values, list):
@@ -320,7 +447,10 @@ class Config:
                     for hook in _ENTITY_HOOKS["arena"]:
                         hook(k, arena_cfg)
                     _validate_arena_cfg(arena_cfg)
-                    _populate_dimensions(arena_cfg, shape_key="_id")
+                    provided_dims = _populate_dimensions(arena_cfg, shape_key="_id")
+                    _enforce_dimension_congruency(arena_cfg, "_id", "arena", k, provided_dims)
+                    allowed_dims = ARENA_DIMENSION_CONSTRAINTS.get(arena_cfg["_id"], set())
+                    _finalize_dimensions(arena_cfg, allowed_dims)
                     arenas.update({k: arena_cfg})
                 else:
                     raise KeyError
@@ -338,7 +468,11 @@ class Config:
                     for hook in _ENTITY_HOOKS["object"]:
                         hook(k, object_cfg)
                     _validate_object_cfg(object_cfg)
-                    _populate_dimensions(object_cfg, shape_key="shape")
+                    provided_dims = _populate_dimensions(object_cfg, shape_key="shape")
+                    _enforce_dimension_congruency(object_cfg, "shape", "object", k, provided_dims)
+                    shape = object_cfg.get("shape")
+                    allowed_dims = OBJECT_DIMENSION_CONSTRAINTS.get(shape, set())
+                    _finalize_dimensions(object_cfg, allowed_dims)
                     objects[k] = self._expand_entity(object_cfg, object_required_fields, object_optional_fields)
                 else:
                     raise KeyError
@@ -354,7 +488,11 @@ class Config:
                     for hook in _ENTITY_HOOKS["agent"]:
                         hook(k, agent_cfg)
                     _validate_agent_cfg(agent_cfg)
-                    _populate_dimensions(agent_cfg, shape_key="shape")
+                    provided_dims = _populate_dimensions(agent_cfg, shape_key="shape")
+                    _enforce_dimension_congruency(agent_cfg, "shape", "agent", k, provided_dims)
+                    shape = agent_cfg.get("shape")
+                    allowed_dims = AGENT_DIMENSION_CONSTRAINTS.get(shape, set())
+                    _finalize_dimensions(agent_cfg, allowed_dims)
                     agents[k] = self._expand_entity(agent_cfg, agent_required_fields, agent_optional_fields)
                 else:
                     raise KeyError

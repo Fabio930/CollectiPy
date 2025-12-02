@@ -266,7 +266,9 @@ class SolidArena(Arena):
 
     def _arena_shape_config(self, config_elem:Config):
         """Return the arena configuration passed to the shape factory."""
-        return {key:val for key,val in config_elem.arena.items()}
+        shape_cfg = dict(config_elem.arena.get("dimensions", {}))
+        shape_cfg["color"] = config_elem.arena.get("color", "gray")
+        return shape_cfg
 
     def get_shape(self):
         """Return the shape."""
@@ -813,7 +815,8 @@ class UnboundedArena(SolidArena):
     """Unbounded arena rendered as a large square without wrap-around."""
     def __init__(self, config_elem:Config):
         """Initialize the instance."""
-        raw = config_elem.arena.get("diameter", None)
+        dims = config_elem.arena.get("dimensions", {})
+        raw = dims.get("diameter", None)
         try:
             self.diameter = float(raw) if raw is not None else None
         except (TypeError, ValueError):
@@ -894,8 +897,9 @@ class CircularArena(SolidArena):
     def __init__(self, config_elem:Config):
         """Initialize the instance."""
         super().__init__(config_elem)
-        self.height = config_elem.arena.get("height", 1)
-        self.radius = config_elem.arena.get("radius", 1)
+        dims = config_elem.arena.get("dimensions", {})
+        self.height = dims.get("height", 1)
+        self.radius = dims.get("radius", 1)
         self.color = config_elem.arena.get("color", "white")
         logger.info("Circular arena created successfully")
     
@@ -906,9 +910,11 @@ class RectangularArena(SolidArena):
     def __init__(self, config_elem:Config):
         """Initialize the instance."""
         super().__init__(config_elem)
-        self.height = config_elem.arena.get("height", 1)
-        self.length = config_elem.arena.get("length", 1)
-        self.width = config_elem.arena.get("width", 1)
+        dims = config_elem.arena.get("dimensions", {})
+        self.height = dims.get("height", 1)
+        self.width = dims.get("width", 1)
+        self.depth = dims.get("depth", 1)
+        self.length = self.width
         self.color = config_elem.arena.get("color", "white")
         logger.info("Rectangular arena created successfully")
     
@@ -918,8 +924,9 @@ class SquareArena(SolidArena):
     def __init__(self, config_elem:Config):
         """Initialize the instance."""
         super().__init__(config_elem)
-        self.height = config_elem.arena.get("height", 1)
-        self.side = config_elem.arena.get("side", 1)
+        dims = config_elem.arena.get("dimensions", {})
+        self.height = dims.get("height", 1)
+        self.side = dims.get("side", 1)
         self.color = config_elem.arena.get("color", "white")
         logger.info("Square arena created successfully")
     
