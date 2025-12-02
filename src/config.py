@@ -373,7 +373,7 @@ class Config:
                             "ticks_per_second": environment.get("ticks_per_second", 3),
                             "time_limit": environment.get("time_limit", 0),
                             "num_runs": environment.get("num_runs", 1),
-                            "results": environment.get("results",{}),
+                            "results": {} if environment.get("gui") else environment.get("results",{}),
                             "logging": environment.get("logging",{}),
                             "gui": environment.get("gui",{}),
                             "arena": arena_value,
