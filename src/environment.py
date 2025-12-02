@@ -35,7 +35,7 @@ def _run_arena_process(arena, num_runs, time_limit,
                        arena_queue_list, agents_queue_list,
                        gui_in_queue, dec_arena_in,
                        gui_control_queue, render_enabled,
-                       log_specs):
+                       log_specs, dec_control_queue):
     from logging_utils import initialize_process_console_logging
     settings = log_specs.get("settings")
     cfg_path = log_specs.get("config_path")
@@ -49,7 +49,8 @@ def _run_arena_process(arena, num_runs, time_limit,
         log_context={
             "log_specs": log_specs,
             "process_name": "arena"
-        }
+        },
+        dec_control_queue=dec_control_queue
     )
 
 def _run_manager_process(block_filtered, arena_shape, log_specs,
@@ -87,7 +88,7 @@ def _run_manager_process(block_filtered, arena_shape, log_specs,
         }
     )
 
-def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs):
+def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs, dec_control_queue):
     from logging_utils import initialize_process_console_logging
     settings = log_specs.get("settings")
     cfg_path = log_specs.get("config_path")
@@ -95,6 +96,7 @@ def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena
     initialize_process_console_logging(settings, cfg_path, root)
     collision_detector.run(
         det_in_arg, det_out_arg, dec_arena_in,
+        dec_control_queue,
         log_context={
             "log_specs": log_specs,
             "process_name": "collision"
@@ -478,6 +480,7 @@ class Environment:
             dec_arena_in = _PipeQueue(ctx)
             gui_in_queue = _PipeQueue(ctx)
             gui_control_queue = _PipeQueue(ctx)
+            dec_control_queue = _PipeQueue(ctx) if self.collisions else None
             arena = self.arena_init(exp, exp_log_specs)
             try:
                 arena.quiet = self.quiet
@@ -536,7 +539,8 @@ class Environment:
                     dec_arena_in,
                     gui_control_queue,
                     render_enabled,
-                    arena_log_specs
+                    arena_log_specs,
+                    dec_control_queue
                 )
             )
             # Managers
@@ -615,8 +619,29 @@ class Environment:
 
             detector_process = mp.Process(
                 target=_run_detector_process,
-                args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, collision_log_specs)
+                args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, collision_log_specs, dec_control_queue)
             )
+
+            def _signal_detector_shutdown():
+                """Request the collision detector to stop."""
+                if dec_control_queue is None:
+                    return
+                shutdown_packet = {"kind": "shutdown"}
+                try:
+                    dec_control_queue.put(shutdown_packet)
+                except Exception:
+                    pass
+
+            def _stop_detector_gracefully(timeout: float = 1.0):
+                """Signal shutdown and wait for the detector to exit."""
+                if detector_process is None:
+                    return
+                _signal_detector_shutdown()
+                deadline = time.time() + timeout
+                while detector_process.is_alive() and time.time() < deadline:
+                    time.sleep(0.0001)
+                if detector_process.is_alive():
+                    _safe_terminate(detector_process)
 
             pattern = {
                 "arena": 2,
@@ -689,6 +714,8 @@ class Environment:
                         _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)
+                _stop_detector_gracefully()
+                _stop_message_server_gracefully()
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:
@@ -734,6 +761,8 @@ class Environment:
                         _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)
+                _stop_detector_gracefully()
+                _stop_message_server_gracefully()
                 # Join all processes
                 _safe_join(arena_process)
                 for proc in manager_processes:

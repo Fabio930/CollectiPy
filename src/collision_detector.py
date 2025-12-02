@@ -156,6 +156,7 @@ class CollisionDetector:
         dec_agents_in: Any,
         dec_agents_out: Any,
         dec_arena_in: Any,
+        dec_control_queue: Any,
         log_context: dict | None = None
     ) -> None:
         """
@@ -176,11 +177,18 @@ class CollisionDetector:
             - queue where the arena publishes objects:
               {"objects": {obj_id: (shapes, positions)}}
         """
-        logger.info("CollisionDetector started (collisions=%s)", self.collisions)
+        logger.critical("CollisionDetector started (collisions=%s)", self.collisions)
         log_context = log_context or {}
         log_specs = log_context.get("log_specs")
         process_name = log_context.get("process_name", "collision")
         current_run = None
+        if isinstance(dec_control_queue, (list, tuple)):
+            control_inputs = [q for q in dec_control_queue if q is not None]
+        elif dec_control_queue is not None:
+            control_inputs = [dec_control_queue]
+        else:
+            control_inputs = []
+        shutdown_requested = False
         # Normalise queues to lists for ease of indexing.
         agent_inputs = dec_agents_in if isinstance(dec_agents_in, (list, tuple)) else [dec_agents_in]
         manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
@@ -190,23 +198,59 @@ class CollisionDetector:
         round_snapshots: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         updated_flags: Dict[int, bool] = {i: False for i in range(num_managers)}
 
+        def _apply_control_packet(packet: dict) -> bool:
+            nonlocal current_run
+            run_value = packet.get("run")
+            try:
+                run_id = int(run_value)
+            except (TypeError, ValueError):
+                run_id = None
+            if run_id is None:
+                return False
+            if current_run is not None and run_id <= current_run:
+                return False
+            start_run_logging(log_specs, process_name, run_id)
+            current_run = run_id
+            logger.warning("Collision detector logging started for run %s", current_run)
+            return True
+
         try:
             while True:
                 idle = True
 
                 # 1) Pull latest objects description from arena.
+                for ctrl in control_inputs:
+                    if ctrl is None:
+                        continue
+                    if self._poll(ctrl, 0.0):
+                        try:
+                            control_payload = ctrl.get()
+                        except EOFError:
+                            control_payload = None
+                    else:
+                        control_payload = None
+
+                    if isinstance(control_payload, dict):
+                        kind = control_payload.get("kind")
+                        if kind == "run_start":
+                            if _apply_control_packet(control_payload):
+                                idle = False
+                        elif kind == "shutdown":
+                            shutdown_requested = True
+                            idle = False
+
                 if dec_arena_in and self._poll(dec_arena_in, 0.0):
                     try:
                         payload = dec_arena_in.get()
                         if payload:
                             run_id = payload.get("run")
-                            if run_id is not None and run_id != current_run:
+                            if run_id is not None and (current_run is None or run_id > current_run):
                                 current_run = run_id
                                 start_run_logging(log_specs, process_name, current_run)
-                                logger.info("Collision detector logging started for run %s", current_run)
+                                logger.critical("Collision detector logging started for run %s", current_run)
                             # Expected format: {"objects": {id: (shapes, positions)}}
                             self.objects = payload.get("objects", {}) or {}
-                            logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
+                            logger.critical("CollisionDetector: objects updated (%d groups)", len(self.objects))
                             idle = False
                     except EOFError:
                         pass
@@ -253,7 +297,7 @@ class CollisionDetector:
                             try:
                                 target_q.put(mgr_corr)
                             except Exception:
-                                logger.debug(
+                                logger.critical(
                                     "CollisionDetector: failed to send corrections to manager %d",
                                     manager_id
                                 )
@@ -262,9 +306,11 @@ class CollisionDetector:
                     round_snapshots = {}
                     updated_flags = {i: False for i in range(num_managers)}
 
-            # 4) Idle sleep when nothing interesting happened.
-            if idle:
-                time.sleep(0.00001)
+                # 4) Idle sleep when nothing interesting happened.
+                if idle:
+                    time.sleep(0.00001)
+                if shutdown_requested:
+                    break
         finally:
             shutdown_logging()
 
@@ -446,7 +492,7 @@ class CollisionDetector:
 
                         all_responses[idx].append((resp, resp_len))
 
-                        logger.debug(
+                        logger.critical(
                             "Collision agent-object: %s -> %s depth=%.4f",
                             name, obj_id, penetration
                         )

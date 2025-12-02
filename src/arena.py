@@ -523,7 +523,7 @@ class SolidArena(Arena):
             time.sleep(self._gui_backpressure_interval)
         self._gui_backpressure_active = False
         
-    def run(self,num_runs,time_limit, arena_queue: Any, agents_queue: Any, gui_in_queue: Any,dec_arena_in: Any, gui_control_queue: Any,render:bool=False, log_context: dict | None = None):
+    def run(self,num_runs,time_limit, arena_queue: Any, agents_queue: Any, gui_in_queue: Any,dec_arena_in: Any, gui_control_queue: Any,render:bool=False, log_context: dict | None = None, dec_control_queue: Any = None):
         """Function to run the arena in a separate process (supports multiple agent queues)."""
         arena_queues = arena_queue if isinstance(arena_queue, list) else [arena_queue]
         agents_queues = agents_queue if isinstance(agents_queue, list) else [agents_queue]
@@ -570,7 +570,17 @@ class SolidArena(Arena):
                 }
                 detector_payload = {"objects": initial_objects, "run": run}
                 if dec_arena_in is not None:
+                    try:
+                        while dec_arena_in.poll(0.0):
+                            dec_arena_in.get()
+                    except Exception:
+                        pass
                     dec_arena_in.put(detector_payload)
+                if dec_control_queue is not None:
+                    try:
+                        dec_control_queue.put({"kind": "run_start", "run": run})
+                    except Exception:
+                        pass
                 if render:
                     gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
                     self._apply_gui_backpressure(gui_in_queue)

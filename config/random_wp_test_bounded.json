@@ -4,8 +4,9 @@
         "time_limit": 10,
         "num_runs": 2,
         "logging":{
-            "level":"DEBUG",
-            "to_file":true
+            "level":"CRITICAL",
+            "to_file":true,
+            "to_console":true
         },
         "gui":{
             "_id": "2D",
