@@ -84,6 +84,7 @@ class Arena():
         self._gui_backpressure_interval = max(0.001, interval_ms / 1000.0)
         self._gui_backpressure_active = False
         self.quiet = getattr(config_elem, "quiet", False) if config_elem else False
+        self._speed_multiplier = 1.0
 
     @staticmethod
     def _blocking_get(q, timeout: float = 0.01, sleep_s: float = 0.001):
@@ -504,6 +505,7 @@ class SolidArena(Arena):
             return shapes, spins, metadata
 
         ticks_limit = time_limit*self.ticks_per_second + 1 if time_limit > 0 else 0
+        tick_interval = 1.0 / max(1, self.ticks_per_second)
         run = 1
         while run < num_runs + 1:
             logger.info(f"Run number {run} started")
@@ -557,6 +559,11 @@ class SolidArena(Arena):
                         elif cmd == "reset":
                             running = False
                             reset = True
+                        elif isinstance(cmd, (list, tuple)) and len(cmd) == 2 and cmd[0] == "speed":
+                            try:
+                                self._speed_multiplier = max(1.0, float(cmd[1]))
+                            except Exception:
+                                self._speed_multiplier = 1.0
                         cmd = self._maybe_get(gui_control_queue, timeout=0.0)
                 arena_data = {
                     "status": [t,self.ticks_per_second],
@@ -609,6 +616,8 @@ class SolidArena(Arena):
                     if render:
                         gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
                         self._apply_gui_backpressure(gui_in_queue)
+                    if self._speed_multiplier > 1.0:
+                        time.sleep(tick_interval * (self._speed_multiplier - 1.0))
                     step_mode = False
                     t += 1
                 elif reset:

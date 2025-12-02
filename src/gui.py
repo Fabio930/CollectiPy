@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from geometry_utils.vector3D import Vector3D
 from matplotlib import cm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene, QPushButton, QHBoxLayout, QSizePolicy, QComboBox, QToolButton, QFrame, QSlider
 from PySide6.QtCore import QTimer, Qt, QPointF, QEvent, QRectF, Signal
 from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush, QMouseEvent, QKeySequence, QShortcut, QResizeEvent
 from logging_utils import get_logger
@@ -151,6 +151,21 @@ class GUI_2D(QWidget):
         self.view_controls_layout.addWidget(self.centroid_button)
         self.view_controls_layout.addWidget(self.restore_button)
         header_layout.addLayout(self.view_controls_layout)
+        self.speed_layout = QHBoxLayout()
+        self.speed_layout.setSpacing(4)
+        self.speed_layout.setContentsMargins(0, 0, 0, 0)
+        self.speed_layout.addWidget(QLabel("Playback pace:"))
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(20, 40)  # represent 1.0–2.0 with finer steps
+        self.speed_slider.setValue(20)
+        self.speed_slider.setSingleStep(1)
+        self.speed_slider.setToolTip("1.0 = native speed, 2.0 = slowest playback")
+        self.speed_slider.setMinimumWidth(120)
+        self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
+        self.speed_layout.addWidget(self.speed_slider, stretch=1)
+        self.speed_label = QLabel("1.0x")
+        self.speed_layout.addWidget(self.speed_label)
+        header_layout.addLayout(self.speed_layout)
         self.header_container.setLayout(header_layout)
         self.header_collapsed = False
         self.header_toggle = QToolButton()
@@ -1242,6 +1257,18 @@ class GUI_2D(QWidget):
             self.gui_control_queue.put("step")
             self.step_requested = True
             self.reset = False
+
+    def _on_speed_slider_changed(self, value: int):
+        """Update the playback pace and notify the arena."""
+        multiplier = value / 20.0
+        formatted = f"{multiplier:.2f}"
+        self.speed_label.setText(f"{formatted}x")
+        if not self.gui_control_queue:
+            return
+        try:
+            self.gui_control_queue.put(("speed", multiplier))
+        except Exception:
+            pass
 
     # ----- Keyboard shortcuts -----------------------------------------------
     def keyPressEvent(self, event):

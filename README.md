@@ -47,6 +47,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
 - Restore view: `V` or the Restore button (also clears selection/locks)
 - Centroid: `C` or the Centroid button; double-click to lock/unlock on the centroid
 - Agent selection: click agents in arena or graph; double-click locks the camera on that agent
+- Playback slider: a horizontal slider beside the header controls lets you slow the simulation without pausing; it now reports a multiplier between `1.0x` and `2.0x` with `0.05x` resolution (mapped to `("speed", value)` over `[1,2]`) so the arena can insert `tick_interval * (value - 1)` seconds between ticks while keeping the managers synchronized (`src/gui.py`, `src/arena.py`).
 
 ## Config.json Example
 
@@ -57,6 +58,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
     "ticks_per_second": int, //DEFAULT:3,
     "time_limit": int, //DEFAULT:0(inf),
     "num_runs": int, //DEFAULT:1,
+    "snapshot_stride": int, //DEFAULT:1 when collisions are enabled (how many ticks to wait between collision snapshots; higher values reduce CPU but weaken obstacle enforcement),
     "results":{ //DEFAULT:{} empty dict -> no saving. If rendering is enabled -> no saving,
         "base_path": str, //DEFAULT:"../data/" (only used when this block is present; does not enable dumps by itself),
         "agent_specs": list(str) //DEFAULT:[] - enable per-agent exports:
