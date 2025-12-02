@@ -267,11 +267,25 @@ def start_run_logging(
     config_path = log_specs.get("config_path") if log_specs else None
     project_root = log_specs.get("project_root") if log_specs else None
     runs_root = log_specs.get("runs_root") if log_specs else None
-
-    if runs_root:
-        base_path = Path(runs_root) / f"run_{run_number}" / process_name
+    log_root_override = log_specs.get("log_root_override") if log_specs else None
+    process_folder = log_specs.get("process_folder") if log_specs else None
+    if log_specs:
+        run_subdir = bool(log_specs.get("run_subdir", True))
     else:
-        base_path = Path(project_root or Path.cwd()) / LOG_DIRNAME / process_name / f"run_{run_number}"
+        run_subdir = True
+
+    if log_root_override:
+        base_root = Path(log_root_override)
+    elif runs_root:
+        base_root = Path(runs_root)
+    else:
+        base_root = Path(project_root or Path.cwd()) / LOG_DIRNAME
+
+    if run_subdir:
+        base_root = base_root / f"run_{run_number}"
+
+    folder_name = process_folder if process_folder else process_name
+    base_path = base_root / folder_name
     base_path.mkdir(parents=True, exist_ok=True)
     shutdown_logging()
     configure_logging(settings, config_path, project_root, base_path=base_path)
