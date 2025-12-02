@@ -26,8 +26,10 @@
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 10,
-                "height": 0.02,
-                "diameter": 0.033,
+                "dimensions":{
+                    "height": 0.02,
+                    "diameter": 0.033
+                },
                 "color": "blue",
                 "detection": {
                     "type": "GPS",

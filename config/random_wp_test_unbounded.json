@@ -32,8 +32,10 @@
                 "shape": "cylinder",
                 "linear_velocity": 0.01,
                 "angular_velocity": 45,
-                "height": 0.02,
-                "diameter": 0.033,
+                "dimensions":{
+                    "height": 0.02,
+                    "diameter": 0.033
+                },
                 "color": "blue",
                 "moving_behavior":"random_way_point",
                 "messages": {
