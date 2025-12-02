@@ -8,7 +8,10 @@
 # ------------------------------------------------------------------------------
 
 """Environment: process-level orchestration of the simulation."""
-import psutil, time, gc
+import gc
+import json
+import time
+import psutil
 import multiprocessing as mp
 from pathlib import Path
 from multiprocessing.context import BaseContext
@@ -453,6 +456,9 @@ class Environment:
             folder_name = generate_unique_folder_name(logs_root, folder_base)
             experiment_folder = logs_root / folder_name
             experiment_folder.mkdir(parents=True, exist_ok=True)
+            config_path = experiment_folder / "config.json"
+            with open(config_path, "w", encoding="utf-8") as cfg_file:
+                json.dump(exp.data, cfg_file, indent=4, default=str)
             runs_root = experiment_folder / "runs"
             runs_root.mkdir(parents=True, exist_ok=True)
             exp_log_specs = {
