@@ -134,8 +134,10 @@ def set_affinity_safely(proc, num_cores):
         p.cpu_affinity(selected)
         used_cores.update(selected)
         # print(f"[AFFINITY] PID {proc.pid} -> {selected}")
+        return selected
     except Exception as e:
         logger.error(f"[AFFINITY ERROR] PID {proc.pid}: {e}")
+        return []
 
 
 def set_shared_affinity(processes, num_cores):
@@ -158,8 +160,10 @@ def set_shared_affinity(processes, num_cores):
 
         used_cores.update(selected)
         # print(f"[AFFINITY] Shared -> {selected}")
+        return selected
     except Exception as e:
         logger.error(f"[AFFINITY ERROR] shared for {[p.pid for p in processes if p]}: {e}")
+        return []
 
 
 class _PipeQueue:
@@ -407,6 +411,7 @@ class Environment:
             logger.warning("Could not set environment CPU affinity: %s", e)
 
         for exp in self.experiments:
+            assigned_worker_cores = set()
 
             def _safe_terminate(proc):
                 if proc and proc.is_alive():
@@ -557,16 +562,16 @@ class Environment:
                     proc.start()
                 arena_process.start()
 
-                set_affinity_safely(arena_process, pattern["arena"])
+                assigned_worker_cores.update(set_affinity_safely(arena_process, pattern["arena"]))
                 # Agent processes share a capped core set (2 cores per proc)...
                 available_remaining = max(1, total_cores - len(used_cores))
                 agent_core_budget = min(n_blocks * 2, available_remaining)
                 agent_core_budget = max(agent_core_budget, 1)
-                set_shared_affinity(manager_processes, agent_core_budget)
+                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
                 if detector_process:
-                    set_affinity_safely(detector_process, pattern["detector"])
-                set_affinity_safely(gui_process, pattern["gui"])
-                set_affinity_safely(message_server_process, pattern["messages"])
+                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
+                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
 
                 # Supervision loop
                 while True:
@@ -609,14 +614,14 @@ class Environment:
                 for proc in manager_processes:
                     proc.start()
                 arena_process.start()
-                set_affinity_safely(arena_process,   pattern["arena"])
+                assigned_worker_cores.update(set_affinity_safely(arena_process,   pattern["arena"]))
                 available_remaining = max(1, total_cores - len(used_cores))
                 agent_core_budget = min(n_blocks * 2, available_remaining)
                 agent_core_budget = max(agent_core_budget, 1)
-                set_shared_affinity(manager_processes, agent_core_budget)
+                assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
                 if detector_process:
-                    set_affinity_safely(detector_process, pattern["detector"])
-                set_affinity_safely(message_server_process, pattern["messages"])
+                    assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
                 killed = 0
                 # Supervision loop
                 while True:
@@ -647,7 +652,9 @@ class Environment:
                 _safe_join(detector_process)
                 _safe_join(message_server_process)
                 if killed == 1:
+                    used_cores.difference_update(assigned_worker_cores)
                     raise RuntimeError("A subprocess exited unexpectedly.")
             shutdown_logging()
             gc.collect()
+            used_cores.difference_update(assigned_worker_cores)
         logger.info("All experiments completed successfully")
