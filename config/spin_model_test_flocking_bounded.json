@@ -5,7 +5,7 @@
         "num_runs": 1,
         "gui":{
             "_id": "2D",
-            "on_click": ["show_spins","detection"],
+            "on_click": ["spins","detection"],
             "view": ["detection"]
         },
         "arenas":{

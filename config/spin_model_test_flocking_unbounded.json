@@ -3,13 +3,9 @@
         "collisions": true,
         "time_limit": 0,
         "num_runs": 1,
-        "results":{
-            "agent_specs": ["base", "spin_model"],
-            "group_specs": ["detection"]
-        },
         "gui":{
             "_id": "2D",
-            "on_click": ["show_spins","detection"],
+            "on_click": ["spins","detection"],
             "view": ["detection"]
         },
         "arenas":{
