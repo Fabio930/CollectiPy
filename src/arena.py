@@ -160,9 +160,19 @@ class Arena():
     def initialize(self):
         """Initialize the component state."""
         self.reset()
+        created_counts: dict[str, int] = {}
         for key,(config,entities) in self.objects.items():
+            object_count = config["number"]
+            logger.info("Creating %s object(s) of type %s", object_count, key)
             for n in range(config["number"]):
                 entities.append(EntityFactory.create_entity(entity_type="object_"+key,config_elem=config,_id=n))
+            created_counts[key] = object_count
+
+        if created_counts:
+            total_created = sum(created_counts.values())
+            logger.info("Objects initialized: total=%d breakdown=%s", total_created, created_counts)
+        else:
+            logger.info("No arena objects configured")
                 
     def run(self,num_runs,time_limit, arena_queue:mp.Queue, agents_queue:mp.Queue, gui_in_queue:mp.Queue, dec_arena_in:mp.Queue, gui_control_queue:mp.Queue, render:bool=False):
         """Run the simulation routine."""
@@ -331,6 +341,44 @@ class SolidArena(Arena):
                 uncertainties.append(entities[n].get_uncertainty())
             out.update({entities[0].entity():(shapes,positions,strengths,uncertainties)})
         return out
+
+    @staticmethod
+    def _format_position(position):
+        """Return a readable position string."""
+        if position is None:
+            return "(unset)"
+        try:
+            return f"({position.x:.3f},{position.y:.3f},{position.z:.3f})"
+        except AttributeError:
+            return str(position)
+
+    def _collect_object_positions(self) -> dict:
+        """Collect a human-readable description for each object's location."""
+        grouped: dict[str, list[str]] = {}
+        for _, entities in self.objects.values():
+            for entity in entities:
+                pos = self._format_position(entity.get_position())
+                grouped.setdefault(entity.entity(), []).append(
+                    f"{entity.get_name()}={pos}"
+                )
+        return grouped
+
+    def _log_object_positions(self, run: int, tick_label: str = "tick 0") -> None:
+        """Log object positions for the provided run/tick context."""
+        grouped = self._collect_object_positions()
+        if not grouped:
+            logger.info("Run %d %s: no arena objects configured", run, tick_label)
+            return
+        counts = {key: len(vals) for key, vals in grouped.items()}
+        logger.info("Run %d %s object positions summary: %s", run, tick_label, counts)
+        for entity_type, entries in grouped.items():
+            logger.info(
+                "Run %d %s %s positions: %s",
+                run,
+                tick_label,
+                entity_type,
+                "; ".join(entries),
+            )
 
     def _compute_entity_radii(self):
         """Compute entity radii."""
@@ -514,6 +562,7 @@ class SolidArena(Arena):
             start_run_logging(log_specs, process_name, run)
             try:
                 logger.info(f"Run number {run} started")
+                self._log_object_positions(run, "tick 0")
                 arena_data = {
                     "status": [0,self.ticks_per_second],
                     "objects": self.pack_objects_data()
