@@ -5,6 +5,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+LOG_DIRNAME = "logs"
+DEFAULT_RESULTS_BASE = "./data/"
+
 
 def sanitize_token(token: str | None) -> str | None:
     """Return a filesystem-friendly token derived from the input."""
@@ -28,6 +31,67 @@ def _alphanumeric_index(index: int) -> str:
         result.append(digits[value % base])
         value //= base
     return "".join(reversed(result))
+
+
+def normalize_specs(value) -> set[str]:
+    """Return a normalized set of spec tokens."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        iterable = [value]
+    elif isinstance(value, (list, tuple, set)):
+        iterable = value
+    else:
+        iterable = []
+    return {str(item).strip().lower() for item in iterable if str(item).strip()}
+
+
+def resolve_result_specs(results_cfg: dict | None) -> tuple[set[str], set[str]]:
+    """Return agent/group specs applying defaults and legacy aliases."""
+    if not isinstance(results_cfg, dict):
+        return set(), set()
+    agent_specs = normalize_specs(results_cfg.get("agent_specs"))
+    group_specs = normalize_specs(results_cfg.get("group_specs"))
+    legacy_specs = normalize_specs(results_cfg.get("model_specs"))
+    agent_specs_were_provided = "agent_specs" in results_cfg
+    if not agent_specs_were_provided and not agent_specs:
+        agent_specs = {"base"}
+    if legacy_specs:
+        if "spin_model" in legacy_specs:
+            agent_specs.add("spin_model")
+        if "graphs" in legacy_specs:
+            group_specs.update({"graph_messages", "graph_detection", "graphs"})
+        if "graph_messages" in legacy_specs:
+            group_specs.add("graph_messages")
+        if "graph_detection" in legacy_specs:
+            group_specs.add("graph_detection")
+    return agent_specs, group_specs
+
+
+def resolve_base_dirs(
+    logging_cfg: dict | None,
+    results_cfg: dict | None,
+) -> tuple[Path, Path]:
+    """
+    Return (results_root, logs_root) applying default coupling:
+    - results defaults to DEFAULT_RESULTS_BASE unless overridden.
+    - logs defaults to <results_root>/logs unless logging.base_path is provided.
+    """
+    results_cfg = results_cfg or {}
+    logging_cfg = logging_cfg or {}
+
+    raw_results_base = results_cfg.get("base_path")
+    raw_logs_base = logging_cfg.get("base_path")
+
+    results_root = Path(raw_results_base) if raw_results_base else Path(DEFAULT_RESULTS_BASE)
+    results_root = results_root.expanduser()
+
+    if raw_logs_base:
+        logs_root = Path(raw_logs_base).expanduser()
+    else:
+        logs_root = results_root / LOG_DIRNAME
+
+    return results_root.resolve(), logs_root.resolve()
 
 
 def derive_experiment_folder_basename(
@@ -89,6 +153,28 @@ def generate_unique_folder_name(base_path: str | Path, base_name: str) -> str:
         for name in os.listdir(abs_base)
         if os.path.isdir(os.path.join(abs_base, name))
     }
+    candidate = base_name
+    counter = 0
+    while candidate in existing:
+        counter += 1
+        suffix = _alphanumeric_index(counter)
+        candidate = f"{base_name}_{suffix}"
+    return candidate
+
+
+def generate_shared_unique_folder_name(
+    base_paths: Iterable[str | Path],
+    base_name: str,
+) -> str:
+    """Return a unique folder name across multiple base paths."""
+    abs_bases = [Path(p) for p in base_paths if p]
+    existing: set[str] = set()
+    for base in abs_bases:
+        if not base.exists():
+            continue
+        for name in os.listdir(base):
+            if (base / name).is_dir():
+                existing.add(name)
     candidate = base_name
     counter = 0
     while candidate in existing:

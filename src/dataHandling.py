@@ -11,7 +11,12 @@ import math
 import os, json, pickle, shutil, zipfile
 from pathlib import Path
 from config import Config
-from utils.folder_utils import derive_experiment_folder_basename, generate_unique_folder_name
+from utils.folder_utils import (
+    DEFAULT_RESULTS_BASE,
+    derive_experiment_folder_basename,
+    generate_unique_folder_name,
+    resolve_result_specs,
+)
 
 class DataHandlingFactory():
     """Data handling factory."""
@@ -30,37 +35,27 @@ class DataHandling():
     def __init__(self, config_elem: Config):
         """Initialize the instance."""
         results_cfg = config_elem.results or {}
-        base_path = results_cfg.get("base_path") or "./data/"
-        self.agent_specs = self._normalize_specs(results_cfg.get("agent_specs"))
-        self.group_specs = self._normalize_specs(results_cfg.get("group_specs"))
-        legacy_specs = self._normalize_specs(results_cfg.get("model_specs"))
-        agent_specs_were_provided = "agent_specs" in results_cfg
-        if not agent_specs_were_provided and not self.agent_specs:
-            # Preserve the legacy behaviour: saving base agent states unless explicitly disabled.
-            self.agent_specs = {"base"}
-        if legacy_specs:
-            if "spin_model" in legacy_specs:
-                self.agent_specs.add("spin_model")
-            if "graphs" in legacy_specs:
-                self.group_specs.update({"graph_messages", "graph_detection", "graphs"})
-            if "graph_messages" in legacy_specs:
-                self.group_specs.add("graph_messages")
-            if "graph_detection" in legacy_specs:
-                self.group_specs.add("graph_detection")
+        base_path = results_cfg.get("base_path") or DEFAULT_RESULTS_BASE
+        self.agent_specs, self.group_specs = resolve_result_specs(results_cfg)
         self.base_dump_enabled = "base" in self.agent_specs
         self.spin_dump_enabled = "spin_model" in self.agent_specs
         self.graph_messages_enabled = "graphs" in self.group_specs or "graph_messages" in self.group_specs
         self.graph_detection_enabled = "graphs" in self.group_specs or "graph_detection" in self.group_specs
         self.snapshots_per_second = self._parse_snapshot_rate(results_cfg.get("snapshots_per_second", 1))
-        abs_base_path = os.path.join(os.path.abspath(""), base_path)
-        os.makedirs(abs_base_path, exist_ok=True)
+        base_root = Path(base_path).expanduser().resolve()
+        base_root.mkdir(parents=True, exist_ok=True)
         folder_base = derive_experiment_folder_basename(
             config_elem, agent_specs=self.agent_specs, group_specs=self.group_specs
         )
-        folder_name = generate_unique_folder_name(abs_base_path, folder_base)
-        self.config_folder = os.path.join(abs_base_path, folder_name)
-        os.mkdir(self.config_folder)
-        with open(os.path.join(self.config_folder, "config.json"), "w") as f:
+        folder_override = getattr(config_elem, "output_folder_name", None)
+        if folder_override:
+            folder_name = folder_override
+        else:
+            folder_name = generate_unique_folder_name(base_root, folder_base)
+        target_folder = base_root / folder_name
+        target_folder.mkdir(parents=False, exist_ok=True)
+        self.config_folder = str(target_folder)
+        with open(target_folder / "config.json", "w") as f:
             json.dump(config_elem.__dict__, f, indent=4, default=str)
         self.agents_files = {}
         self.agent_spin_files = {}
@@ -74,19 +69,6 @@ class DataHandling():
         self._graph_step_dirs = {}
         self._graphs_root = None
         self.hierarchy_enabled = bool(getattr(config_elem, "arena", {}).get("hierarchy"))
-
-    def _normalize_specs(self, value):
-        """Return a normalized set of model spec tokens."""
-        if value is None:
-            return set()
-        if isinstance(value, str):
-            iterable = [value]
-        elif isinstance(value, (list, tuple, set)):
-            iterable = value
-        else:
-            iterable = []
-        specs = {str(item).strip().lower() for item in iterable if str(item).strip()}
-        return specs
 
     def _parse_snapshot_rate(self, value):
         """Return a valid snapshot count per simulated second."""

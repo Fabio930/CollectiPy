@@ -4,7 +4,12 @@ from config import Config
 from environment import EnvironmentFactory
 from plugin_registry import load_plugins_from_config
 from logging_utils import configure_logging, shutdown_logging
-from utils.folder_utils import derive_experiment_folder_basename, generate_unique_folder_name
+from utils.folder_utils import (
+    derive_experiment_folder_basename,
+    generate_shared_unique_folder_name,
+    resolve_base_dirs,
+    resolve_result_specs,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -38,11 +43,14 @@ def main(argv):
         # IMPORTANT: use the resolved path
         my_config = Config(config_path=config_path_resolved)
         logging_cfg = my_config.environment.get("logging", {}) or {}
+        results_cfg = my_config.environment.get("results", {}) or {}
 
-        logs_root = Path(logging_cfg.get("base_path", "./logs")).expanduser().resolve()
+        results_root, logs_root = resolve_base_dirs(logging_cfg, results_cfg)
         logs_root.mkdir(parents=True, exist_ok=True)
-        folder_base = derive_experiment_folder_basename(my_config)
-        session_folder_name = generate_unique_folder_name(logs_root, folder_base)
+        results_root.mkdir(parents=True, exist_ok=True)
+        agent_specs, group_specs = resolve_result_specs(results_cfg)
+        folder_base = derive_experiment_folder_basename(my_config, agent_specs=agent_specs, group_specs=group_specs)
+        session_folder_name = generate_shared_unique_folder_name((logs_root, results_root), folder_base)
         session_folder = logs_root / session_folder_name
         session_folder.mkdir(parents=True, exist_ok=True)
         with open(session_folder / "config.json", "w", encoding="utf-8") as cfg_file:

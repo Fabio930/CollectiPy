@@ -22,7 +22,12 @@ from arena import ArenaFactory
 from gui import GuiFactory
 from collision_detector import CollisionDetector
 from logging_utils import get_logger, shutdown_logging
-from utils.folder_utils import derive_experiment_folder_basename, generate_unique_folder_name
+from utils.folder_utils import (
+    derive_experiment_folder_basename,
+    generate_shared_unique_folder_name,
+    resolve_base_dirs,
+    resolve_result_specs,
+)
 logger = get_logger("environment")
 
 used_cores = set()
@@ -443,11 +448,9 @@ class Environment:
         # Reset affinity bookkeeping for each run to match the current machine state.
         used_cores.clear()
         total_cores = psutil.cpu_count(logical=True) or 1
-        logs_root = self._session_log_root
-        if logs_root is None:
-            base_path = self._log_set.get("base_path", "./logs")
-            logs_root = Path(base_path).expanduser().resolve()
-        logs_root.mkdir(parents=True, exist_ok=True)
+        session_logs_root = Path(self._session_log_root).expanduser().resolve() if self._session_log_root else None
+        if session_logs_root is not None:
+            session_logs_root.mkdir(parents=True, exist_ok=True)
         # Reserve a dedicated core for the environment/main process so workers use different ones.
         try:
             env_core = pick_least_used_free_cores(1)
@@ -459,10 +462,14 @@ class Environment:
 
         for exp in self.experiments:
             results_cfg = exp.environment.get("results", {}) or {}
-            agent_specs = results_cfg.get("agent_specs") or []
-            group_specs = results_cfg.get("group_specs") or []
+            agent_specs, group_specs = resolve_result_specs(results_cfg)
+            results_root, default_logs_root = resolve_base_dirs(self._log_set, results_cfg)
+            logs_root = session_logs_root or default_logs_root
+            logs_root.mkdir(parents=True, exist_ok=True)
+            results_root.mkdir(parents=True, exist_ok=True)
             folder_base = derive_experiment_folder_basename(exp, agent_specs, group_specs)
-            folder_name = generate_unique_folder_name(logs_root, folder_base)
+            folder_name = generate_shared_unique_folder_name((logs_root, results_root), folder_base)
+            exp.output_folder_name = folder_name
             experiment_folder = logs_root / folder_name
             experiment_folder.mkdir(parents=True, exist_ok=True)
             config_path = experiment_folder / "config.json"

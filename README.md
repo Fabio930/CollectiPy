@@ -70,7 +70,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
         "snapshots_per_second": int, //DEFAULT:1 (1 = end-of-second only, 2 = mid-second + end-second captures).
     },
     "logging":{ //DEFAULT:{} default logging
-        "base_path": str, //DEFAULT:"../logs/" (only used when this block is present; does not enable dumps by itself),
+        "base_path": str, //DEFAULT:"../data/logs/" (if results.base_path is set and logging.base_path is omitted, logs default to <results.base_path>/logs),
         "level": str, //DEFAULT:"WARNING" - severity used for all active handlers,
         "to_file": bool, //DEFAULT:false - emit compressed ZIP logs,
         "to_console": bool, //DEFAULT:false - mirror logs on stdout/stderr,

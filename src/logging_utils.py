@@ -11,10 +11,10 @@ Utilities to configure and retrieve simulation loggers.
 This version implements **per-process logging**:
 each process writes its own compressed ZIP log safely.
 
-Directory layout:
-    logs/MainProcess/<timestamp>.log.zip
-    logs/Process-1/<timestamp>.log.zip
-    logs/message_server/<timestamp>.log.zip
+Default directory layout (base_path="data/logs"):
+    data/logs/MainProcess/<timestamp>.log.zip
+    data/logs/Process-1/<timestamp>.log.zip
+    data/logs/message_server/<timestamp>.log.zip
     ...
 """
 
@@ -27,10 +27,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from utils.folder_utils import DEFAULT_RESULTS_BASE, LOG_DIRNAME as DEFAULT_LOG_DIRNAME
+
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 LOG_NAMESPACE = "sim"
-LOG_DIRNAME = "logs"
+LOG_DIRNAME = DEFAULT_LOG_DIRNAME
+DEFAULT_LOG_BASE = Path(DEFAULT_RESULTS_BASE) / LOG_DIRNAME
 
 
 # ------------------------------------------------------------------------------
@@ -86,10 +89,10 @@ def configure_logging(
     # Build log directory base for this process
     proc_name = mp.current_process().name
 
-    # If no custom path → logs/<process-name>/
+    # If no custom path → data/logs/<process-name>/ (default base)
     if to_file:
         if base_path is None:
-            base_path = Path(root) / LOG_DIRNAME / proc_name
+            base_path = Path(root) / DEFAULT_LOG_BASE / proc_name
 
         log_context = _prepare_log_artifacts(
             config_path,
@@ -296,7 +299,7 @@ def start_run_logging(
         else:
             base_path = base_root
     else:
-        base_root = Path(project_root or Path.cwd()) / LOG_DIRNAME
+        base_root = Path(project_root or Path.cwd()) / DEFAULT_LOG_BASE
         if folder_name:
             base_root = base_root / folder_name
         base_path = base_root / f"run_{run_number}"
