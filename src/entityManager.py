@@ -680,6 +680,11 @@ class EntityManager:
             reset = False
 
             data_in = self._blocking_get(arena_queue)
+            while data_in is not None:
+                status = data_in.get("status")
+                if isinstance(status, list) and len(status) >= 1 and status[0] == 0:
+                    break
+                data_in = self._blocking_get(arena_queue)
             if data_in is None:
                 break
 

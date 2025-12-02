@@ -571,7 +571,7 @@ class SolidArena(Arena):
                 }
                 if running or step_mode:
                     if not render and not getattr(self, "quiet", False):
-                        print(f"\rarena_ticks {t}", end='', flush=True)
+                        print(f"\rrun {run} arena_ticks {t}", end='', flush=True)
                     for q in arena_queues:
                         q.put(arena_data)
                     ready = [False] * n_managers
