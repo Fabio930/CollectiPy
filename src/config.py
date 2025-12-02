@@ -114,6 +114,12 @@ def _validate_logging_block(logging_cfg):
     to_file = logging_cfg.get("to_file")
     if to_file is not None and not isinstance(to_file, bool):
         raise ValueError("'logging.to_file' must be a boolean")
+    to_console = logging_cfg.get("to_console")
+    if to_console is not None and not isinstance(to_console, bool):
+        raise ValueError("'logging.to_console' must be a boolean")
+    base_path = logging_cfg.get("base_path")
+    if base_path is not None and not isinstance(base_path, str):
+        raise ValueError("'logging.base_path' must be a string")
 
 def _validate_gui_block(gui_cfg):
     if not isinstance(gui_cfg, dict):

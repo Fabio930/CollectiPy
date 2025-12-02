@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from bodies.shapes3D import Shape
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
-from logging_utils import get_logger
+from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("collision")
 
@@ -155,7 +155,8 @@ class CollisionDetector:
         self,
         dec_agents_in: Any,
         dec_agents_out: Any,
-        dec_arena_in: Any
+        dec_arena_in: Any,
+        log_context: dict | None = None
     ) -> None:
         """
         Main loop: wait for updates from the arena and the entity managers,
@@ -176,7 +177,10 @@ class CollisionDetector:
               {"objects": {obj_id: (shapes, positions)}}
         """
         logger.info("CollisionDetector started (collisions=%s)", self.collisions)
-
+        log_context = log_context or {}
+        log_specs = log_context.get("log_specs")
+        process_name = log_context.get("process_name", "collision")
+        current_run = None
         # Normalise queues to lists for ease of indexing.
         agent_inputs = dec_agents_in if isinstance(dec_agents_in, (list, tuple)) else [dec_agents_in]
         manager_outputs = dec_agents_out if isinstance(dec_agents_out, (list, tuple)) else [dec_agents_out]
@@ -186,75 +190,82 @@ class CollisionDetector:
         round_snapshots: Dict[int, Dict[str, AgentCollisionPayload]] = {}
         updated_flags: Dict[int, bool] = {i: False for i in range(num_managers)}
 
-        while True:
-            idle = True
+        try:
+            while True:
+                idle = True
 
-            # 1) Pull latest objects description from arena.
-            if dec_arena_in and self._poll(dec_arena_in, 0.0):
-                try:
-                    payload = dec_arena_in.get()
-                    if payload:
-                        # Expected format: {"objects": {id: (shapes, positions)}}
-                        self.objects = payload.get("objects", {}) or {}
-                        logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
-                        idle = False
-                except EOFError:
-                    pass
-
-            # 2) Non-blocking snapshot collection: one snapshot per manager per "round".
-            for idx, q in enumerate(agent_inputs):
-                if q is None:
-                    continue
-                if self._poll(q, 0.0):
+                # 1) Pull latest objects description from arena.
+                if dec_arena_in and self._poll(dec_arena_in, 0.0):
                     try:
-                        snap = q.get()
+                        payload = dec_arena_in.get()
+                        if payload:
+                            run_id = payload.get("run")
+                            if run_id is not None and run_id != current_run:
+                                current_run = run_id
+                                start_run_logging(log_specs, process_name, current_run)
+                            # Expected format: {"objects": {id: (shapes, positions)}}
+                            self.objects = payload.get("objects", {}) or {}
+                            logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
+                            idle = False
                     except EOFError:
-                        snap = None
-                else:
-                    snap = None
+                        pass
 
-                if snap:
-                    # We expect the manager to send:
-                    # {"manager_id": int, "agents": {club: (shapes, vels, fwd, pos, names)}}
-                    agents_payload = snap.get("agents", {}) or {}
-                    round_snapshots[idx] = agents_payload
-                    updated_flags[idx] = True
-                    idle = False
-
-            # A "round" is ready when every manager produced a snapshot.
-            ready_for_round = all(updated_flags[i] for i in range(num_managers))
-
-            # 3) Compute and send corrections ONLY when the round is ready.
-            if ready_for_round and self.collisions:
-                try:
-                    corrections = self._compute_all_corrections(round_snapshots)
-                except Exception as exc:
-                    logger.exception("CollisionDetector: error in collision computation: %s", exc)
-                    corrections = {}
-
-                # Send per-manager corrections.
-                for manager_id, mgr_corr in corrections.items():
-                    if manager_id < 0 or manager_id >= len(manager_outputs):
-                        # Fallback: send to first queue if indexing is out of range.
-                        target_q = manager_outputs[0] if manager_outputs else None
-                    else:
-                        target_q = manager_outputs[manager_id]
-                    if target_q:
+                # 2) Non-blocking snapshot collection: one snapshot per manager per "round".
+                for idx, q in enumerate(agent_inputs):
+                    if q is None:
+                        continue
+                    if self._poll(q, 0.0):
                         try:
-                            target_q.put(mgr_corr)
-                        except Exception:
-                            logger.debug(
-                                "CollisionDetector: failed to send corrections to manager %d",
-                                manager_id
-                            )
+                            snap = q.get()
+                        except EOFError:
+                            snap = None
+                    else:
+                        snap = None
 
-                # Reset round buffers for the next simulation tick.
-                round_snapshots = {}
-                updated_flags = {i: False for i in range(num_managers)}
+                    if snap:
+                        # We expect the manager to send:
+                        # {"manager_id": int, "agents": {club: (shapes, vels, fwd, pos, names)}}
+                        agents_payload = snap.get("agents", {}) or {}
+                        round_snapshots[idx] = agents_payload
+                        updated_flags[idx] = True
+                        idle = False
+
+                # A "round" is ready when every manager produced a snapshot.
+                ready_for_round = all(updated_flags[i] for i in range(num_managers))
+
+                # 3) Compute and send corrections ONLY when the round is ready.
+                if ready_for_round and self.collisions:
+                    try:
+                        corrections = self._compute_all_corrections(round_snapshots)
+                    except Exception as exc:
+                        logger.exception("CollisionDetector: error in collision computation: %s", exc)
+                        corrections = {}
+
+                    # Send per-manager corrections.
+                    for manager_id, mgr_corr in corrections.items():
+                        if manager_id < 0 or manager_id >= len(manager_outputs):
+                            # Fallback: send to first queue if indexing is out of range.
+                            target_q = manager_outputs[0] if manager_outputs else None
+                        else:
+                            target_q = manager_outputs[manager_id]
+                        if target_q:
+                            try:
+                                target_q.put(mgr_corr)
+                            except Exception:
+                                logger.debug(
+                                    "CollisionDetector: failed to send corrections to manager %d",
+                                    manager_id
+                                )
+
+                    # Reset round buffers for the next simulation tick.
+                    round_snapshots = {}
+                    updated_flags = {i: False for i in range(num_managers)}
 
             # 4) Idle sleep when nothing interesting happened.
             if idle:
                 time.sleep(0.00001)
+        finally:
+            shutdown_logging()
 
     # ------------------------------------------------------------------
     # Collision computation (broad-phase via SpatialGrid, narrow-phase via shapes)

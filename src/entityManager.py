@@ -16,7 +16,7 @@ from random import Random
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
 from message_proxy import MessageProxy, NullMessageProxy
-from logging_utils import get_logger
+from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("entity_manager")
 
@@ -662,7 +662,8 @@ class EntityManager:
         agents_queue: mp.Queue,
         dec_agents_in: Optional[mp.Queue],
         dec_agents_out: Optional[mp.Queue],
-        agent_barrier=None
+        agent_barrier=None,
+        log_context: dict | None = None
     ):
         """Run the simulation routine."""
         ticks_per_second = 1
@@ -672,172 +673,180 @@ class EntityManager:
         ticks_limit = time_limit * ticks_per_second + 1 if time_limit > 0 else 0
 
         run = 1
+        log_context = log_context or {}
+        log_specs = log_context.get("log_specs")
+        process_name = log_context.get("process_name", f"manager_{self.manager_id}")
         logger.info("EntityManager starting for %s runs (time_limit=%s)", num_runs, time_limit)
 
         while run < num_runs + 1:
-            metadata_sent = False
-            metadata_snapshot = self.get_agent_metadata()
-            reset = False
+            start_run_logging(log_specs, process_name, run)
+            try:
+                metadata_sent = False
+                metadata_snapshot = self.get_agent_metadata()
+                reset = False
 
-            data_in = self._blocking_get(arena_queue)
-            while data_in is not None:
-                status = data_in.get("status")
-                if isinstance(status, list) and len(status) >= 1 and status[0] == 0:
-                    break
                 data_in = self._blocking_get(arena_queue)
-            if data_in is None:
-                break
-
-            # Initialisation at start of run.
-            if data_in["status"][0] == 0:
-                self.initialize(data_in["random_seed"], data_in["objects"])
-
-            if self._message_proxy is not None:
-                all_entities = []
-                for _, (_, entities) in self.agents.items():
-                    all_entities.extend(entities)
-                self._message_proxy.reset_mailboxes()
-                self._message_proxy.sync_agents(all_entities)
-
-
-            # First snapshot for GUI (before t=1).
-            initial_snapshot = {
-                "status": [0, ticks_per_second],
-                "agents_shapes": self.get_agent_shapes(),
-                "agents_spins": self.get_agent_spins(),
-                "agents_metadata": metadata_snapshot,
-            }
-            agents_queue.put(initial_snapshot)
-            metadata_sent = True
-
-            t = 1
-            while True:
-                if ticks_limit > 0 and t >= ticks_limit:
-                    break
-                if data_in["status"] == "reset":
-                    reset = True
+                while data_in is not None:
+                    status = data_in.get("status")
+                    if isinstance(status, list) and len(status) >= 1 and status[0] == 0:
+                        break
+                    data_in = self._blocking_get(arena_queue)
+                if data_in is None:
                     break
 
-                # Keep arena and agents roughly in sync in simulated time.
-                while data_in["status"][0] / data_in["status"][1] < t / ticks_per_second:
-                    new_msg = self._maybe_get(arena_queue, timeout=0.01)
-                    if new_msg is not None:
-                        data_in = new_msg
-                        if data_in["status"] == "reset":
-                            reset = True
-                            break
-                    else:
-                        time.sleep(0.0001)
+                # Initialisation at start of run.
+                if data_in["status"][0] == 0:
+                    self.initialize(data_in["random_seed"], data_in["objects"])
 
-                    # Optional GUI update while waiting (only if queue is empty).
-                    sync_payload = {
-                        "status": [t, ticks_per_second],
-                        "agents_shapes": self.get_agent_shapes(),
-                        "agents_spins": self.get_agent_spins(),
-                    }
-                    if agents_queue.qsize() == 0:
-                        agents_queue.put(sync_payload)
-                if reset:
-                    break
-
-                latest = self._maybe_get(arena_queue, timeout=0.0)
-                if latest is not None:
-                    data_in = latest
-
-                # Synchronize message proxy with updated agent positions.
                 if self._message_proxy is not None:
                     all_entities = []
                     for _, (_, entities) in self.agents.items():
                         all_entities.extend(entities)
+                    self._message_proxy.reset_mailboxes()
                     self._message_proxy.sync_agents(all_entities)
 
 
-                # Messaging: send then receive, then main agent step.
-                for _, entities in self.agents.values():
-                    for entity in entities:
-                        if getattr(entity, "msg_enable", False) and entity.message_bus:
-                            entity.send_message(t)
-
-                for _, entities in self.agents.values():
-                    for entity in entities:
-                        if getattr(entity, "msg_enable", False) and entity.message_bus:
-                            entity.receive_messages(t)
-                        # Main agent step.
-                        entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
-                    if agent_barrier is not None:
-                        agent_barrier.wait()
-
-                # ------------------------------------------------------------------
-                # Collision detector snapshot and corrections.
-                # ------------------------------------------------------------------
-                dec_data_in: dict = {}
-
-                if self.collisions and dec_agents_in is not None and dec_agents_out is not None:
-                    if t % self.snapshot_stride == 0:
-                        # Send snapshot for this manager.
-                        detector_data = {
-                            "manager_id": self.manager_id,
-                            "agents": self.pack_detector_data(),
-                        }
-                        try:
-                            dec_agents_in.put(detector_data)
-                        except Exception:
-                            pass
-
-                        # Wait for corrections from detector for this round.
-                        dec_data_in = self._blocking_get(dec_agents_out)
-                        if not isinstance(dec_data_in, dict):
-                            dec_data_in = {}
-
-                # Apply collision corrections (or call post_step(None) if none).
-                for _, entities in self.agents.values():
-                    if not entities:
-                        continue
-                    group_key = entities[0].entity()
-                    group_corr = dec_data_in.get(group_key, None)  # list of corrections or None
-
-                    if isinstance(group_corr, list):
-                        for idx, entity in enumerate(entities):
-                            corr_vec = group_corr[idx] if idx < len(group_corr) else None
-                            entity.post_step(corr_vec)
-                            self._apply_wrap(entity)
-                            self._clamp_to_arena(entity)
-                    else:
-                        for entity in entities:
-                            entity.post_step(None)
-                            self._apply_wrap(entity)
-                            self._clamp_to_arena(entity)
-                    if agent_barrier is not None:
-                        agent_barrier.wait()
-
-                # ------------------------------------------------------------------
-                # GUI snapshot AFTER collision corrections.
-                # ------------------------------------------------------------------
-                agents_data = {
-                    "status": [t, ticks_per_second],
+                # First snapshot for GUI (before t=1).
+                initial_snapshot = {
+                    "status": [0, ticks_per_second],
                     "agents_shapes": self.get_agent_shapes(),
                     "agents_spins": self.get_agent_spins(),
+                    "agents_metadata": metadata_snapshot,
                 }
-                if not metadata_sent:
-                    agents_data["agents_metadata"] = metadata_snapshot
-                    metadata_sent = True
+                agents_queue.put(initial_snapshot)
+                metadata_sent = True
 
-                agents_queue.put(agents_data)
-                t += 1
+                t = 1
+                while True:
+                    if ticks_limit > 0 and t >= ticks_limit:
+                        break
+                    if data_in["status"] == "reset":
+                        reset = True
+                        break
 
-            if t < ticks_limit and not reset:
-                break
+                    # Keep arena and agents roughly in sync in simulated time.
+                    while data_in["status"][0] / data_in["status"][1] < t / ticks_per_second:
+                        new_msg = self._maybe_get(arena_queue, timeout=0.01)
+                        if new_msg is not None:
+                            data_in = new_msg
+                            if data_in["status"] == "reset":
+                                reset = True
+                                break
+                        else:
+                            time.sleep(0.0001)
 
-            if run < num_runs:
-                # Drain extra arena messages with gentle polling.
-                drained = self._maybe_get(arena_queue, timeout=0.01)
-                while drained is not None:
-                    data_in = drained
-                    drained = self._maybe_get(arena_queue, timeout=0.0)
-            elif not reset:
-                self.close()
+                        # Optional GUI update while waiting (only if queue is empty).
+                        sync_payload = {
+                            "status": [t, ticks_per_second],
+                            "agents_shapes": self.get_agent_shapes(),
+                            "agents_spins": self.get_agent_spins(),
+                        }
+                        if agents_queue.qsize() == 0:
+                            agents_queue.put(sync_payload)
+                    if reset:
+                        break
 
-            if not reset:
-                run += 1
+                    latest = self._maybe_get(arena_queue, timeout=0.0)
+                    if latest is not None:
+                        data_in = latest
 
+                    # Synchronize message proxy with updated agent positions.
+                    if self._message_proxy is not None:
+                        all_entities = []
+                        for _, (_, entities) in self.agents.items():
+                            all_entities.extend(entities)
+                        self._message_proxy.sync_agents(all_entities)
+
+
+                    # Messaging: send then receive, then main agent step.
+                    for _, entities in self.agents.values():
+                        for entity in entities:
+                            if getattr(entity, "msg_enable", False) and entity.message_bus:
+                                entity.send_message(t)
+
+                    for _, entities in self.agents.values():
+                        for entity in entities:
+                            if getattr(entity, "msg_enable", False) and entity.message_bus:
+                                entity.receive_messages(t)
+                            # Main agent step.
+                            entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
+                        if agent_barrier is not None:
+                            agent_barrier.wait()
+
+                    # ------------------------------------------------------------------
+                    # Collision detector snapshot and corrections.
+                    # ------------------------------------------------------------------
+                    dec_data_in: dict = {}
+
+                    if self.collisions and dec_agents_in is not None and dec_agents_out is not None:
+                        if t % self.snapshot_stride == 0:
+                            # Send snapshot for this manager.
+                            detector_data = {
+                                "manager_id": self.manager_id,
+                                "agents": self.pack_detector_data(),
+                            }
+                            try:
+                                dec_agents_in.put(detector_data)
+                            except Exception:
+                                pass
+
+                            # Wait for corrections from detector for this round.
+                            dec_data_in = self._blocking_get(dec_agents_out)
+                            if not isinstance(dec_data_in, dict):
+                                dec_data_in = {}
+
+                    # Apply collision corrections (or call post_step(None) if none).
+                    for _, entities in self.agents.values():
+                        if not entities:
+                            continue
+                        group_key = entities[0].entity()
+                        group_corr = dec_data_in.get(group_key, None)  # list of corrections or None
+
+                        if isinstance(group_corr, list):
+                            for idx, entity in enumerate(entities):
+                                corr_vec = group_corr[idx] if idx < len(group_corr) else None
+                                entity.post_step(corr_vec)
+                                self._apply_wrap(entity)
+                                self._clamp_to_arena(entity)
+                        else:
+                            for entity in entities:
+                                entity.post_step(None)
+                                self._apply_wrap(entity)
+                                self._clamp_to_arena(entity)
+                        if agent_barrier is not None:
+                            agent_barrier.wait()
+
+                    # ------------------------------------------------------------------
+                    # GUI snapshot AFTER collision corrections.
+                    # ------------------------------------------------------------------
+                    agents_data = {
+                        "status": [t, ticks_per_second],
+                        "agents_shapes": self.get_agent_shapes(),
+                        "agents_spins": self.get_agent_spins(),
+                    }
+                    if not metadata_sent:
+                        agents_data["agents_metadata"] = metadata_snapshot
+                        metadata_sent = True
+
+                    agents_queue.put(agents_data)
+                    t += 1
+
+                if t < ticks_limit and not reset:
+                    break
+
+                if run < num_runs:
+                    # Drain extra arena messages with gentle polling.
+                    drained = self._maybe_get(arena_queue, timeout=0.01)
+                    while drained is not None:
+                        data_in = drained
+                        drained = self._maybe_get(arena_queue, timeout=0.0)
+                elif not reset:
+                    self.close()
+
+                if not reset:
+                    run += 1
+
+
+            finally:
+                shutdown_logging()
         logger.info("EntityManager completed all runs")

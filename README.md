@@ -71,8 +71,9 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
     },
     "logging":{ //DEFAULT:{} default logging
         "base_path": str, //DEFAULT:"../logs/" (only used when this block is present; does not enable dumps by itself),
-        "level": str, //DEFAULT:"WARNING" - severity written to disk (WARNING/ERROR by //DEFAULT),
-        "to_file": bool, //DEFAULT:false - echo logs only to stdout
+        "level": str, //DEFAULT:"WARNING" - severity used for all active handlers,
+        "to_file": bool, //DEFAULT:false - emit compressed ZIP logs,
+        "to_console": bool, //DEFAULT:false - mirror logs on stdout/stderr,
     },
     "gui":{ //DEFAULT:{} empty dict -> no rendering
         "_id": str, //DEFAULT:"2D"

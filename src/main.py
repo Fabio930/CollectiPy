@@ -1,9 +1,10 @@
-import sys, getopt, logging
+import sys, getopt, logging, json
 from pathlib import Path
 from config import Config
 from environment import EnvironmentFactory
 from plugin_registry import load_plugins_from_config
 from logging_utils import configure_logging, shutdown_logging
+from utils.folder_utils import derive_experiment_folder_basename, generate_unique_folder_name
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -36,19 +37,34 @@ def main(argv):
     try:
         # IMPORTANT: use the resolved path
         my_config = Config(config_path=config_path_resolved)
+        logging_cfg = my_config.environment.get("logging", {}) or {}
+
+        logs_root = Path(logging_cfg.get("base_path", "./logs")).expanduser().resolve()
+        logs_root.mkdir(parents=True, exist_ok=True)
+        folder_base = derive_experiment_folder_basename(my_config)
+        session_folder_name = generate_unique_folder_name(logs_root, folder_base)
+        session_folder = logs_root / session_folder_name
+        session_folder.mkdir(parents=True, exist_ok=True)
+        with open(session_folder / "config.json", "w", encoding="utf-8") as cfg_file:
+            json.dump(my_config.data, cfg_file, indent=4, default=str)
 
         # Configure logging for MainProcess ONLY
         configure_logging(
-            my_config.environment.get("logging"),
+            logging_cfg,
             config_path=config_path_resolved,
             project_root=ROOT_DIR,
+            base_path=session_folder / "main",
         )
 
         # Load optional plugins
         load_plugins_from_config(my_config)
 
         # Environment creation does NOT configure logging anymore
-        my_env = EnvironmentFactory.create_environment(my_config, config_path_resolved)
+        my_env = EnvironmentFactory.create_environment(
+            my_config,
+            config_path_resolved,
+            log_root=session_folder,
+        )
 
         my_env.start()
 

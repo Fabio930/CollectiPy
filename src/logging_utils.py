@@ -20,10 +20,7 @@ Directory layout:
 
 from __future__ import annotations
 
-import csv
-import hashlib
 import logging
-import shutil
 import zipfile
 import multiprocessing as mp
 from datetime import datetime
@@ -33,10 +30,7 @@ from typing import Any, Dict, Optional
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 LOG_NAMESPACE = "sim"
-HASH_LENGTH = 12
 LOG_DIRNAME = "logs"
-CONFIGS_SUBDIR = "configs"
-HASH_MAP_FILENAME = "logs_configs_mapping.csv"
 
 
 # ------------------------------------------------------------------------------
@@ -78,10 +72,12 @@ def configure_logging(
     # Build handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (all processes)
-    console = logging.StreamHandler()
-    console.setLevel(level)
-    handlers.append(console)
+    # Console handler (optional)
+    to_console = bool(settings.get("to_console", False))
+    if to_console:
+        console = logging.StreamHandler()
+        console.setLevel(level)
+        handlers.append(console)
 
     # Determine root path
     root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]
@@ -100,6 +96,9 @@ def configure_logging(
         # File handler accepts ALL levels (root decides)
         file_handler.setLevel(logging.NOTSET)
         handlers.append(file_handler)
+
+    if not handlers:
+        handlers.append(logging.NullHandler())
 
     # Apply configuration
     logging.basicConfig(
@@ -137,18 +136,8 @@ def _prepare_log_artifacts(
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    cfg_path_obj = None
-    cfg_hash = None
-    if config_path:
-        try:
-            cfg_path_obj = Path(config_path).expanduser().resolve(strict=True)
-            cfg_hash = hashlib.sha256(cfg_path_obj.read_bytes()).hexdigest()[:HASH_LENGTH]
-        except FileNotFoundError:
-            pass
 
     filename_parts = [timestamp]
-    if cfg_hash:
-        filename_parts.append(cfg_hash)
 
     log_stem = "_".join(filename_parts)
     inner_log_name = f"{log_stem}.log"
@@ -159,55 +148,14 @@ def _prepare_log_artifacts(
         "log_path": log_path,
         "inner_log_name": inner_log_name,
         "timestamp": timestamp,
-        "config_path": cfg_path_obj,
-        "config_hash": cfg_hash,
         "log_dir": log_dir,
         "project_root": project_root,
-        "finalized": False,
     }
 
 
 # ------------------------------------------------------------------------------
 #  FINALIZATION (copy config + map)
 # ------------------------------------------------------------------------------
-
-def _finalize_log_artifacts(context: Dict[str, Path | str | bool | None]) -> None:
-    if context.get("finalized"):
-        return
-    context["finalized"] = True
-
-    cfg_path_obj = context.get("config_path")
-    cfg_hash = context.get("config_hash")
-    log_dir = context["log_dir"]
-    log_path = context["log_path"]
-    timestamp = context["timestamp"]
-    project_root = context["project_root"]
-
-    if cfg_path_obj and cfg_hash:
-        configs_dir = log_dir / CONFIGS_SUBDIR
-        configs_dir.mkdir(parents=True, exist_ok=True)
-        cfg_copy_name = f"{timestamp}_{cfg_hash}_{cfg_path_obj.name}"
-        shutil.copy2(cfg_path_obj, configs_dir / cfg_copy_name)
-
-        _update_hash_mapping(log_dir / HASH_MAP_FILENAME, cfg_hash, log_path, project_root)
-
-
-def _update_hash_mapping(mapping_file: Path, cfg_hash: str, log_path: Path, project_root: Path) -> None:
-    mapping_file.parent.mkdir(parents=True, exist_ok=True)
-    need_header = not mapping_file.exists()
-
-    try:
-        rel_path = log_path.relative_to(project_root).as_posix()
-        rel_path = f"{project_root.name}/{rel_path}"
-    except Exception:
-        rel_path = str(log_path.resolve())
-
-    with mapping_file.open("a", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        if need_header:
-            writer.writerow(["hash", "log_path"])
-        writer.writerow([cfg_hash, rel_path])
-
 
 # ------------------------------------------------------------------------------
 #  LOGGER ACCESS
@@ -253,7 +201,6 @@ class _CompressedLogHandler(logging.Handler):
         # IMPORTANT: write in binary mode only
         self._inner_stream = self._zip.open(inner_name, mode="w")
 
-        _finalize_log_artifacts(self._context)
 
     def emit(self, record):
         try:
@@ -286,6 +233,49 @@ class _CompressedLogHandler(logging.Handler):
 # ------------------------------------------------------------------------------
 #  CLEAN SHUTDOWN
 # ------------------------------------------------------------------------------
+
+
+def _settings_without_file(settings: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a shallow copy of settings with file logging disabled."""
+    if not isinstance(settings, dict):
+        return None
+    clone = dict(settings)
+    clone["to_file"] = False
+    return clone
+
+
+def initialize_process_console_logging(
+    settings: Optional[Dict[str, Any]],
+    config_path: Optional[str | Path],
+    project_root: Optional[str | Path],
+) -> None:
+    """Ensure the process has at least a console logger during startup."""
+    configure_logging(
+        _settings_without_file(settings),
+        config_path,
+        project_root,
+    )
+
+
+def start_run_logging(
+    log_specs: Optional[Dict[str, Any]],
+    process_name: str,
+    run_number: int,
+) -> None:
+    """Switch the logging handlers to a new ZIP file for the given run."""
+    settings = log_specs.get("settings") if log_specs else None
+    config_path = log_specs.get("config_path") if log_specs else None
+    project_root = log_specs.get("project_root") if log_specs else None
+    runs_root = log_specs.get("runs_root") if log_specs else None
+
+    if runs_root:
+        base_path = Path(runs_root) / f"run_{run_number}" / process_name
+    else:
+        base_path = Path(project_root or Path.cwd()) / LOG_DIRNAME / process_name / f"run_{run_number}"
+    base_path.mkdir(parents=True, exist_ok=True)
+    shutdown_logging()
+    configure_logging(settings, config_path, project_root, base_path=base_path)
+
 
 def shutdown_logging():
     """Flush and close all logging handlers."""

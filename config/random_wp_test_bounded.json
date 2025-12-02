@@ -1,12 +1,16 @@
 {
     "environment":{
         "collisions": true,
-        "time_limit": 100,
+        "time_limit": 10,
         "num_runs": 2,
-        "logging":{},
-        "results":{
-            "agent_specs": ["base"],
-            "group_specs": ["graph_messages"]
+        "logging":{
+            "level":"DEBUG",
+            "to_file":true
+        },
+        "gui":{
+            "_id": "2D",
+            "on_click": ["messages"],
+            "view": ["messages"]
         },
         "arenas":{
             "arena_0":{

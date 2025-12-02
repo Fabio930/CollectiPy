@@ -17,7 +17,7 @@ from entity import EntityFactory
 from geometry_utils.vector3D import Vector3D
 from dataHandling import DataHandlingFactory
 from hierarchy_overlay import HierarchyOverlay, Bounds2D
-from logging_utils import get_logger, configure_logging
+from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("arena")
 class ArenaFactory():
@@ -475,7 +475,7 @@ class SolidArena(Arena):
             time.sleep(self._gui_backpressure_interval)
         self._gui_backpressure_active = False
         
-    def run(self,num_runs,time_limit, arena_queue: Any, agents_queue: Any, gui_in_queue: Any,dec_arena_in: Any, gui_control_queue: Any,render:bool=False):
+    def run(self,num_runs,time_limit, arena_queue: Any, agents_queue: Any, gui_in_queue: Any,dec_arena_in: Any, gui_control_queue: Any,render:bool=False, log_context: dict | None = None):
         """Function to run the arena in a separate process (supports multiple agent queues)."""
         arena_queues = arena_queue if isinstance(arena_queue, list) else [arena_queue]
         agents_queues = agents_queue if isinstance(agents_queue, list) else [agents_queue]
@@ -507,161 +507,170 @@ class SolidArena(Arena):
         ticks_limit = time_limit*self.ticks_per_second + 1 if time_limit > 0 else 0
         tick_interval = 1.0 / max(1, self.ticks_per_second)
         run = 1
+        log_context = log_context or {}
+        log_specs = log_context.get("log_specs")
+        process_name = log_context.get("process_name", "arena")
         while run < num_runs + 1:
-            logger.info(f"Run number {run} started")
-            arena_data = {
-                "status": [0,self.ticks_per_second],
-                "objects": self.pack_objects_data()
-            }
-            if render:
-                gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
-                self._apply_gui_backpressure(gui_in_queue)
-            for q in arena_queues:
-                q.put({**arena_data, "random_seed": self.random_seed})
-
-            latest_agent_data = [None] * n_managers
-            for idx, q in enumerate(agents_queues):
-                latest_agent_data[idx] = self._maybe_get(q, timeout=1.0)
-            if any(d is None for d in latest_agent_data):
-                break
-            self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(
-                latest_agent_data,
-                self.agents_shapes,
-                self.agents_spins,
-                self.agents_metadata
-            )
-            initial_tick_rate = latest_agent_data[0].get("status", [0, self.ticks_per_second])[1]
-            if self.data_handling is not None:
-                self.data_handling.new_run(
-                    run,
-                    self.agents_shapes,
-                    self.agents_spins,
-                    self.agents_metadata,
-                    initial_tick_rate
-                )
-            t = 1
-            running = False if render else True
-            step_mode = False
-            reset = False
-            last_snapshot_info = None
-            while True:
-                if ticks_limit > 0 and t >= ticks_limit: break
-                if render:
-                    cmd = self._maybe_get(gui_control_queue, timeout=0.0)
-                    while cmd is not None:
-                        if cmd == "start":
-                            running = True
-                        elif cmd == "stop":
-                            running = False
-                        elif cmd == "step":
-                            running = False
-                            step_mode = True
-                        elif cmd == "reset":
-                            running = False
-                            reset = True
-                        elif isinstance(cmd, (list, tuple)) and len(cmd) == 2 and cmd[0] == "speed":
-                            try:
-                                self._speed_multiplier = max(1.0, float(cmd[1]))
-                            except Exception:
-                                self._speed_multiplier = 1.0
-                        cmd = self._maybe_get(gui_control_queue, timeout=0.0)
+            start_run_logging(log_specs, process_name, run)
+            try:
+                logger.info(f"Run number {run} started")
                 arena_data = {
-                    "status": [t,self.ticks_per_second],
+                    "status": [0,self.ticks_per_second],
                     "objects": self.pack_objects_data()
                 }
-                if running or step_mode:
-                    if not render and not getattr(self, "quiet", False):
-                        print(f"\rrun {run} arena_ticks {t}", end='', flush=True)
-                    for q in arena_queues:
-                        q.put(arena_data)
-                    ready = [False] * n_managers
-                    while not all(ready):
-                        for idx, q in enumerate(agents_queues):
-                            candidate = self._maybe_get(q, timeout=0.01)
-                            if candidate is not None:
-                                latest_agent_data[idx] = candidate
-                        for idx, snap in enumerate(latest_agent_data):
-                            ready[idx] = bool(snap and snap["status"][0]/snap["status"][1] >= t/self.ticks_per_second)
-                        detector_data = {
-                            "objects": self.pack_detector_data()
-                        }
-                        if all(q.qsize()==0 for q in arena_queues):
-                            for q in arena_queues:
-                                q.put(arena_data)
-                            if dec_arena_in is not None:
-                                dec_arena_in.put(detector_data)
-                        time.sleep(0.0001)
+                if render:
+                    gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
+                    self._apply_gui_backpressure(gui_in_queue)
+                for q in arena_queues:
+                    q.put({**arena_data, "random_seed": self.random_seed})
 
-                    for idx, q in enumerate(agents_queues):
-                        latest = self._maybe_get(q, timeout=0.0)
-                        if latest is not None:
-                            latest_agent_data[idx] = latest
-                    self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(
-                        latest_agent_data,
-                        self.agents_shapes,
-                        self.agents_spins,
-                        self.agents_metadata
-                    )
-                    if self.data_handling is not None:
-                        tick_stamp = arena_data.get("status", [t, self.ticks_per_second])[0]
-                        tick_rate = arena_data.get("status", [tick_stamp, self.ticks_per_second])[1]
-                        self.data_handling.save(
-                            self.agents_shapes,
-                            self.agents_spins,
-                            self.agents_metadata,
-                            tick_stamp,
-                            tick_rate
-                        )
-                        last_snapshot_info = (tick_stamp, tick_rate)
-                    if render:
-                        gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
-                        self._apply_gui_backpressure(gui_in_queue)
-                    if self._speed_multiplier > 1.0:
-                        time.sleep(tick_interval * (self._speed_multiplier - 1.0))
-                    step_mode = False
-                    t += 1
-                elif reset:
+                latest_agent_data = [None] * n_managers
+                for idx, q in enumerate(agents_queues):
+                    latest_agent_data[idx] = self._maybe_get(q, timeout=1.0)
+                if any(d is None for d in latest_agent_data):
                     break
-                else: time.sleep(0.0005)
-            if self.data_handling is not None and last_snapshot_info:
-                self.data_handling.save(
+                self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(
+                    latest_agent_data,
                     self.agents_shapes,
                     self.agents_spins,
-                    self.agents_metadata,
-                    last_snapshot_info[0],
-                    last_snapshot_info[1],
-                    force=True
+                    self.agents_metadata
                 )
-            if t < ticks_limit and not reset: break
-            if run < num_runs:
-                if not reset:
+                initial_tick_rate = latest_agent_data[0].get("status", [0, self.ticks_per_second])[1]
+                if self.data_handling is not None:
+                    self.data_handling.new_run(
+                        run,
+                        self.agents_shapes,
+                        self.agents_spins,
+                        self.agents_metadata,
+                        initial_tick_rate
+                    )
+                t = 1
+                running = False if render else True
+                step_mode = False
+                reset = False
+                last_snapshot_info = None
+                while True:
+                    if ticks_limit > 0 and t >= ticks_limit: break
+                    if render:
+                        cmd = self._maybe_get(gui_control_queue, timeout=0.0)
+                        while cmd is not None:
+                            if cmd == "start":
+                                running = True
+                            elif cmd == "stop":
+                                running = False
+                            elif cmd == "step":
+                                running = False
+                                step_mode = True
+                            elif cmd == "reset":
+                                running = False
+                                reset = True
+                            elif isinstance(cmd, (list, tuple)) and len(cmd) == 2 and cmd[0] == "speed":
+                                try:
+                                    self._speed_multiplier = max(1.0, float(cmd[1]))
+                                except Exception:
+                                    self._speed_multiplier = 1.0
+                            cmd = self._maybe_get(gui_control_queue, timeout=0.0)
+                    arena_data = {
+                        "status": [t,self.ticks_per_second],
+                        "objects": self.pack_objects_data()
+                    }
+                    if running or step_mode:
+                        if not render and not getattr(self, "quiet", False):
+                            print(f"\rrun {run} arena_ticks {t}", end='', flush=True)
+                        for q in arena_queues:
+                            q.put(arena_data)
+                        ready = [False] * n_managers
+                        while not all(ready):
+                            for idx, q in enumerate(agents_queues):
+                                candidate = self._maybe_get(q, timeout=0.01)
+                                if candidate is not None:
+                                    latest_agent_data[idx] = candidate
+                            for idx, snap in enumerate(latest_agent_data):
+                                ready[idx] = bool(snap and snap["status"][0]/snap["status"][1] >= t/self.ticks_per_second)
+                            detector_data = {
+                                "objects": self.pack_detector_data(),
+                                "run": run
+                            }
+                            if all(q.qsize()==0 for q in arena_queues):
+                                for q in arena_queues:
+                                    q.put(arena_data)
+                                if dec_arena_in is not None:
+                                    dec_arena_in.put(detector_data)
+                            time.sleep(0.0001)
+
+                        for idx, q in enumerate(agents_queues):
+                            latest = self._maybe_get(q, timeout=0.0)
+                            if latest is not None:
+                                latest_agent_data[idx] = latest
+                        self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(
+                            latest_agent_data,
+                            self.agents_shapes,
+                            self.agents_spins,
+                            self.agents_metadata
+                        )
+                        if self.data_handling is not None:
+                            tick_stamp = arena_data.get("status", [t, self.ticks_per_second])[0]
+                            tick_rate = arena_data.get("status", [tick_stamp, self.ticks_per_second])[1]
+                            self.data_handling.save(
+                                self.agents_shapes,
+                                self.agents_spins,
+                                self.agents_metadata,
+                                tick_stamp,
+                                tick_rate
+                            )
+                            last_snapshot_info = (tick_stamp, tick_rate)
+                        if render:
+                            gui_in_queue.put({**arena_data, "agents_shapes": self.agents_shapes, "agents_spins": self.agents_spins, "agents_metadata": self.agents_metadata})
+                            self._apply_gui_backpressure(gui_in_queue)
+                        if self._speed_multiplier > 1.0:
+                            time.sleep(tick_interval * (self._speed_multiplier - 1.0))
+                        step_mode = False
+                        t += 1
+                    elif reset:
+                        break
+                    else: time.sleep(0.0005)
+                if self.data_handling is not None and last_snapshot_info:
+                    self.data_handling.save(
+                        self.agents_shapes,
+                        self.agents_spins,
+                        self.agents_metadata,
+                        last_snapshot_info[0],
+                        last_snapshot_info[1],
+                        force=True
+                    )
+                if t < ticks_limit and not reset: break
+                if run < num_runs:
+                    if not reset:
+                        run += 1
+                        self.increment_seed()
+                    else:
+                        self.randomize_seed()
+                    self.reset()
+                    if reset:
+                        arena_data = {
+                                    "status": "reset",
+                                    "objects": self.pack_objects_data()
+                        }
+                        for q in arena_queues:
+                            q.put(arena_data)
+                    if not render: print("")
+                elif not reset:
                     run += 1
-                    self.increment_seed()
+                    self.close()
+                    if not render: print("")
                 else:
                     self.randomize_seed()
-                self.reset()
-                if reset:
+                    self.reset()
                     arena_data = {
                                 "status": "reset",
                                 "objects": self.pack_objects_data()
                     }
                     for q in arena_queues:
                         q.put(arena_data)
-                if not render: print("")
-            elif not reset:
-                run += 1
-                self.close()
-                if not render: print("")
-            else:
-                self.randomize_seed()
-                self.reset()
-                arena_data = {
-                            "status": "reset",
-                            "objects": self.pack_objects_data()
-                }
-                for q in arena_queues:
-                    q.put(arena_data)
-        
+
+
+            finally:
+                shutdown_logging()
     def reset(self):
         """Reset the component state."""
         super().reset()
