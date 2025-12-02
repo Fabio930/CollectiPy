@@ -36,6 +36,26 @@ LOG_DIRNAME = DEFAULT_LOG_DIRNAME
 DEFAULT_LOG_BASE = Path(DEFAULT_RESULTS_BASE) / LOG_DIRNAME
 
 
+def is_logging_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """Return True when at least one logging handler should be active."""
+    if not isinstance(settings, dict):
+        return False
+    to_file = settings.get("to_file")
+    to_console = settings.get("to_console")
+    if to_file is None and to_console is None:
+        return True
+    return bool(to_file) or bool(to_console)
+
+
+def is_file_logging_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """Return True when file logging should run (defaults to True when enabled)."""
+    if not isinstance(settings, dict):
+        return False
+    if "to_file" in settings:
+        return bool(settings["to_file"])
+    return True
+
+
 # ------------------------------------------------------------------------------
 #  MAIN ENTRY POINT
 # ------------------------------------------------------------------------------
@@ -52,8 +72,9 @@ def configure_logging(
     Each process writes its own compressed ZIP to logs/<process-name>/.
 
     settings keys:
-        - level: global log level
-        - to_file: enable ZIP logging
+        - level: global log level (defaults to WARNING)
+        - to_file: enable ZIP logging (defaults to True when a logging block is provided)
+        - to_console: mirror logs to stdout/stderr (defaults to False)
     """
 
     # Default: disable logging
@@ -71,7 +92,8 @@ def configure_logging(
     # Interpret level
     level_raw = settings.get("level", "WARNING")
     level = getattr(logging, str(level_raw).upper(), logging.WARNING)
-    to_file = bool(settings.get("to_file", False))
+    to_file = settings.get("to_file") if "to_file" in settings else True
+    to_file = bool(to_file)
 
     # Build handlers
     handlers: list[logging.Handler] = []
@@ -292,19 +314,27 @@ def start_run_logging(
     else:
         folder_name = process_folder
 
-    if runs_root:
-        base_root = Path(runs_root) / f"run_{run_number}"
-        if folder_name:
-            base_path = base_root / folder_name
-        else:
-            base_path = base_root
-    else:
-        base_root = Path(project_root or Path.cwd()) / DEFAULT_LOG_BASE
-        if folder_name:
-            base_root = base_root / folder_name
-        base_path = base_root / f"run_{run_number}"
+    logging_enabled = is_logging_enabled(settings)
+    file_logging_enabled = is_file_logging_enabled(settings) if logging_enabled else False
 
-    base_path.mkdir(parents=True, exist_ok=True)
+    if not logging_enabled:
+        shutdown_logging()
+        configure_logging(None, config_path, project_root)
+        return
+
+    base_path = None
+    if file_logging_enabled:
+        if runs_root:
+            base_root = Path(runs_root) / f"run_{run_number}"
+            if folder_name:
+                base_path = base_root / folder_name
+            else:
+                base_path = base_root
+        else:
+            base_root = Path(project_root or Path.cwd()) / DEFAULT_LOG_BASE
+            if folder_name:
+                base_root = base_root / folder_name
+            base_path = base_root / f"run_{run_number}"
     shutdown_logging()
     configure_logging(
         settings,

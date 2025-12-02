@@ -507,6 +507,7 @@ class Config:
         object_keys = list(objects.keys())
         agent_combos = list(itertools.product(*[agents[k] for k in agent_keys])) if agent_keys else [()]
         object_combos = list(itertools.product(*[objects[k] for k in object_keys])) if object_keys else [()]
+        logging_cfg = environment.get("logging") if "logging" in environment else None
 
         for arena_key, arena_value in arenas.items():
             for agent_combo in agent_combos:
@@ -518,13 +519,14 @@ class Config:
                             "time_limit": environment.get("time_limit", 0),
                             "num_runs": environment.get("num_runs", 1),
                             "results": {} if environment.get("gui") else environment.get("results",{}),
-                            "logging": environment.get("logging",{}),
                             "gui": environment.get("gui",{}),
                             "arena": arena_value,
                             "objects": {},
                             "agents": {}
                         }
                     }
+                    if logging_cfg is not None:
+                        experiment["environment"]["logging"] = _clone_config_obj(logging_cfg)
                     for idx, agent_key in enumerate(agent_keys):
                         experiment["environment"]["agents"][agent_key] = agent_combo[idx] if agent_keys else {}
                     for idx, obj_key in enumerate(object_keys):

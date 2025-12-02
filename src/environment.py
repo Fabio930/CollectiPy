@@ -21,7 +21,7 @@ from entity import EntityFactory
 from arena import ArenaFactory
 from gui import GuiFactory
 from collision_detector import CollisionDetector
-from logging_utils import get_logger, shutdown_logging
+from logging_utils import get_logger, is_logging_enabled, shutdown_logging
 from utils.folder_utils import (
     derive_experiment_folder_basename,
     generate_shared_unique_folder_name,
@@ -271,7 +271,7 @@ class Environment:
         self.collisions = config_elem.environment.get("collisions", False)
         if not self.render[0] and self.time_limit == 0:
             raise Exception("Invalid configuration: infinite experiment with no GUI.")
-        self._log_set = config_elem.environment.get("logging") or {}
+        self._log_set = config_elem.environment.get("logging")
         self._log_path = config_path.expanduser().resolve()
         self._log_root = Path(__file__).resolve().parents[1]
         self._session_log_root = log_root
@@ -448,7 +448,12 @@ class Environment:
         # Reset affinity bookkeeping for each run to match the current machine state.
         used_cores.clear()
         total_cores = psutil.cpu_count(logical=True) or 1
-        session_logs_root = Path(self._session_log_root).expanduser().resolve() if self._session_log_root else None
+        logging_enabled = is_logging_enabled(self._log_set)
+        session_logs_root = (
+            Path(self._session_log_root).expanduser().resolve()
+            if self._session_log_root and logging_enabled
+            else None
+        )
         if session_logs_root is not None:
             session_logs_root.mkdir(parents=True, exist_ok=True)
         # Reserve a dedicated core for the environment/main process so workers use different ones.
@@ -463,19 +468,42 @@ class Environment:
         for exp in self.experiments:
             results_cfg = exp.environment.get("results", {}) or {}
             agent_specs, group_specs = resolve_result_specs(results_cfg)
-            results_root, default_logs_root = resolve_base_dirs(self._log_set, results_cfg)
-            logs_root = session_logs_root or default_logs_root
-            logs_root.mkdir(parents=True, exist_ok=True)
-            results_root.mkdir(parents=True, exist_ok=True)
-            folder_base = derive_experiment_folder_basename(exp, agent_specs, group_specs)
-            folder_name = generate_shared_unique_folder_name((logs_root, results_root), folder_base)
-            exp.output_folder_name = folder_name
-            experiment_folder = logs_root / folder_name
-            experiment_folder.mkdir(parents=True, exist_ok=True)
-            config_path = experiment_folder / "config.json"
-            with open(config_path, "w", encoding="utf-8") as cfg_file:
-                json.dump(exp.data, cfg_file, indent=4, default=str)
-            runs_root = experiment_folder
+            results_enabled = bool(results_cfg)
+            results_root = default_logs_root = logs_root = None
+            if logging_enabled or results_enabled:
+                results_root, default_logs_root = resolve_base_dirs(
+                    self._log_set if logging_enabled else {},
+                    results_cfg if results_enabled else {},
+                )
+            logs_root = session_logs_root or default_logs_root if logging_enabled else None
+
+            if logging_enabled and logs_root:
+                logs_root.mkdir(parents=True, exist_ok=True)
+            if results_enabled and results_root:
+                results_root.mkdir(parents=True, exist_ok=True)
+
+            folder_name = None
+            if logging_enabled or results_enabled:
+                folder_base = derive_experiment_folder_basename(exp, agent_specs, group_specs)
+                base_paths = tuple(
+                    p for p in (logs_root if logging_enabled else None,
+                                results_root if results_enabled else None)
+                    if p
+                )
+                folder_name = generate_shared_unique_folder_name(base_paths, folder_base)
+                exp.output_folder_name = folder_name
+            else:
+                exp.output_folder_name = None
+
+            runs_root = None
+            experiment_folder = None
+            if logging_enabled and logs_root and folder_name:
+                experiment_folder = logs_root / folder_name
+                experiment_folder.mkdir(parents=True, exist_ok=True)
+                config_path = experiment_folder / "config.json"
+                with open(config_path, "w", encoding="utf-8") as cfg_file:
+                    json.dump(exp.data, cfg_file, indent=4, default=str)
+                runs_root = experiment_folder
             exp_log_specs = {
                 **self._base_log_specs,
                 "log_folder": experiment_folder,

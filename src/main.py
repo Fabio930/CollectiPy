@@ -3,7 +3,7 @@ from pathlib import Path
 from config import Config
 from environment import EnvironmentFactory
 from plugin_registry import load_plugins_from_config
-from logging_utils import configure_logging, shutdown_logging
+from logging_utils import configure_logging, is_logging_enabled, shutdown_logging
 from utils.folder_utils import (
     derive_experiment_folder_basename,
     generate_shared_unique_folder_name,
@@ -42,26 +42,34 @@ def main(argv):
     try:
         # IMPORTANT: use the resolved path
         my_config = Config(config_path=config_path_resolved)
-        logging_cfg = my_config.environment.get("logging", {}) or {}
+        logging_cfg = my_config.environment.get("logging")
         results_cfg = my_config.environment.get("results", {}) or {}
-
-        results_root, logs_root = resolve_base_dirs(logging_cfg, results_cfg)
-        logs_root.mkdir(parents=True, exist_ok=True)
-        results_root.mkdir(parents=True, exist_ok=True)
         agent_specs, group_specs = resolve_result_specs(results_cfg)
-        folder_base = derive_experiment_folder_basename(my_config, agent_specs=agent_specs, group_specs=group_specs)
-        session_folder_name = generate_shared_unique_folder_name((logs_root, results_root), folder_base)
-        session_folder = logs_root / session_folder_name
-        session_folder.mkdir(parents=True, exist_ok=True)
-        with open(session_folder / "config.json", "w", encoding="utf-8") as cfg_file:
-            json.dump(my_config.data, cfg_file, indent=4, default=str)
+        logging_enabled = is_logging_enabled(logging_cfg)
+        results_enabled = bool(results_cfg)
+
+        session_folder = None
+        if logging_enabled:
+            results_root, logs_root = resolve_base_dirs(logging_cfg, results_cfg)
+            logs_root.mkdir(parents=True, exist_ok=True)
+            if results_enabled:
+                results_root.mkdir(parents=True, exist_ok=True)
+            folder_base = derive_experiment_folder_basename(
+                my_config, agent_specs=agent_specs, group_specs=group_specs
+            )
+            base_paths = tuple(p for p in (logs_root, results_root if results_enabled else None) if p)
+            session_folder_name = generate_shared_unique_folder_name(base_paths, folder_base)
+            session_folder = logs_root / session_folder_name
+            session_folder.mkdir(parents=True, exist_ok=True)
+            with open(session_folder / "config.json", "w", encoding="utf-8") as cfg_file:
+                json.dump(my_config.data, cfg_file, indent=4, default=str)
 
         # Configure logging for MainProcess ONLY
         configure_logging(
             logging_cfg,
             config_path=config_path_resolved,
             project_root=ROOT_DIR,
-            base_path=session_folder / "main",
+            base_path=session_folder / "main" if session_folder else None,
             log_filename_prefix=None,
         )
 
@@ -72,7 +80,7 @@ def main(argv):
         my_env = EnvironmentFactory.create_environment(
             my_config,
             config_path_resolved,
-            log_root=session_folder,
+            log_root=session_folder if logging_enabled else None,
         )
 
         my_env.start()

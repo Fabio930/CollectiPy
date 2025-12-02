@@ -904,7 +904,7 @@ class CircularArena(SolidArena):
         dims = config_elem.arena.get("dimensions", {})
         self.height = dims.get("height", 1)
         self.radius = dims.get("radius", 1)
-        self.color = config_elem.arena.get("color", "white")
+        self.color = config_elem.arena.get("color", "gray")
         logger.info("Circular arena created successfully")
     
 
@@ -919,7 +919,7 @@ class RectangularArena(SolidArena):
         self.width = dims.get("width", 1)
         self.depth = dims.get("depth", 1)
         self.length = self.width
-        self.color = config_elem.arena.get("color", "white")
+        self.color = config_elem.arena.get("color", "gray")
         logger.info("Rectangular arena created successfully")
     
 class SquareArena(SolidArena):
@@ -931,6 +931,6 @@ class SquareArena(SolidArena):
         dims = config_elem.arena.get("dimensions", {})
         self.height = dims.get("height", 1)
         self.side = dims.get("side", 1)
-        self.color = config_elem.arena.get("color", "white")
+        self.color = config_elem.arena.get("color", "gray")
         logger.info("Square arena created successfully")
     
