@@ -700,7 +700,7 @@ class Environment:
                         _safe_terminate(arena_process)
                         for proc in manager_processes:
                             _safe_terminate(proc)
-                        _safe_terminate(detector_process)
+                        _stop_detector_gracefully()
                         _safe_terminate(gui_process)
                         _stop_message_server_gracefully()
                         break
@@ -709,7 +709,7 @@ class Environment:
                             _safe_terminate(arena_process)
                         for proc in manager_processes:
                             _safe_terminate(proc)
-                        _safe_terminate(detector_process)
+                        _stop_detector_gracefully()
                         _safe_terminate(gui_process)
                         _stop_message_server_gracefully()
                         break
@@ -751,13 +751,13 @@ class Environment:
                         _safe_terminate(arena_process)
                         for proc in manager_processes:
                             _safe_terminate(proc)
-                        _safe_terminate(detector_process)
+                        _stop_detector_gracefully()
                         _stop_message_server_gracefully()
                         break
                     if not arena_alive:
                         for proc in manager_processes:
                             _safe_terminate(proc)
-                        _safe_terminate(detector_process)
+                        _stop_detector_gracefully()
                         _stop_message_server_gracefully()
                         break
                     time.sleep(0.5)

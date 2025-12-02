@@ -3,11 +3,6 @@
         "collisions": true,
         "time_limit": 10,
         "num_runs": 2,
-        "logging":{
-            "level":"CRITICAL",
-            "to_file":true,
-            "to_console":true
-        },
         "gui":{
             "_id": "2D",
             "on_click": ["messages"],
