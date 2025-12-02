@@ -1,8 +1,8 @@
 {
     "environment":{
         "collisions": true,
-        "time_limit": 10,
-        "num_runs": 2,
+        "time_limit": 0,
+        "num_runs": 1,
         "gui":{
             "_id": "2D",
             "on_click": ["messages"],
