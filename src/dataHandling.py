@@ -8,7 +8,8 @@
 # ------------------------------------------------------------------------------
 
 import math
-import os, json, pickle, shutil, zipfile
+import os, json, pickle, shutil, zipfile, re
+from pathlib import Path
 from config import Config
 
 class DataHandlingFactory():
@@ -52,11 +53,9 @@ class DataHandling():
         self.snapshots_per_second = self._parse_snapshot_rate(results_cfg.get("snapshots_per_second", 1))
         abs_base_path = os.path.join(os.path.abspath(""), base_path)
         os.makedirs(abs_base_path, exist_ok=True)
-        existing = [d for d in os.listdir(abs_base_path) if d.startswith("config_folder_")]
-        folder_id = len(existing)
-        self.config_folder = os.path.join(abs_base_path, f"config_folder_{folder_id}")
-        if os.path.exists(self.config_folder):
-            raise Exception(f"Error config folder {self.config_folder} already present")
+        folder_base = self._derive_folder_basename(config_elem)
+        folder_name = self._generate_unique_folder_name(abs_base_path, folder_base)
+        self.config_folder = os.path.join(abs_base_path, folder_name)
         os.mkdir(self.config_folder)
         with open(os.path.join(self.config_folder, "config.json"), "w") as f:
             json.dump(config_elem.__dict__, f, indent=4, default=str)
@@ -111,6 +110,87 @@ class DataHandling():
             offsets.add(max(1, min(ticks_per_second, raw)))
         offsets.add(ticks_per_second)
         return sorted(offsets)
+
+    def _sanitize_token(self, token: str | None):
+        """Return a cleaned, lowercase token suitable for folder names."""
+        if not token:
+            return None
+        raw = re.sub(r"[^A-Za-z0-9]+", "_", str(token))
+        raw = re.sub(r"_+", "_", raw).strip("_").lower()
+        return raw or None
+
+    def _derive_folder_basename(self, config_elem: Config):
+        """Build a descriptive folder base name from the configuration keywords."""
+        tokens = []
+        config_path = getattr(config_elem, "config_path", None)
+        if config_path:
+            tokens.append(Path(config_path).stem)
+
+        arena_id = config_elem.arena.get("_id")
+        if arena_id:
+            tokens.append(str(arena_id))
+
+        env = config_elem.environment or {}
+        if env.get("collisions"):
+            tokens.append("collisions")
+        else:
+            tokens.append("nocol")
+        num_runs = env.get("num_runs")
+        if isinstance(num_runs, int) and num_runs > 1:
+            tokens.append(f"run{num_runs}")
+        agents = env.get("agents", {})
+        if isinstance(agents, dict):
+            tokens.extend(str(name) for name in sorted(agents.keys()))
+            behaviors = {
+                str(cfg.get("moving_behavior"))
+                for cfg in agents.values()
+                if isinstance(cfg, dict) and cfg.get("moving_behavior")
+            }
+            tokens.extend(sorted(behaviors))
+
+        spec_tokens = sorted(self.agent_specs | self.group_specs)
+        tokens.extend(spec_tokens)
+
+        sanitized = []
+        seen = set()
+        for tok in tokens:
+            cleaned = self._sanitize_token(tok)
+            if not cleaned or cleaned in seen:
+                continue
+            sanitized.append(cleaned)
+            seen.add(cleaned)
+        if not sanitized:
+            return "config"
+        return "_".join(sanitized)
+
+    def _generate_unique_folder_name(self, base_path: str, base_name: str):
+        """Ensure the folder name is unique by appending an alphanumeric suffix when needed."""
+        existing = {
+            name
+            for name in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, name))
+        }
+        candidate = base_name
+        counter = 0
+        while candidate in existing:
+            counter += 1
+            suffix = self._alphanumeric_index(counter)
+            candidate = f"{base_name}_{suffix}"
+        return candidate
+
+    def _alphanumeric_index(self, index: int):
+        """Convert a counter into an alphanumeric suffix (a, b, ..., z, 0, 1, ...)."""
+        if index <= 0:
+            return ""
+        digits = "abcdefghijklmnopqrstuvwxyz0123456789"
+        base = len(digits)
+        result = []
+        value = index
+        while value > 0:
+            value -= 1
+            result.append(digits[value % base])
+            value //= base
+        return "".join(reversed(result))
 
     def _prepare_graph_dirs(self):
         """Initialize per-step graph folders if requested."""
