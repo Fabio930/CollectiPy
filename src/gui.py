@@ -81,11 +81,11 @@ class GUI_2D(QWidget):
         super().__init__()
         self.gui_mode = config_elem.get("_id", "2D")
         self.is_abstract = self.gui_mode == "abstract"
-        on_click_cfg = config_elem.get("on_click", "show_spins")
+        on_click_cfg = config_elem.get("on_click", "spins")
         self.on_click_modes = self._parse_mode_list(on_click_cfg)
         if not self.on_click_modes:
-            self.on_click_modes = {"show_spins"}
-        self.show_spins_enabled = "show_spins" in self.on_click_modes
+            self.on_click_modes = {"spins"}
+        self.show_spins_enabled = "spins" in self.on_click_modes
         view_cfg = config_elem.get("view", config_elem.get("show"))
         self.show_modes = self._parse_mode_list(view_cfg)
         view_mode_cfg = str(config_elem.get("view_mode", "dynamic")).strip().lower()
