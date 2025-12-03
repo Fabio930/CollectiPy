@@ -71,12 +71,26 @@ class RandomWayPointMovement(MovementModel):
         agent_radius = 0.5 * max(abs(dx), abs(dy))
         wrap_cfg = self.wrap_config or getattr(agent, "wrap_config", None)
         unbounded = bool(wrap_cfg and wrap_cfg.get("unbounded"))
+        # Optional opt-in: use the unbounded sampling rule even in bounded arenas.
+        use_local_disk = bool(
+            getattr(agent, "random_waypoint_local", False)
+            or getattr(agent, "random_waypoint_unbounded_sampling", False)
+        )
+        margin_factor = getattr(agent, "random_waypoint_margin_factor", 1.0)
         if unbounded:
             center = getattr(agent, "position", None) or agent.get_start_position()
             factor = getattr(agent, "random_waypoint_radius_factor", 5.0)
             radius = max(agent_radius * factor, agent_radius * 1.5)
             distribution = getattr(agent, "random_waypoint_distribution", "uniform")
             return self._sample_spawn(center, radius, distribution)
+
+        if use_local_disk:
+            center = getattr(agent, "position", None) or agent.get_start_position()
+            factor = getattr(agent, "random_waypoint_radius_factor", 5.0)
+            radius = max(agent_radius * factor, agent_radius * 1.5)
+            distribution = getattr(agent, "random_waypoint_distribution", "uniform")
+            goal = self._sample_spawn(center, radius, distribution)
+            return self._clamp_goal(goal, arena_shape, agent_radius * margin_factor)
 
         min_v = arena_shape.min_vert()
         max_v = arena_shape.max_vert()
@@ -108,7 +122,6 @@ class RandomWayPointMovement(MovementModel):
                 max_x = float(getattr(b, "x_max", max_x))
                 max_y = float(getattr(b, "y_max", max_y))
 
-        margin_factor = getattr(agent, "random_waypoint_margin_factor", 1.0)
         margin = agent_radius * margin_factor
         min_x += margin
         max_x -= margin
@@ -196,5 +209,21 @@ class RandomWayPointMovement(MovementModel):
             x = center.x + r * math.cos(theta)
             y = center.y + r * math.sin(theta)
         return Vector3D(x, y, self.agent.position.z)
+
+    def _clamp_goal(self, goal: Vector3D, arena_shape, margin: float) -> Vector3D:
+        """Clamp a sampled goal inside the arena bounds (margin shrinks walls)."""
+        min_v = arena_shape.min_vert()
+        max_v = arena_shape.max_vert()
+        min_x = float(min_v.x) + margin
+        max_x = float(max_v.x) - margin
+        min_y = float(min_v.y) + margin
+        max_y = float(max_v.y) - margin
+        if min_x > max_x:
+            min_x = max_x = (min_v.x + max_v.x) * 0.5
+        if min_y > max_y:
+            min_y = max_y = (min_v.y + max_v.y) * 0.5
+        gx = min(max(goal.x, min_x), max_x)
+        gy = min(max(goal.y, min_y), max_y)
+        return Vector3D(gx, gy, goal.z)
 
 register_movement_model("random_way_point", lambda agent: RandomWayPointMovement(agent))
