@@ -660,10 +660,11 @@ class Environment:
                 pass
             agents = self.agents_init(exp, exp_log_specs)
             render_enabled = self.render[0]
+            total_agents = self._count_agents(agents)
             n_agent_procs = self._compute_agent_processes(agents)
             logger.info(
                 "Agent process auto-split: total_...=%d -> processes=%d",
-                self._count_agents(agents),
+                total_agents,
                 n_agent_procs
             )
             agent_blocks = self._split_agents(agents, n_agent_procs)
@@ -897,11 +898,16 @@ class Environment:
 
             pattern = {
                 "arena": 2,
-                "agents": 3,
-                "detector": 3,
+                "agents": 2,
+                "detector": 2,
                 "gui": 2,
                 "messages": 2,
             }
+            if total_agents >= 100:
+                # Scale dedicated cores for heavy agent loads (add 1 every 100 agents).
+                extra_load = total_agents // 100
+                pattern["agents"] = 3 + extra_load
+                pattern["detector"] = 3 + extra_load
             killed = 0
             force_exit = False
             try:
