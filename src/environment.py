@@ -841,6 +841,7 @@ class Environment:
                         continue
                     try:
                         q.put({"status": "shutdown"})
+                        logger.info("Sent shutdown to manager queue")
                     except Exception:
                         pass
 
@@ -984,12 +985,12 @@ class Environment:
                                 arena_alive,
                                 gui_alive,
                             )
-                            # Skip graceful shutdown: brutal kill everything.
-                            if gui_alive is False:
+                            # GUI killed mid-run while arena still alive -> brutal kill all children.
+                            if gui_alive is False and arena_alive:
                                 _brutal_kill_all_children("gui dead -> hard stop")
                                 force_exit = True
                                 break
-                            # Arena died but GUI is alive: stop everything gracefully, then bail.
+                            # Arena died (GUI may be alive): try orderly shutdown.
                             _request_arena_shutdown(timeout=0.2, terminate_after=False)
                             _broadcast_manager_shutdown()
                             _stop_detector_gracefully()

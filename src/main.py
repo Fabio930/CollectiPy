@@ -1,4 +1,4 @@
-import sys, getopt, logging, json
+import sys, getopt, logging, json, gc
 from pathlib import Path
 from config import Config
 from environment import EnvironmentFactory
@@ -99,6 +99,7 @@ def main(argv):
         exit_code = 1
 
     finally:
+        gc.collect()
         sys.exit(exit_code)
 
 if __name__ == "__main__":

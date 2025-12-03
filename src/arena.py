@@ -188,6 +188,7 @@ class Arena():
             for n in range(len(entities)):
                 entities[n].close()
         if self.data_handling is not None: self.data_handling.close(self.agents_shapes)
+        logger.info("Arena closed all resources")
         return
 
     def get_wrap_config(self):
