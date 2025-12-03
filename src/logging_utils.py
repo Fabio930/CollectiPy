@@ -34,26 +34,41 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 LOG_NAMESPACE = "sim"
 LOG_DIRNAME = DEFAULT_LOG_DIRNAME
 DEFAULT_LOG_BASE = Path(DEFAULT_RESULTS_BASE) / LOG_DIRNAME
+DEFAULT_LOGGING_SETTINGS = {
+    "level": "WARNING",
+    "to_console": True,
+    "to_file": False,
+}
+
+
+def _normalize_logging_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Return a settings dict with defaults applied.
+
+    - Missing/empty config -> console logging at WARNING, no file logging.
+    - Explicit config -> preserve previous defaults (file on, console off) unless overridden.
+    """
+    if not isinstance(settings, dict):
+        return dict(DEFAULT_LOGGING_SETTINGS)
+    if not settings:
+        return dict(DEFAULT_LOGGING_SETTINGS)
+    normalized = dict(settings)
+    normalized.setdefault("level", "WARNING")
+    normalized.setdefault("to_console", True)
+    normalized.setdefault("to_file", False)
+    return normalized
 
 
 def is_logging_enabled(settings: Optional[Dict[str, Any]]) -> bool:
-    """Return True when at least one logging handler should be active."""
-    if not isinstance(settings, dict):
-        return False
-    to_file = settings.get("to_file")
-    to_console = settings.get("to_console")
-    if to_file is None and to_console is None:
-        return True
-    return bool(to_file) or bool(to_console)
+    """Return True when at least one logging handler should be active (missing/empty config defaults to console logging)."""
+    normalized = _normalize_logging_settings(settings)
+    return bool(normalized.get("to_file")) or bool(normalized.get("to_console"))
 
 
 def is_file_logging_enabled(settings: Optional[Dict[str, Any]]) -> bool:
-    """Return True when file logging should run (defaults to True when enabled)."""
-    if not isinstance(settings, dict):
-        return False
-    if "to_file" in settings:
-        return bool(settings["to_file"])
-    return True
+    """Return True when file logging should run (defaults to True when a non-empty logging block is provided)."""
+    normalized = _normalize_logging_settings(settings)
+    return bool(normalized.get("to_file"))
 
 
 # ------------------------------------------------------------------------------
@@ -75,31 +90,21 @@ def configure_logging(
         - level: global log level (defaults to WARNING)
         - to_file: enable ZIP logging (defaults to True when a logging block is provided)
         - to_console: mirror logs to stdout/stderr (defaults to False)
+    When logging settings are missing or empty, defaults to WARNING + console only.
     """
 
-    # Default: disable logging
-    if settings is None:
-        logging.basicConfig(
-            level=logging.WARNING,
-            handlers=[logging.NullHandler()],
-            force=True,
-        )
-        return
-
-    if not isinstance(settings, dict):
-        settings = {}
+    normalized = _normalize_logging_settings(settings)
 
     # Interpret level
-    level_raw = settings.get("level", "WARNING")
+    level_raw = normalized.get("level", "WARNING")
     level = getattr(logging, str(level_raw).upper(), logging.WARNING)
-    to_file = settings.get("to_file") if "to_file" in settings else True
-    to_file = bool(to_file)
+    to_file = bool(normalized.get("to_file"))
 
     # Build handlers
     handlers: list[logging.Handler] = []
 
     # Console handler (optional)
-    to_console = bool(settings.get("to_console", False))
+    to_console = bool(normalized.get("to_console", False))
     if to_console:
         console = logging.StreamHandler()
         console.setLevel(level)
@@ -276,11 +281,9 @@ class _CompressedLogHandler(logging.Handler):
 
 def _settings_without_file(settings: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Return a shallow copy of settings with file logging disabled."""
-    if not isinstance(settings, dict):
-        return None
-    clone = dict(settings)
-    clone["to_file"] = False
-    return clone
+    normalized = _normalize_logging_settings(settings)
+    normalized["to_file"] = False
+    return normalized
 
 
 def initialize_process_console_logging(

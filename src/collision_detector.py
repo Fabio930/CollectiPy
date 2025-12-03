@@ -177,7 +177,7 @@ class CollisionDetector:
             - queue where the arena publishes objects:
               {"objects": {obj_id: (shapes, positions)}}
         """
-        logger.critical("CollisionDetector started (collisions=%s)", self.collisions)
+        logger.info("CollisionDetector started (collisions=%s)", self.collisions)
         log_context = log_context or {}
         log_specs = log_context.get("log_specs")
         process_name = log_context.get("process_name", "collision")
@@ -247,10 +247,10 @@ class CollisionDetector:
                             if run_id is not None and (current_run is None or run_id > current_run):
                                 current_run = run_id
                                 start_run_logging(log_specs, process_name, current_run)
-                                logger.critical("Collision detector logging started for run %s", current_run)
+                                logger.info("Collision detector logging started for run %s", current_run)
                             # Expected format: {"objects": {id: (shapes, positions)}}
                             self.objects = payload.get("objects", {}) or {}
-                            logger.critical("CollisionDetector: objects updated (%d groups)", len(self.objects))
+                            logger.info("CollisionDetector: objects updated (%d groups)", len(self.objects))
                             idle = False
                     except EOFError:
                         pass
@@ -297,7 +297,7 @@ class CollisionDetector:
                             try:
                                 target_q.put(mgr_corr)
                             except Exception:
-                                logger.critical(
+                                logger.info(
                                     "CollisionDetector: failed to send corrections to manager %d",
                                     manager_id
                                 )
@@ -500,7 +500,7 @@ class CollisionDetector:
 
                         all_responses[idx].append((resp, resp_len))
 
-                        logger.critical(
+                        logger.info(
                             "Collision agent-object: %s -> %s depth=%.4f",
                             name, obj_id, penetration
                         )

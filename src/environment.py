@@ -21,7 +21,12 @@ from entity import EntityFactory
 from arena import ArenaFactory
 from gui import GuiFactory
 from collision_detector import CollisionDetector
-from logging_utils import get_logger, is_logging_enabled, shutdown_logging
+from logging_utils import (
+    get_logger,
+    is_file_logging_enabled,
+    is_logging_enabled,
+    shutdown_logging,
+)
 from utils.folder_utils import (
     derive_experiment_folder_basename,
     generate_shared_unique_folder_name,
@@ -270,8 +275,10 @@ class Environment:
             self.render = [True, base_gui_cfg]
         self.collisions = config_elem.environment.get("collisions", False)
         if not self.render[0] and self.time_limit == 0:
-            raise Exception("Invalid configuration: infinite experiment with no GUI.")
+            logger.warning("Running infinite experiment with no GUI; ensure you have a stop condition.")
         self._log_set = config_elem.environment.get("logging")
+        self._logging_enabled = is_logging_enabled(self._log_set)
+        self._file_logging_enabled = is_file_logging_enabled(self._log_set)
         self._log_path = config_path.expanduser().resolve()
         self._log_root = Path(__file__).resolve().parents[1]
         self._session_log_root = log_root
@@ -448,10 +455,11 @@ class Environment:
         # Reset affinity bookkeeping for each run to match the current machine state.
         used_cores.clear()
         total_cores = psutil.cpu_count(logical=True) or 1
-        logging_enabled = is_logging_enabled(self._log_set)
+        logging_enabled = self._logging_enabled
+        file_logging_enabled = self._file_logging_enabled
         session_logs_root = (
             Path(self._session_log_root).expanduser().resolve()
-            if self._session_log_root and logging_enabled
+            if self._session_log_root and file_logging_enabled
             else None
         )
         if session_logs_root is not None:
@@ -475,9 +483,10 @@ class Environment:
                     self._log_set if logging_enabled else {},
                     results_cfg if results_enabled else {},
                 )
-            logs_root = session_logs_root or default_logs_root if logging_enabled else None
+            if file_logging_enabled:
+                logs_root = session_logs_root or default_logs_root
 
-            if logging_enabled and logs_root:
+            if file_logging_enabled and logs_root:
                 logs_root.mkdir(parents=True, exist_ok=True)
             if results_enabled and results_root:
                 results_root.mkdir(parents=True, exist_ok=True)
@@ -486,7 +495,7 @@ class Environment:
             if logging_enabled or results_enabled:
                 folder_base = derive_experiment_folder_basename(exp, agent_specs, group_specs)
                 base_paths = tuple(
-                    p for p in (logs_root if logging_enabled else None,
+                    p for p in (logs_root if file_logging_enabled else None,
                                 results_root if results_enabled else None)
                     if p
                 )
@@ -497,7 +506,7 @@ class Environment:
 
             runs_root = None
             experiment_folder = None
-            if logging_enabled and logs_root and folder_name:
+            if file_logging_enabled and logs_root and folder_name:
                 experiment_folder = logs_root / folder_name
                 experiment_folder.mkdir(parents=True, exist_ok=True)
                 config_path = experiment_folder / "config.json"
@@ -785,7 +794,7 @@ class Environment:
                                 _safe_terminate(gui_process)
                             _stop_message_server_gracefully()
                             break
-                        time.sleep(0.5)
+                        time.sleep(0.05)
                     _stop_detector_gracefully()
                     _stop_gui_gracefully()
                     _stop_message_server_gracefully()
