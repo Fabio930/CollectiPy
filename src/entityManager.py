@@ -776,7 +776,7 @@ class EntityManager:
                                 backlog = arena_queue.qsize()
                             except Exception:
                                 backlog = "n/a"
-                            logger.critical(
+                            logger.debug(
                                 "[MGR WAIT] mgr=%s run=%s t=%s arena_status=%s backlog=%s shutdown=%s",
                                 self.manager_id,
                                 run,

@@ -703,7 +703,7 @@ class SolidArena(Arena):
                                     backlogs = [q.qsize() for q in agents_queues]
                                 except Exception:
                                     backlogs = []
-                                logger.critical(
+                                logger.debug(
                                     "[ARENA WAIT] run=%s t=%s ready=%s q_backlog=%s shutdown=%s",
                                     run,
                                     t,

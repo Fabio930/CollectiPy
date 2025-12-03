@@ -162,10 +162,10 @@ class GUI_2D(QWidget):
         self.speed_layout.setContentsMargins(0, 0, 0, 0)
         self.speed_layout.addWidget(QLabel("Playback pace:"))
         self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(20, 40)  # represent 1.0–2.0 with finer steps
+        self.speed_slider.setRange(20, 30)  # represent 1.0–2.0 with finer steps
         self.speed_slider.setValue(20)
         self.speed_slider.setSingleStep(1)
-        self.speed_slider.setToolTip("1.0 = native speed, 2.0 = slowest playback")
+        self.speed_slider.setToolTip("1.0 = native speed, 1.5 = slowest playback")
         self.speed_slider.setMinimumWidth(120)
         self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
         self.speed_layout.addWidget(self.speed_slider, stretch=1)
