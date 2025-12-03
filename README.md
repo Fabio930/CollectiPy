@@ -100,11 +100,11 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
     "objects":{ //REQUIRED can define multiple objects to simulate in the same arena
         "static_0":{
             "number": list(int), //DEFAULT:[1] each list's entry will define a different simulation
-            "distribute":{ //OPTIONAL - set spawning distribution
+            "spawn":{ //OPTIONAL - set spawning distribution for objects too
                 "center":list(float), //DEFAULT [0,0]
-                "radius":flaot, //DEFAULT auto - the arena radius if bounded, precomputed if unbounded.
+                "radius":float, //DEFAULT auto - the arena radius if bounded, heuristically estimated if unbounded
                 "distribution":"uniform"|"gaussian"|"exp", //DEFAULT "uniform"
-                "parameters":{"name":float} //DEFAULT {}, "name" can be (default=0),"max"(default=1) for ranges or others. What missing if needed is set to default values
+                "parameters":{"name":float} //DEFAULT {} e.g. {"max":1} for uniform radius, {"std":0.1} for gaussian
             },
             "_id": str, //REQUIRED - SUPPORTED:idle|interactive
             "shape": str, //REQUIRED - SUPPORTED:circle,square,rectangle,sphere,cube,cylinder,none flat geometry can be used to define walkable areas in the arena
@@ -129,11 +129,11 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
         "movable_0":{
             "ticks_per_second": int, //DEFAULT:5
             "number": list(int), //DEFAULT:[1] each list's entry will define a different simulation
-            "distribute":{ //OPTIONAL - set spawning distribution
-                "center":float, //DEFAULT (0,0)
-                "radius":flaot, //DEFAULT auto
+            "spawn":{ //OPTIONAL - set spawning distribution used at init
+                "center":list(float), //DEFAULT [0,0]
+                "radius":float, //DEFAULT auto (inradius if bounded, heuristically estimated if unbounded)
                 "distribution": str "uniform"|"gaussian"|"exp", //DEFAULT "uniform"
-                "parameters":{"name":float} //DEFAULT {} can be "min"(default=0),"max"(default=1) for ranges or others like "avg","alpha",etc... What missing if needed is set to default values
+                "parameters":{"name":float} //DEFAULT {} e.g. {"max":1} for uniform radius, {"std":0.1} for gaussian
             },
             "shape": str, //SUPPORTED:"sphere","cube","cylinder","none"
             "max_linear_velocity": float, //DEFAULT:0.01 m/s
@@ -167,18 +167,18 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
                 "dynamics": str //DEFAULT:"metropolis"
             },
             "messages":{  //DEFAULT:{} empty dict -> no messaging
-                "tx": int, //DEFAULT:2  send_per_seconds
+                "tx": float, //DEFAULT:2  send_per_seconds (alias: tx_per_second/messages_per_seconds)
                 "comm_range": float|"inf", //DEFAULT:0.1
                 "type": str "broadcast"|"rebroadcast"|"hand-shake", //DEFAULT:"broadcast"
                 "kind": str "anonymous"|"id-aware", //DEFAULT:"anonymous"
                 "channels": str "single"|"dual", //DEFAULT:"dual"
-                "rx": int, //DEFAULT:4  receive_per_seconds
+                "rx": float, //DEFAULT:4  receive_per_seconds (alias: rx_per_second/receive_per_seconds)
                 "rebroadcast_steps": int|"inf", //DEFAULT:"inf". ONLY IF type is "rebroadcast" (agent-side limit on how many times a packet can be forwarded from the local buffer)
                 "handshake_auto": bool, //DEFAULT:true. ONLY IF type is "hand-shake". broadcast discovery invitations whenever idle.
                 "handshake_timeout": float, //DEFAULT:5 seconds before a silent partner is droppe.
                 "timer": { //OPTIONAL - configure automatic message expiration inside each agent buffer - DEFAULT:{} messages do not expire
-                    "distribution": str "fixed"|"uniform"|"exp", //DEFAULT:"fixed")
-                    "parameters": dict {"name":float,...} //DEFAULT {}, "name" can be (default=0),"max"(default=1) for ranges or others like "avg","alpha",etc... What missing if needed is set to default values
+                    "distribution": str "fixed"|"uniform"|"gaussian"|"exponential", //DEFAULT:"fixed"
+                    "parameters": dict {"name":float,...} //DEFAULT {} e.g. {"average":1} or {"max":1} (uniform) or {"lambda":2} (exp)
                 }
             }
         }
@@ -197,6 +197,13 @@ Objects and Agents apply the same rule nut they must contain "agent_" in abstrac
 - Bounded arenas: if `r` is not provided, it DEFAULTs to the inradius of the arena footprint. The sampled area is clamped to the arena; if the requested circle exceeds the bounds it is truncated to fit. Placement still respects non-overlap with walls, objects, and other agents.
 - Unbounded arenas: if `r` is missing/invalid, a finite radius is inferred from agent count/size so that all requested agents fit in a reasonable square. Sampling uses the chosen distribution around `c` without wrap-around.
 - Multiple groups sharing the same spawn center: the second (and subsequent) groups are shifted away by at least `0.25 * r`, repeated until a non-overlapping placement is found or attempts are exhausted. If spawn disks do not touch and placement still fails, the init aborts with an error (attempt limit unchanged).
+
+### Current parser notes
+
+- Object and agent spawn use the `spawn.*` block (alias `distribute`) with an optional `parameters` dict; placement now honors it when no explicit positions are provided.
+- Messaging rates honor `tx` / `rx` (fallback to `tx_per_second` / `rx_per_second` and legacy names).
+- Message timers accept a `parameters` dict; `average` can be provided directly or inferred (e.g. `max` for uniform, `lambda` for exponential, `mean`/`mu` for gaussian).
+- Agent speed keys `max_linear_velocity` / `max_angular_velocity` are mapped internally to the runtime fields and scaled by `ticks_per_second`.
 
 ### Data
 

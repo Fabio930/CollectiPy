@@ -179,6 +179,7 @@ class EntityManager:
             base_cy = float(center_spec[1])
             radius = spawn_cfg.get("radius", None)
             distribution = spawn_cfg.get("distribution", "uniform")
+            spawn_params = spawn_cfg.get("parameters", {}) if isinstance(spawn_cfg.get("parameters"), dict) else {}
 
             if radius is None:
                 if unbounded:
@@ -237,6 +238,7 @@ class EntityManager:
                 # Per-entity spawn params used by movement models (e.g. random_way_point).
                 # Z will be adjusted later based on shape min_vert().
                 entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
+                entity.spawn_parameters = spawn_params
 
                 # Orientation.
                 if not entity.get_orientation_from_dict():

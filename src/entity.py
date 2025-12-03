@@ -243,8 +243,14 @@ class Agent(Entity):
         self.msg_kind = str(self.messages_config.get("kind", "anonymous")).strip().lower()
         self.msg_bus_kind = self.messages_config.get("bus", "auto")
         self.msg_delete_trigger = self.messages_config.get("delete_trigger")
-        self.msgs_per_sec = self._resolve_message_rate("tx_per_second", "messages_per_seconds", 1.0)
-        self.msg_receive_per_sec = self._resolve_message_rate("rx_per_second", "receive_per_seconds", DEFAULT_RX_RATE)
+        self.msgs_per_sec = self._resolve_message_rate(
+            ("tx", "tx_per_second", "messages_per_seconds"),
+            1.0
+        )
+        self.msg_receive_per_sec = self._resolve_message_rate(
+            ("rx", "rx_per_second", "receive_per_seconds"),
+            DEFAULT_RX_RATE
+        )
         if self.msg_type in {"hand_shake", "rebroadcast"} and self.msg_kind == "anonymous":
             raise ValueError(f"{self.entity()} cannot use kind='anonymous' with message type '{self.msg_type}'.")
         self.message_bus = None
@@ -643,12 +649,14 @@ class Agent(Entity):
         rate = max(0.0, float(rate_per_second))
         return rate / ticks
     
-    def _resolve_message_rate(self, preferred_key: str, legacy_key: str, default_value: float) -> float:
-        """Resolve TX/RX quotas supporting both the new and legacy config keys."""
-        value = self.messages_config.get(preferred_key)
-        if value is None:
-            # Backwards compatibility with legacy config names.
-            value = self.messages_config.get(legacy_key, default_value)
+    def _resolve_message_rate(self, keys: tuple[str, ...], default_value: float) -> float:
+        """Resolve TX/RX quotas supporting multiple aliases."""
+        value = None
+        for key in keys:
+            if value is not None:
+                break
+            if key in self.messages_config:
+                value = self.messages_config.get(key)
         if value is None:
             value = default_value
         try:
@@ -658,7 +666,7 @@ class Agent(Entity):
                 "Invalid message rate '%s' for %s (%s), falling back to %.2f",
                 value,
                 self.get_name(),
-                preferred_key,
+                keys[0] if keys else "rate",
                 default_value
             )
             numeric = float(default_value)
@@ -720,21 +728,29 @@ class Agent(Entity):
             return None
         if not value:
             return None
-        raw_distribution = value.get("distribution", None)
-        distribution = None if raw_distribution is None else str(raw_distribution).strip().lower()
+        params = value.get("parameters", None)
+        if params is not None and not isinstance(params, dict):
+            logger.warning("%s timer parameters must be an object; ignoring", self.get_name())
+            params = None
+        raw_distribution = value.get("distribution", "fixed")
+        distribution = "fixed" if raw_distribution is None else str(raw_distribution).strip().lower()
+        if distribution in {"", "none"}:
+            distribution = "fixed"
         if distribution == "normal":
             distribution = "gaussian"
-        if distribution in {"", "none"}:
-            distribution = None
+        if distribution == "exp":
+            distribution = "exponential"
         supported = {"gaussian", "uniform", "exponential", "fixed"}
-        if distribution and distribution not in supported:
+        if distribution not in supported:
             logger.warning(
                 "%s timer distribution '%s' unsupported; using fixed delay",
                 self.get_name(),
                 distribution
             )
-            distribution = None
+            distribution = "fixed"
         average = value.get("average", None)
+        if average is None:
+            average = self._extract_timer_average(distribution, params)
         if average is None:
             return None
         try:
@@ -745,7 +761,36 @@ class Agent(Entity):
         if average < 0:
             logger.warning("%s timer average must be >=0, got %s; clamping to 0", self.get_name(), average)
             average = 0.0
-        return {"distribution": distribution, "average": average, "reset_each_cycle": average == 0.0}
+        normalized = {
+            "distribution": distribution,
+            "average": average,
+            "reset_each_cycle": bool(value.get("reset_each_cycle", False)) or average == 0.0
+        }
+        if params:
+            normalized["parameters"] = params
+        return normalized
+
+    @staticmethod
+    def _extract_timer_average(distribution: str, params):
+        """Infer the timer average from parameters when not provided explicitly."""
+        if not isinstance(params, dict):
+            return None
+        for key in ("average", "avg", "mean", "mu"):
+            if params.get(key) is not None:
+                return params.get(key)
+        if distribution in {"uniform", "gaussian"}:
+            if params.get("max") is not None:
+                return params.get("max")
+        if distribution == "exponential":
+            rate = params.get("lambda") or params.get("rate")
+            if rate is not None:
+                try:
+                    rate_val = float(rate)
+                    if rate_val > 0:
+                        return 1.0 / rate_val
+                except (TypeError, ValueError):
+                    return None
+        return params.get("value")
 
     def _apply_message_timers(self, messages):
         """Attach TTL metadata to newly received messages."""

@@ -286,6 +286,12 @@ class SolidArena(Arena):
         self._grid_cell_size = max(max_radius * 2.0, 0.05)
         occupancy = {}
         for (config, entities) in self.objects.values():
+            spawn_cfg = {}
+            if isinstance(config, dict):
+                if "spawn" in config and isinstance(config.get("spawn"), dict):
+                    spawn_cfg = config.get("spawn")
+                elif "distribute" in config and isinstance(config.get("distribute"), dict):
+                    spawn_cfg = config.get("distribute")
             n_entities = len(entities)
             for entity in entities:
                 entity.set_position(Vector3D(999, 0, 0), False)
@@ -302,7 +308,8 @@ class SolidArena(Arena):
                         occupancy,
                         rng,
                         min_v,
-                        max_v
+                        max_v,
+                        spawn_cfg
                     )
                     if not placed:
                         raise Exception(f"Impossible to place object {entity.entity()} in the arena")
@@ -322,7 +329,8 @@ class SolidArena(Arena):
                             occupancy,
                             rng,
                             min_v,
-                            max_v
+                            max_v,
+                            spawn_cfg
                         )
                         if not placed:
                             raise Exception(f"Impossible to place object {entity.entity()} in the arena")
@@ -411,8 +419,8 @@ class SolidArena(Arena):
             return max((Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude() for v in shape.vertices_list), default=0.05)
         return 0.05
 
-    def _place_entity_random(self, entity, radius, occupancy, rng, min_v, max_v):
-        """Place entity random."""
+    def _place_entity_random(self, entity, radius, occupancy, rng, min_v, max_v, spawn_cfg=None):
+        """Place entity random (optionally honoring spawn configuration)."""
         attempts = 0
         shape_n = entity.get_shape()
         min_vert_z = abs(shape_n.min_vert().z)
@@ -424,11 +432,7 @@ class SolidArena(Arena):
         if min_x >= max_x or min_y >= max_y:
             return False
         while attempts < PLACEMENT_MAX_ATTEMPTS:
-            rand_pos = Vector3D(
-                Random.uniform(rng, min_x, max_x),
-                Random.uniform(rng, min_y, max_y),
-                min_vert_z
-            )
+            rand_pos = self._sample_spawn_position(spawn_cfg, rng, min_x, max_x, min_y, max_y, min_vert_z, effective_radius)
             entity.to_origin()
             entity.set_position(rand_pos)
             shape = entity.get_shape()
@@ -442,6 +446,57 @@ class SolidArena(Arena):
             self._register_shape_in_grid(shape, rand_pos, radius, occupancy)
             return True
         return False
+
+    def _sample_spawn_position(self, spawn_cfg, rng, min_x, max_x, min_y, max_y, z, fallback_radius):
+        """Sample a spawn position using optional spawn configuration."""
+        if isinstance(spawn_cfg, dict) and spawn_cfg:
+            center_spec = spawn_cfg.get("center", [0.0, 0.0])
+            if not isinstance(center_spec, (list, tuple)) or len(center_spec) < 2:
+                center_spec = [0.0, 0.0]
+            cx = float(center_spec[0])
+            cy = float(center_spec[1])
+            radius_val = spawn_cfg.get("radius", None)
+            try:
+                radius_val = float(radius_val) if radius_val is not None else None
+            except (TypeError, ValueError):
+                radius_val = None
+            if radius_val is None:
+                # Default to the largest inscribed circle of the arena footprint.
+                radius_val = max(0.0, min(max_x - min_x, max_y - min_y) / 2.0)
+            distribution = str(spawn_cfg.get("distribution", "uniform")).strip().lower()
+            params = spawn_cfg.get("parameters", {}) if isinstance(spawn_cfg.get("parameters"), dict) else {}
+            if distribution in {"gaussian", "normal"}:
+                std = params.get("std") or params.get("sigma") or (radius_val / 3.0 if radius_val > 0 else fallback_radius)
+                try:
+                    std = float(std)
+                except (TypeError, ValueError):
+                    std = radius_val / 3.0 if radius_val > 0 else fallback_radius
+                x = rng.gauss(cx, std)
+                y = rng.gauss(cy, std)
+            elif distribution in {"exp", "exponential"}:
+                scale = params.get("scale") or params.get("lambda")
+                try:
+                    scale = float(scale) if scale is not None else radius_val / 2.0
+                except (TypeError, ValueError):
+                    scale = radius_val / 2.0
+                r = -math.log(max(1e-9, 1.0 - rng.random())) * max(scale, 1e-6)
+                theta = rng.uniform(0.0, 2 * math.pi)
+                x = cx + r * math.cos(theta)
+                y = cy + r * math.sin(theta)
+            else:
+                r = math.sqrt(rng.uniform(0.0, 1.0)) * radius_val
+                theta = rng.uniform(0.0, 2 * math.pi)
+                x = cx + r * math.cos(theta)
+                y = cy + r * math.sin(theta)
+            # Keep inside arena bounds.
+            x = min(max(x, min_x), max_x)
+            y = min(max(y, min_y), max_y)
+            return Vector3D(x, y, z)
+        return Vector3D(
+            Random.uniform(rng, min_x, max_x),
+            Random.uniform(rng, min_y, max_y),
+            z
+        )
 
     def _shape_overlaps_grid(self, shape, position, radius, occupancy):
         """Shape overlaps grid."""

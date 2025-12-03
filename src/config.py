@@ -47,7 +47,7 @@ LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 MESSAGE_TYPES = {"broadcast", "rebroadcast", "hand-shake"}
 MESSAGE_KINDS = {"anonymous", "id-aware"}
 MESSAGE_CHANNELS = {"single", "dual"}
-MESSAGE_TIMER_DISTRIBUTIONS = {"fixed", "uniform", "exp"}
+MESSAGE_TIMER_DISTRIBUTIONS = {"fixed", "uniform", "exp", "exponential", "gaussian"}
 
 DIMENSION_SHAPES_WITH_DIAMETER = {"circle", "cylinder", "sphere", "unbounded"}
 
@@ -271,6 +271,9 @@ def _validate_timer_block(timer_cfg):
     distribution = timer_cfg.get("distribution")
     if distribution is not None and distribution not in MESSAGE_TIMER_DISTRIBUTIONS:
         raise ValueError(f"Invalid messages.timer.distribution '{distribution}', allowed: {sorted(MESSAGE_TIMER_DISTRIBUTIONS)}")
+    params = timer_cfg.get("parameters")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("The 'timer.parameters' block inside messages must be a dictionary when provided")
 
 def _validate_messages_block(messages_cfg):
     if not isinstance(messages_cfg, dict):
@@ -284,6 +287,10 @@ def _validate_messages_block(messages_cfg):
     timer_cfg = messages_cfg.get("timer")
     if timer_cfg is not None:
         _validate_timer_block(timer_cfg)
+    # Optional numeric rate checks (tx/rx aliases)
+    for key in ("tx", "rx", "tx_per_second", "rx_per_second", "messages_per_seconds", "receive_per_seconds"):
+        if key in messages_cfg and messages_cfg[key] is not None and not isinstance(messages_cfg[key], (int, float)):
+            raise ValueError(f"'messages.{key}' must be numeric if provided")
 
 def _validate_arena_cfg(arena_cfg):
     if "_id" not in arena_cfg or arena_cfg["_id"] not in ALLOWED_ARENA_IDS:
@@ -471,6 +478,8 @@ class Config:
             for k, v in environment['objects'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
                     object_cfg = _clone_config_obj(v)
+                    if "spawn" not in object_cfg and isinstance(object_cfg.get("distribute"), dict):
+                        object_cfg["spawn"] = _clone_config_obj(object_cfg["distribute"])
                     for hook in _ENTITY_HOOKS["object"]:
                         hook(k, object_cfg)
                     _validate_object_cfg(object_cfg)
@@ -491,6 +500,12 @@ class Config:
             for k, v in environment['agents'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
                     agent_cfg = _clone_config_obj(v)
+                    if "spawn" not in agent_cfg and isinstance(agent_cfg.get("distribute"), dict):
+                        agent_cfg["spawn"] = _clone_config_obj(agent_cfg["distribute"])
+                    if "linear_velocity" not in agent_cfg and "max_linear_velocity" in agent_cfg:
+                        agent_cfg["linear_velocity"] = agent_cfg["max_linear_velocity"]
+                    if "angular_velocity" not in agent_cfg and "max_angular_velocity" in agent_cfg:
+                        agent_cfg["angular_velocity"] = agent_cfg["max_angular_velocity"]
                     for hook in _ENTITY_HOOKS["agent"]:
                         hook(k, agent_cfg)
                     _validate_agent_cfg(agent_cfg)
