@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 
 """EntityManager: synchronises agents and arena."""
-import math
+import math, sys
 import multiprocessing as mp
 import time
 from typing import Optional
@@ -19,6 +19,8 @@ from message_proxy import MessageProxy, NullMessageProxy
 from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("entity_manager")
+FLOAT_MAX = sys.float_info.max
+FLOAT_MIN = -FLOAT_MAX
 
 
 class EntityManager:
@@ -117,6 +119,9 @@ class EntityManager:
             )
         else:
             self._message_proxy = None
+
+        self._global_min = self._clamp_vector_to_float_limits(self._global_min)
+        self._global_max = self._clamp_vector_to_float_limits(self._global_max)
 
         for _, (config, entities) in self.agents.items():
             msg_cfg = config.get("messages", {}) if isinstance(config, dict) else {}
@@ -349,6 +354,31 @@ class EntityManager:
     # ----------------------------------------------------------------------
     # Geometry helpers
     # ----------------------------------------------------------------------
+    @staticmethod
+    def _clamp_value_to_float_limits(value: float) -> float:
+        """Clamp a numeric value to float representable limits."""
+        try:
+            if math.isinf(value):
+                return FLOAT_MAX if value > 0 else FLOAT_MIN
+            if value > FLOAT_MAX:
+                return FLOAT_MAX
+            if value < FLOAT_MIN:
+                return FLOAT_MIN
+            return float(value)
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _clamp_vector_to_float_limits(cls, vec: Vector3D | None) -> Vector3D:
+        """Clamp vector coordinates to float limits."""
+        if vec is None:
+            return Vector3D()
+        return Vector3D(
+            cls._clamp_value_to_float_limits(vec.x),
+            cls._clamp_value_to_float_limits(vec.y),
+            cls._clamp_value_to_float_limits(vec.z),
+        )
+
     @staticmethod
     def _estimate_entity_radius(shape):
         """Estimate a placement radius for the given shape."""

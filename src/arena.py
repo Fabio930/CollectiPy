@@ -7,7 +7,7 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-import time, math, random
+import time, math, random, sys
 from typing import Optional, Any
 import multiprocessing as mp
 from config import Config
@@ -20,6 +20,40 @@ from hierarchy_overlay import HierarchyOverlay, Bounds2D
 from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("arena")
+FLOAT_MAX = sys.float_info.max
+FLOAT_MIN = -FLOAT_MAX
+BOUNDARY_RADIUS_EPS = 0.0001
+
+
+class BoundaryGrid:
+    """Minimal boundary grid to track cells near arena limits."""
+    def __init__(self, min_v: Vector3D, max_v: Vector3D, cell_size: float):
+        self.min_v = min_v
+        self.max_v = max_v
+        self.cell_size = max(cell_size, 0.00001)
+        # Strips: band1 is closest to edge, band2 is adjacent.
+        self.band1 = self.cell_size * 1.0
+        self.band2 = self.cell_size * 2.0
+
+    def band_for_point(self, point: Vector3D | None) -> int:
+        """
+        Return 0 if outside boundary strips,
+        1 if in the closest strip, 2 if in the second strip.
+        """
+        if point is None:
+            return 0
+        dx_min = abs(point.x - self.min_v.x)
+        dx_max = abs(point.x - self.max_v.x)
+        dy_min = abs(point.y - self.min_v.y)
+        dy_max = abs(point.y - self.max_v.y)
+
+        near_edge = min(dx_min, dx_max, dy_min, dy_max)
+        if near_edge <= self.band1:
+            return 1
+        if near_edge <= self.band2:
+            return 2
+        return 0
+
 class ArenaFactory():
 
     """Arena factory."""
@@ -220,6 +254,133 @@ class Arena():
         except ValueError as exc:
             raise ValueError(f"Invalid hierarchy configuration: {exc}") from exc
 
+    @staticmethod
+    @staticmethod
+    def _clamp_value_to_float_limits(value: float) -> float:
+        """Clamp a numeric value to float representable limits."""
+        try:
+            if value > FLOAT_MAX:
+                return FLOAT_MAX
+            if value < FLOAT_MIN:
+                return FLOAT_MIN
+            if math.isinf(value):
+                return FLOAT_MAX if value > 0 else FLOAT_MIN
+            return float(value)
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _clamp_vector_to_float_limits(cls, vec: Optional[Vector3D]) -> Optional[Vector3D]:
+        """Clamp vector coordinates to float limits."""
+        if vec is None:
+            return None
+        return Vector3D(
+            cls._clamp_value_to_float_limits(vec.x),
+            cls._clamp_value_to_float_limits(vec.y),
+            cls._clamp_value_to_float_limits(vec.z),
+        )
+
+    @staticmethod
+    def _estimate_shape_radius(shape) -> float:
+        """Estimate a conservative radius for a shape."""
+        if shape is None:
+            return 0.0
+        getter = getattr(shape, "get_radius", None)
+        if callable(getter):
+            try:
+                r = float(getter())
+                if r > 0:
+                    return r
+            except Exception:
+                pass
+        center = getattr(shape, "center", None)
+        vertices = getattr(shape, "vertices_list", None)
+        if center is not None and vertices:
+            try:
+                return max(
+                    math.sqrt((v.x - center.x) ** 2 + (v.y - center.y) ** 2 + (v.z - center.z) ** 2)
+                    for v in vertices
+                )
+            except Exception:
+                pass
+        return 0.05
+
+    @staticmethod
+    def _margin_to_float_limits(center: Vector3D) -> float:
+        """Return the smallest remaining distance from center to float limits."""
+        return min(
+            FLOAT_MAX - center.x,
+            center.x - FLOAT_MIN,
+            FLOAT_MAX - center.y,
+            center.y - FLOAT_MIN,
+            FLOAT_MAX - center.z,
+            center.z - FLOAT_MIN,
+        )
+
+    def _find_float_limit_violation(self, agents_shapes: Optional[dict], objects_data: Optional[dict] = None) -> Optional[tuple]:
+        """
+        Inspect agent and object centers near boundary strips; trigger when
+        margin to float limits is smaller than (radius + epsilon).
+        """
+        if not isinstance(agents_shapes, dict):
+            agents_shapes = None
+        if agents_shapes:
+            for group_key, shapes in agents_shapes.items():
+                if not shapes:
+                    continue
+                for idx, shape in enumerate(shapes):
+                    try:
+                        center = getattr(shape, "center", None)
+                        if center is None:
+                            continue
+                        band = self._boundary_grid.band_for_point(center) if self._boundary_grid else 2
+                        if band == 0:
+                            continue
+                        radius = self._estimate_shape_radius(shape)
+                        margin = self._margin_to_float_limits(center)
+                        if margin <= radius + BOUNDARY_RADIUS_EPS:
+                            return ("agent", group_key, idx, "center", (center.x, center.y, center.z), margin, radius)
+                    except Exception:
+                        continue
+        if isinstance(objects_data, dict):
+            for group_key, payload in objects_data.items():
+                if not isinstance(payload, (list, tuple)) or not payload:
+                    continue
+                shapes = payload[0] if len(payload) > 0 else []
+                positions = payload[1] if len(payload) > 1 else []
+                radii_cache = []
+                if shapes:
+                    for shape in shapes:
+                        radii_cache.append(self._estimate_shape_radius(shape))
+                if shapes:
+                    for idx, shape in enumerate(shapes):
+                        try:
+                            center = getattr(shape, "center", None)
+                            if center is None:
+                                continue
+                            band = self._boundary_grid.band_for_point(center) if self._boundary_grid else 2
+                            if band == 0:
+                                continue
+                            radius = radii_cache[idx] if idx < len(radii_cache) else self._estimate_shape_radius(shape)
+                            margin = self._margin_to_float_limits(center)
+                            if margin <= radius + BOUNDARY_RADIUS_EPS:
+                                return ("object", group_key, idx, "center", (center.x, center.y, center.z), margin, radius)
+                        except Exception:
+                            continue
+                if positions:
+                    for idx, pos in enumerate(positions):
+                        try:
+                            band = self._boundary_grid.band_for_point(pos) if self._boundary_grid else 2
+                            if band == 0:
+                                continue
+                            radius = radii_cache[idx] if idx < len(radii_cache) else 0.0
+                            margin = self._margin_to_float_limits(pos)
+                            if margin <= radius + BOUNDARY_RADIUS_EPS:
+                                return ("object", group_key, idx, "position", (pos.x, pos.y, pos.z), margin, radius)
+                        except Exception:
+                            continue
+        return None
+
 
 
 class AbstractArena(Arena):
@@ -252,6 +413,7 @@ class SolidArena(Arena):
         super().__init__(config_elem)
         self._grid_origin = None
         self._grid_cell_size = None
+        self._boundary_grid: BoundaryGrid | None = None
         self.shape = self._build_arena_shape(config_elem)
         self._update_hierarchy_from_shape()
 
@@ -284,6 +446,7 @@ class SolidArena(Arena):
         self._grid_origin = Vector3D(min_v.x, min_v.y, 0)
         radii_map, max_radius = self._compute_entity_radii()
         self._grid_cell_size = max(max_radius * 2.0, 0.05)
+        self._boundary_grid = BoundaryGrid(min_v, max_v, self._grid_cell_size)
         occupancy = {}
         for (config, entities) in self.objects.values():
             spawn_cfg = {}
@@ -695,6 +858,22 @@ class SolidArena(Arena):
                     self.agents_spins,
                     self.agents_metadata
                 )
+                violation = self._find_float_limit_violation(self.agents_shapes, initial_objects)
+                if violation:
+                    kind, group, idx, component, coords, margin, radius = violation
+                    logger.critical(
+                        "Detected coordinates near float limit for %s %s[%s] (%s=%s, margin=%.4e, radius=%.4e); requesting shutdown",
+                        kind,
+                        group,
+                        idx,
+                        component,
+                        coords,
+                        margin,
+                        radius,
+                    )
+                    _signal_shutdown("float_limit_violation")
+                    shutdown_requested = True
+                    break
                 initial_tick_rate = latest_agent_data[0].get("status", [0, self.ticks_per_second])[1]
                 if self.data_handling is not None:
                     self.data_handling.new_run(
@@ -797,6 +976,22 @@ class SolidArena(Arena):
                             self.agents_spins,
                             self.agents_metadata
                         )
+                        violation = self._find_float_limit_violation(self.agents_shapes, arena_data.get("objects"))
+                        if violation:
+                            kind, group, idx, component, coords, margin, radius = violation
+                            logger.critical(
+                                "Detected coordinates near float limit for %s %s[%s] (%s=%s, margin=%.4e, radius=%.4e); requesting shutdown",
+                                kind,
+                                group,
+                                idx,
+                                component,
+                                coords,
+                                margin,
+                                radius,
+                            )
+                            _signal_shutdown("float_limit_violation")
+                            shutdown_requested = True
+                            break
                         if self.data_handling is not None:
                             tick_stamp = arena_data.get("status", [t, self.ticks_per_second])[0]
                             tick_rate = arena_data.get("status", [tick_stamp, self.ticks_per_second])[1]
@@ -871,8 +1066,8 @@ class SolidArena(Arena):
     def reset(self):
         """Reset the component state."""
         super().reset()
-        min_v = self.shape.min_vert()
-        max_v = self.shape.max_vert()
+        min_v = self._clamp_vector_to_float_limits(self.shape.min_vert())
+        max_v = self._clamp_vector_to_float_limits(self.shape.max_vert())
         rng = self.random_generator
         if self.data_handling is not None: self.data_handling.close(self.agents_shapes)
         for (config, entities) in self.objects.values():
@@ -930,8 +1125,8 @@ class SolidArena(Arena):
         """Update hierarchy from shape."""
         bounds = None
         if hasattr(self, "shape") and self.shape is not None:
-            min_v = self.shape.min_vert()
-            max_v = self.shape.max_vert()
+            min_v = self._clamp_vector_to_float_limits(self.shape.min_vert())
+            max_v = self._clamp_vector_to_float_limits(self.shape.max_vert())
             bounds = Bounds2D(min_v.x, min_v.y, max_v.x, max_v.y)
         self._hierarchy = self._create_hierarchy(bounds)
         if hasattr(self, "shape") and self.shape is not None and hasattr(self.shape, "metadata"):
