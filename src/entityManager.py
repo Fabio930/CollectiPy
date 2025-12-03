@@ -671,12 +671,25 @@ class EntityManager:
             ticks_per_second = entities[0].ticks()
             break
         ticks_limit = time_limit * ticks_per_second + 1 if time_limit > 0 else 0
+        shutdown_requested = False
+        debug_wait_cycles = 0
 
         run = 1
         log_context = log_context or {}
         log_specs = log_context.get("log_specs")
         process_name = log_context.get("process_name", f"manager_{self.manager_id}")
         logger.info("EntityManager starting for %s runs (time_limit=%s)", num_runs, time_limit)
+
+        def _is_shutdown_status(payload: dict | None) -> bool:
+            """Return True when the arena asks managers to exit."""
+            if not isinstance(payload, dict):
+                return False
+            status = payload.get("status")
+            if status == "shutdown":
+                return True
+            if isinstance(status, (list, tuple)) and status and status[0] == "shutdown":
+                return True
+            return False
 
         while run < num_runs + 1:
             start_run_logging(log_specs, process_name, run)
@@ -692,14 +705,23 @@ class EntityManager:
 
                 data_in = self._blocking_get(arena_queue)
                 while data_in is not None:
+                    if _is_shutdown_status(data_in):
+                        shutdown_requested = True
+                        break
                     status = data_in.get("status")
                     if isinstance(status, list) and len(status) >= 1 and status[0] == 0:
                         break
                     data_in = self._blocking_get(arena_queue)
-                if data_in is None:
+                if data_in is None or shutdown_requested:
                     break
 
                 # Initialisation at start of run.
+                if _is_shutdown_status(data_in):
+                    shutdown_requested = True
+                    break
+                if "objects" not in data_in:
+                    shutdown_requested = True
+                    break
                 if data_in["status"][0] == 0:
                     self.initialize(data_in["random_seed"], data_in["objects"])
 
@@ -728,6 +750,9 @@ class EntityManager:
                     if data_in["status"] == "reset":
                         reset = True
                         break
+                    if _is_shutdown_status(data_in):
+                        shutdown_requested = True
+                        break
 
                     # Keep arena and agents roughly in sync in simulated time.
                     while data_in["status"][0] / data_in["status"][1] < t / ticks_per_second:
@@ -737,8 +762,29 @@ class EntityManager:
                             if data_in["status"] == "reset":
                                 reset = True
                                 break
+                            if _is_shutdown_status(data_in):
+                                shutdown_requested = True
+                                break
+                            if "objects" not in data_in:
+                                shutdown_requested = True
+                                break
                         else:
                             time.sleep(0.0001)
+                        debug_wait_cycles += 1
+                        if debug_wait_cycles % 500 == 0:
+                            try:
+                                backlog = arena_queue.qsize()
+                            except Exception:
+                                backlog = "n/a"
+                            logger.critical(
+                                "[MGR WAIT] mgr=%s run=%s t=%s arena_status=%s backlog=%s shutdown=%s",
+                                self.manager_id,
+                                run,
+                                t,
+                                data_in.get("status"),
+                                backlog,
+                                shutdown_requested,
+                            )
 
                         # Optional GUI update while waiting (only if queue is empty).
                         sync_payload = {
@@ -750,10 +796,20 @@ class EntityManager:
                             agents_queue.put(sync_payload)
                     if reset:
                         break
+                    if shutdown_requested:
+                        break
 
                     latest = self._maybe_get(arena_queue, timeout=0.0)
                     if latest is not None:
                         data_in = latest
+                        if _is_shutdown_status(data_in):
+                            shutdown_requested = True
+                            break
+                        if "objects" not in data_in:
+                            shutdown_requested = True
+                            break
+                    if shutdown_requested:
+                        break
 
                     # Synchronize message proxy with updated agent positions.
                     if self._message_proxy is not None:
@@ -774,6 +830,11 @@ class EntityManager:
                             if getattr(entity, "msg_enable", False) and entity.message_bus:
                                 entity.receive_messages(t)
                             # Main agent step.
+                            if shutdown_requested:
+                                break
+                            if "objects" not in data_in:
+                                shutdown_requested = True
+                                break
                             entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
                         if agent_barrier is not None:
                             agent_barrier.wait()
@@ -824,6 +885,9 @@ class EntityManager:
                     # ------------------------------------------------------------------
                     # GUI snapshot AFTER collision corrections.
                     # ------------------------------------------------------------------
+                    if shutdown_requested:
+                        break
+
                     agents_data = {
                         "status": [t, ticks_per_second],
                         "agents_shapes": self.get_agent_shapes(),
@@ -838,6 +902,8 @@ class EntityManager:
 
                 if t < ticks_limit and not reset:
                     break
+                if shutdown_requested:
+                    break
 
                 if run < num_runs:
                     # Drain extra arena messages with gentle polling.
@@ -850,6 +916,8 @@ class EntityManager:
 
                 if not reset:
                     run += 1
+                if shutdown_requested:
+                    break
 
 
             finally:

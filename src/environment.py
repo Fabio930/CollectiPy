@@ -473,6 +473,62 @@ class Environment:
         except Exception as e:
             logger.warning("Could not set environment CPU affinity: %s", e)
 
+        def _kill_child_processes(note: str = ""):
+            """Force kill all child processes of this environment."""
+            try:
+                parent = psutil.Process()
+                children = parent.children(recursive=True)
+                if children:
+                    logger.critical("Killing %d child processes%s", len(children), f" ({note})" if note else "")
+                for proc in children:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                time.sleep(0.1)
+                for proc in children:
+                    if proc.is_running():
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                for proc in children:
+                    try:
+                        proc.wait(timeout=0.5)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning("Failed to kill child processes: %s", exc)
+
+        def _brutal_kill_all_children(note: str = ""):
+            """Immediately kill all child processes (no grace)."""
+            try:
+                parent = psutil.Process()
+                children = parent.children(recursive=True)
+                if children:
+                    try:
+                        targets = ", ".join(f"{c.pid}:{c.name()}" for c in children)
+                    except Exception:
+                        targets = ", ".join(str(c.pid) for c in children)
+                    logger.critical(
+                        "BRUTAL KILL %d child processes%s -> [%s]",
+                        len(children),
+                        f" ({note})" if note else "",
+                        targets,
+                    )
+                for proc in children:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                for proc in children:
+                    try:
+                        proc.wait(timeout=0.5)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning("Failed brutal kill of children: %s", exc)
+
         for exp in self.experiments:
             results_cfg = exp.environment.get("results", {}) or {}
             agent_specs, group_specs = resolve_result_specs(results_cfg)
@@ -524,9 +580,74 @@ class Environment:
                 if proc and proc.is_alive():
                     proc.terminate()
 
-            def _safe_join(proc, timeout=None):
-                if proc and proc.pid is not None:
+            def _safe_kill(proc):
+                if proc and proc.is_alive():
+                    try:
+                        proc.kill()
+                    except Exception as exc:
+                        logger.warning("Failed to kill %s: %s", getattr(proc, "pid", "?"), exc)
+
+            def _safe_join(proc, *, label: str = "", timeout: float | None = None):
+                """Join a process with a timeout, then terminate/kill if still alive."""
+                if proc is None or proc.pid is None:
+                    return
+                try:
                     proc.join(timeout=timeout)
+                    if proc.is_alive():
+                        logger.warning(
+                            "Process %s did not exit after %.2fs; forcing terminate",
+                            label or proc.pid,
+                            0 if timeout is None else timeout,
+                        )
+                        proc.terminate()
+                        proc.join(timeout=1.0)
+                    if proc.is_alive():
+                        logger.warning("Process %s still alive; killing", label or proc.pid)
+                        _safe_kill(proc)
+                        proc.join(timeout=0.5)
+                        if proc.is_alive():
+                            logger.critical("Process %s still alive after kill attempt", label or proc.pid)
+                except Exception as exc:
+                    logger.warning("Failed to join %s: %s", label or proc.pid, exc)
+
+            process_names: dict[mp.Process, str] = {}
+
+            def _register_process(label: str, proc: mp.Process | None):
+                if proc is not None:
+                    process_names[proc] = label
+
+            def _process_label(proc: mp.Process | None) -> str:
+                if proc is None:
+                    return "<none>"
+                return process_names.get(proc, f"pid={proc.pid}")
+
+            def _log_process_status(stage: str, label: str, proc: mp.Process | None):
+                if proc is None:
+                    logger.info("[%s] %s: not started", stage, label)
+                    return
+                try:
+                    logger.info(
+                        "[%s] %s pid=%s exitcode=%s alive=%s",
+                        stage,
+                        label,
+                        proc.pid,
+                        proc.exitcode,
+                        proc.is_alive(),
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] failed to log status for %s: %s", stage, label, exc)
+
+            def _wait_for_exit(proc: mp.Process | None, label: str, timeout: float = 1.0) -> bool:
+                """Wait briefly for a process to exit, returning True if it stopped."""
+                if proc is None:
+                    return True
+                deadline = time.time() + timeout
+                while proc.is_alive() and time.time() < deadline:
+                    time.sleep(0.02)
+                if proc.is_alive():
+                    logger.warning("%s still alive after %.2fs", label, timeout)
+                    return False
+                return True
 
             dec_arena_in = _PipeQueue(ctx)
             gui_in_queue = _PipeQueue(ctx)
@@ -601,6 +722,7 @@ class Environment:
             )
             # Managers
             manager_processes = []
+            _register_process("arena", arena_process)
 
             message_channels = []
             for _ in range(n_blocks):
@@ -634,6 +756,7 @@ class Environment:
                 )
 
                 manager_processes.append(proc)
+                _register_process(f"manager_{idx_block}", proc)
             # Message server process (one per environment).
             fully_connected = True #arena_id in ("abstract", "none", None)
             message_server_process = mp.Process(
@@ -641,6 +764,7 @@ class Environment:
                 args=(message_channels, message_server_log_specs, fully_connected),
             )
             gui_process = None
+            _register_process("message_server", message_server_process)
 
             def _signal_message_server_shutdown():
                 """Request the message server to stop via its queues."""
@@ -656,11 +780,20 @@ class Environment:
             def _stop_message_server_gracefully(timeout: float = 1.0):
                 """Signal shutdown, wait briefly, then terminate if still alive."""
                 _signal_message_server_shutdown()
+                logger.critical("SHUTDOWN: waiting for message_server to exit")
                 deadline = time.time() + timeout
                 while message_server_process.is_alive() and time.time() < deadline:
                     time.sleep(0.01)
                 if message_server_process.is_alive():
+                    logger.warning("Message server did not exit in %.2fs; terminating", timeout)
                     _safe_terminate(message_server_process)
+                    time.sleep(0.05)
+                if message_server_process.is_alive():
+                    logger.warning("Message server still alive; killing")
+                    _safe_kill(message_server_process)
+                else:
+                    logger.info("Message server exited gracefully after shutdown request")
+                logger.critical("SHUTDOWN: message_server alive=%s exitcode=%s", message_server_process.is_alive(), message_server_process.exitcode)
 
             def _signal_gui_shutdown():
                 """Request the GUI process to stop via its input queue."""
@@ -668,6 +801,10 @@ class Environment:
                     return
                 try:
                     gui_in_queue.put({"status": "shutdown"})
+                except Exception:
+                    pass
+                try:
+                    gui_control_queue.put("shutdown")
                 except Exception:
                     pass
 
@@ -680,6 +817,32 @@ class Environment:
                 deadline = time.time() + timeout
                 while gui_process.is_alive() and time.time() < deadline:
                     time.sleep(0.01)
+                if gui_process.is_alive():
+                    logger.warning("GUI did not exit in %.2fs; terminating", timeout)
+                    _safe_terminate(gui_process)
+
+            def _request_arena_shutdown(timeout: float = 1.0, terminate_after: bool = True):
+                """Ask arena to stop via the GUI control channel and wait briefly."""
+                if arena_process is None:
+                    return
+                try:
+                    gui_control_queue.put("shutdown")
+                    logger.info("Requested arena shutdown via control channel")
+                except Exception as exc:
+                    logger.warning("Failed to request arena shutdown: %s", exc)
+                exited = _wait_for_exit(arena_process, "arena", timeout=timeout)
+                if not exited and terminate_after:
+                    _safe_terminate(arena_process)
+
+            def _broadcast_manager_shutdown():
+                """Push shutdown packets to all manager inbound queues."""
+                for q in arena_queue_list:
+                    if q is None:
+                        continue
+                    try:
+                        q.put({"status": "shutdown"})
+                    except Exception:
+                        pass
 
             # Prepare detector input/output arguments.
             # If collisions are disabled → the detector should not receive any queue.
@@ -697,6 +860,7 @@ class Environment:
                 target=_run_detector_process,
                 args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, collision_log_specs, dec_control_queue)
             )
+            _register_process("detector", detector_process)
 
             def _signal_detector_shutdown():
                 """Request the collision detector to stop."""
@@ -713,11 +877,18 @@ class Environment:
                 if detector_process is None:
                     return
                 _signal_detector_shutdown()
+                logger.critical("SHUTDOWN: waiting for detector to exit")
                 deadline = time.time() + timeout
                 while detector_process.is_alive() and time.time() < deadline:
                     time.sleep(0.0001)
                 if detector_process.is_alive():
+                    logger.warning("Detector did not exit in %.2fs; terminating", timeout)
                     _safe_terminate(detector_process)
+                    time.sleep(0.05)
+                if detector_process.is_alive():
+                    logger.warning("Detector still alive; killing")
+                    _safe_kill(detector_process)
+                logger.critical("SHUTDOWN: detector alive=%s exitcode=%s", detector_process.is_alive(), detector_process.exitcode)
 
             pattern = {
                 "arena": 2,
@@ -727,6 +898,7 @@ class Environment:
                 "messages": 2,
             }
             killed = 0
+            force_exit = False
             try:
                 if render_enabled:
                     render_config = dict(self.render[1])
@@ -746,6 +918,7 @@ class Environment:
                         )
                     )
                     gui_process.start()
+                    _register_process("gui", gui_process)
                     message_server_process.start()
                     if detector_process and arena_id not in ("abstract", "none", None):
                         detector_process.start()
@@ -765,6 +938,7 @@ class Environment:
                     assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
 
                     # Supervision loop
+                    force_exit = False
                     while True:
                         exit_failure = next(
                             (p for p in [arena_process] + [message_server_process] + manager_processes + [detector_process] if p.exitcode not in (None, 0)),
@@ -773,38 +947,71 @@ class Environment:
                         arena_alive = arena_process.is_alive()
                         gui_alive = gui_process.is_alive()
                         if exit_failure:
+                            logger.error(
+                                "Process %s exited unexpectedly (exitcode=%s, alive=%s)",
+                                _process_label(exit_failure),
+                                exit_failure.exitcode,
+                                exit_failure.is_alive(),
+                            )
                             killed = 1
+                            _request_arena_shutdown(timeout=0.5, terminate_after=True)
                             _safe_terminate(arena_process)
+                            _safe_terminate(message_server_process)
+                            if arena_process.is_alive():
+                                _safe_kill(arena_process)
+                            if message_server_process.is_alive():
+                                _safe_kill(message_server_process)
                             for proc in manager_processes:
-                                _safe_terminate(proc)
+                                _wait_for_exit(proc, _process_label(proc), timeout=0.5)
+                            for proc in manager_processes:
+                                if proc.is_alive():
+                                    _safe_terminate(proc)
+                                if proc.is_alive():
+                                    _safe_kill(proc)
+                            _safe_terminate(message_server_process)
+                            _safe_kill(message_server_process)
                             _stop_detector_gracefully()
                             _stop_gui_gracefully()
                             if gui_process.is_alive():
                                 _safe_terminate(gui_process)
+                                if gui_process.is_alive():
+                                    _safe_kill(gui_process)
                             _stop_message_server_gracefully()
                             break
                         if not arena_alive or not gui_alive:
-                            if arena_alive:
-                                _safe_terminate(arena_process)
-                            for proc in manager_processes:
-                                _safe_terminate(proc)
+                            logger.info(
+                                "Process exit detected (arena_alive=%s gui_alive=%s), starting shutdown",
+                                arena_alive,
+                                gui_alive,
+                            )
+                            # Skip graceful shutdown: brutal kill everything.
+                            if gui_alive is False:
+                                _brutal_kill_all_children("gui dead -> hard stop")
+                                force_exit = True
+                                break
+                            # Arena died but GUI is alive: stop everything gracefully, then bail.
+                            _request_arena_shutdown(timeout=0.2, terminate_after=False)
+                            _broadcast_manager_shutdown()
                             _stop_detector_gracefully()
                             _stop_gui_gracefully()
-                            if gui_process.is_alive():
-                                _safe_terminate(gui_process)
                             _stop_message_server_gracefully()
+                            _kill_child_processes("arena dead (render)")
+                            force_exit = True
                             break
                         time.sleep(0.05)
-                    _stop_detector_gracefully()
-                    _stop_gui_gracefully()
-                    _stop_message_server_gracefully()
-                    # Join all processes
-                    _safe_join(arena_process)
-                    for proc in manager_processes:
-                        _safe_join(proc)
-                    _safe_join(detector_process)
-                    _safe_join(gui_process)
-                    _safe_join(message_server_process)
+                    if not force_exit:
+                        _stop_detector_gracefully()
+                        _stop_gui_gracefully()
+                        _stop_message_server_gracefully()
+                        # Join all processes
+                        logger.critical("SHUTDOWN: joining processes (render branch)")
+                        _safe_join(arena_process, label="arena", timeout=1.0)
+                        for proc in manager_processes:
+                            _safe_join(proc, label=_process_label(proc), timeout=1.0)
+                        _safe_join(detector_process, label="detector", timeout=1.0)
+                        _safe_join(gui_process, label="gui", timeout=1.0)
+                        _safe_join(message_server_process, label="message_server", timeout=1.0)
+                        _kill_child_processes("after render shutdown")
                 else:
                     message_server_process.start()
                     if detector_process and arena_id not in ("abstract", "none", None):
@@ -829,14 +1036,27 @@ class Environment:
                         )
                         arena_alive = arena_process.is_alive()
                         if exit_failure:
+                            logger.error(
+                                "Process %s exited unexpectedly (exitcode=%s, alive=%s)",
+                                _process_label(exit_failure),
+                                exit_failure.exitcode,
+                                exit_failure.is_alive(),
+                            )
                             killed = 1
+                            _request_arena_shutdown(timeout=0.5, terminate_after=True)
                             _safe_terminate(arena_process)
+                            if arena_process.is_alive():
+                                _safe_kill(arena_process)
                             for proc in manager_processes:
                                 _safe_terminate(proc)
+                                if proc.is_alive():
+                                    _safe_kill(proc)
                             _stop_detector_gracefully()
                             _stop_message_server_gracefully()
                             break
                         if not arena_alive:
+                            _request_arena_shutdown(timeout=0.5, terminate_after=True)
+                            _safe_terminate(arena_process)
                             for proc in manager_processes:
                                 _safe_terminate(proc)
                             _stop_detector_gracefully()
@@ -846,29 +1066,46 @@ class Environment:
                     _stop_detector_gracefully()
                     _stop_message_server_gracefully()
                     # Join all processes
-                    _safe_join(arena_process)
+                    logger.critical("SHUTDOWN: joining processes (headless branch)")
+                    _safe_join(arena_process, label="arena", timeout=1.0)
                     for proc in manager_processes:
-                        _safe_join(proc)
-                    _safe_join(detector_process)
-                    _safe_join(message_server_process)
+                        _safe_join(proc, label=_process_label(proc), timeout=1.0)
+                    _safe_join(detector_process, label="detector", timeout=1.0)
+                    _safe_join(message_server_process, label="message_server", timeout=1.0)
                     if killed == 1:
                         raise RuntimeError("A subprocess exited unexpectedly.")
+                    _kill_child_processes("after headless shutdown")
             finally:
-                _stop_detector_gracefully()
-                _stop_gui_gracefully()
-                _stop_message_server_gracefully()
-                _safe_terminate(arena_process)
-                _safe_terminate(detector_process)
-                _safe_terminate(gui_process)
-                _safe_terminate(message_server_process)
-                for proc in manager_processes:
-                    _safe_terminate(proc)
-                _safe_join(arena_process)
-                for proc in manager_processes:
-                    _safe_join(proc)
-                _safe_join(detector_process)
-                _safe_join(gui_process)
-                _safe_join(message_server_process)
+                if force_exit:
+                    _brutal_kill_all_children("force_exit cleanup")
+                else:
+                    _stop_detector_gracefully()
+                    _stop_gui_gracefully()
+                    _stop_message_server_gracefully()
+                    _safe_terminate(arena_process)
+                    _safe_terminate(detector_process)
+                    _safe_terminate(gui_process)
+                    _safe_terminate(message_server_process)
+                    for proc in manager_processes:
+                        _safe_terminate(proc)
+                    _request_arena_shutdown(timeout=0.2)
+                    _safe_join(arena_process, label="arena", timeout=2.0)
+                    for proc in manager_processes:
+                        _safe_join(proc, label=_process_label(proc), timeout=2.0)
+                    _safe_join(detector_process, label="detector", timeout=2.0)
+                    _safe_join(gui_process, label="gui", timeout=2.0)
+                    _safe_join(message_server_process, label="message_server", timeout=2.0)
+                    _kill_child_processes("final cleanup")
+                    # Log final status for all processes to help diagnosing hanging workers.
+                    for label, proc in [
+                        ("arena", arena_process),
+                        ("gui", gui_process),
+                        ("message_server", message_server_process),
+                        ("detector", detector_process),
+                    ]:
+                        _log_process_status("post_join", label, proc)
+                    for idx, proc in enumerate(manager_processes):
+                        _log_process_status("post_join", f"manager_{idx}", proc)
             shutdown_logging()
             gc.collect()
             used_cores.difference_update(assigned_worker_cores)

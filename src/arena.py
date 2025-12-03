@@ -531,6 +531,43 @@ class SolidArena(Arena):
         agents_queues = agents_queue if isinstance(agents_queue, list) else [agents_queue]
         n_managers = len(agents_queues)
 
+        shutdown_requested = False
+        shutdown_notified = False
+
+        def _is_shutdown_command(cmd: Any) -> bool:
+            """Return True if the GUI requested a shutdown."""
+            if cmd == "shutdown":
+                return True
+            if isinstance(cmd, (list, tuple)) and len(cmd) > 0 and cmd[0] == "shutdown":
+                return True
+            return False
+
+        def _signal_shutdown(reason: str = "gui_request"):
+            """Notify managers/GUI/detector that we are stopping."""
+            nonlocal shutdown_requested, shutdown_notified
+            shutdown_requested = True
+            if shutdown_notified:
+                return
+            shutdown_notified = True
+            payload = {"status": "shutdown", "reason": reason}
+            for q in arena_queues:
+                if q is None:
+                    continue
+                try:
+                    q.put(payload)
+                except Exception:
+                    pass
+            if gui_in_queue is not None:
+                try:
+                    gui_in_queue.put(payload)
+                except Exception:
+                    pass
+            if dec_control_queue is not None:
+                try:
+                    dec_control_queue.put({"kind": "shutdown"})
+                except Exception:
+                    pass
+
         def _combine_agent_snapshots(snapshots, cached_shapes, cached_spins, cached_metadata):
             """
             Merge per-manager snapshots; when the same group key appears in multiple
@@ -560,6 +597,7 @@ class SolidArena(Arena):
         log_context = log_context or {}
         log_specs = log_context.get("log_specs")
         process_name = log_context.get("process_name", "arena")
+        debug_wait_cycles = 0
         while run < num_runs + 1:
             start_run_logging(log_specs, process_name, run)
             try:
@@ -620,6 +658,12 @@ class SolidArena(Arena):
                     if render:
                         cmd = self._maybe_get(gui_control_queue, timeout=0.0)
                         while cmd is not None:
+                            if _is_shutdown_command(cmd):
+                                _signal_shutdown("gui_command")
+                                running = False
+                                step_mode = False
+                                reset = False
+                                break
                             if cmd == "start":
                                 running = True
                             elif cmd == "stop":
@@ -636,6 +680,8 @@ class SolidArena(Arena):
                                 except Exception:
                                     self._speed_multiplier = 1.0
                             cmd = self._maybe_get(gui_control_queue, timeout=0.0)
+                        if shutdown_requested:
+                            break
                     arena_data = {
                         "status": [t,self.ticks_per_second],
                         "objects": self.pack_objects_data(),
@@ -648,12 +694,30 @@ class SolidArena(Arena):
                             q.put(arena_data)
                         ready = [False] * n_managers
                         while not all(ready):
+                            if shutdown_requested:
+                                break
+                            debug_wait_cycles += 1
+                            if debug_wait_cycles % 500 == 0:
+                                try:
+                                    backlogs = [q.qsize() for q in agents_queues]
+                                except Exception:
+                                    backlogs = []
+                                logger.critical(
+                                    "[ARENA WAIT] run=%s t=%s ready=%s q_backlog=%s shutdown=%s",
+                                    run,
+                                    t,
+                                    ready,
+                                    backlogs,
+                                    shutdown_requested,
+                                )
                             for idx, q in enumerate(agents_queues):
                                 candidate = self._maybe_get(q, timeout=0.01)
                                 if candidate is not None:
                                     latest_agent_data[idx] = candidate
                             for idx, snap in enumerate(latest_agent_data):
                                 ready[idx] = bool(snap and snap["status"][0]/snap["status"][1] >= t/self.ticks_per_second)
+                            if shutdown_requested:
+                                break
                             detector_data = {
                                 "objects": self.pack_detector_data(),
                                 "run": run
@@ -664,6 +728,8 @@ class SolidArena(Arena):
                                 if dec_arena_in is not None:
                                     dec_arena_in.put(detector_data)
                             time.sleep(0.0001)
+                        if shutdown_requested:
+                            break
 
                         for idx, q in enumerate(agents_queues):
                             latest = self._maybe_get(q, timeout=0.0)
@@ -695,7 +761,11 @@ class SolidArena(Arena):
                         t += 1
                     elif reset:
                         break
+                    elif shutdown_requested:
+                        break
                     else: time.sleep(0.0005)
+                if shutdown_requested:
+                    break
                 if self.data_handling is not None and last_snapshot_info:
                     self.data_handling.save(
                         self.agents_shapes,
@@ -705,6 +775,8 @@ class SolidArena(Arena):
                         last_snapshot_info[1],
                         force=True
                     )
+                if shutdown_requested:
+                    break
                 if t < ticks_limit and not reset: break
                 if run < num_runs:
                     if not reset:

@@ -676,8 +676,18 @@ class GUI_2D(QWidget):
         self.header_toggle.setText("▼" if self.header_collapsed else "▲")
         self._main_layout.activate()
 
+    def _send_shutdown_command(self, reason: str = "gui_closed"):
+        """Ask the simulation to stop when the GUI is closing."""
+        if not self.gui_control_queue:
+            return
+        try:
+            self.gui_control_queue.put(("shutdown", reason))
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         """Ensure auxiliary panels close with the main window."""
+        self._send_shutdown_command("gui_close_event")
         try:
             if self.graph_window:
                 self.graph_window.force_close()
