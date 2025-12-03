@@ -138,7 +138,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
             "color": str, //DEFAULT:"blue"
             "motion_model": str, //DEFAULT:"unicycle" - Kinematic model used to integrate motion commands (pluggable; see plugins section).
             "detection":{ //DEFAULT:{} - extendable object similar to `messages`
-                "type": str, //DEFAULT:"GPS" - Detection plugin resolved via `models/detection` (custom modules supported).
+                "type": str, //DEFAULT:"GPS" - Range-filtered positional detector; resolved via `models/detection` (custom modules supported).
                 "range": float|"inf", //DEFAULT:0.1 - Limit how far perception gathers targets (alias: "distance").
                 "acquisition_per_second": float, //DEFAULT:1 (= once per second) - Sampling frequency expressed as Hz; determines how often detection snapshots run relative to the agent tick rate. "inf" is used for max (once per tick)
             },
@@ -159,7 +159,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
                 "p_spin_up": float, //DEFAULT:0.5
                 "time_delay": int, //DEFAULT:1
                 "reference": str, //DEFAULT:"egocentric"
-                "dynamics": str //DEFAULT:"metropolis"
+                "dynamics": str, //DEFAULT:"metropolis"
             },
             "messages":{  //DEFAULT:{} empty dict -> no messaging
                 "tx": float, //DEFAULT:1 messages_per_second

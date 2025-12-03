@@ -10,7 +10,7 @@
 import math
 import numpy as np
 from typing import Optional
-from models.spinsystem import SpinSystem
+from models.spinsystem import SpinModule, PerceptionModule
 from plugin_base import MovementModel
 from plugin_registry import (
     get_detection_model,
@@ -45,9 +45,19 @@ class SpinMovementModel(MovementModel):
         self.perception = None
         self._active_perception_channel = "objects"
         self.perception_range = self._resolve_detection_range()
-        self.spin_system: Optional[SpinSystem] = None
+        self.spin_system: Optional[SpinModule] = None
         self._fallback_model = None
         self.detection_model = self._create_detection_model()
+        self.perception_model = PerceptionModule(
+            self.num_groups,
+            self.num_spins_per_group,
+            self.perception_width,
+            self.group_angles,
+            self.reference,
+            self.perception_global_inhibition,
+            self.perception_range,
+            float(self.spin_model_params.get("agent_signal_strength", 5)),
+        )
         self.reset()
 
     def _create_detection_model(self):
@@ -70,7 +80,7 @@ class SpinMovementModel(MovementModel):
     def reset(self) -> None:
         """Reset the component state."""
         self.perception = None
-        self.spin_system = SpinSystem(
+        self.spin_system = SpinModule(
             self.agent.random_generator,
             self.num_groups,
             self.num_spins_per_group,
@@ -139,7 +149,11 @@ class SpinMovementModel(MovementModel):
         if tick is not None and hasattr(self.agent, "should_sample_detection"):
             if not self.agent.should_sample_detection(tick):
                 return
-        snapshot = self.detection_model.sense(self.agent, objects, agents, arena_shape)
+        raw_snapshot = self.detection_model.sense(self.agent, objects, agents, arena_shape)
+        if raw_snapshot is None:
+            self.perception = None
+            return
+        snapshot = self._convert_detection_snapshot(raw_snapshot)
         if snapshot is None:
             self.perception = None
             return
@@ -198,6 +212,22 @@ class SpinMovementModel(MovementModel):
             if channel is not None:
                 return channel, name
         raise ValueError("Detection model did not provide any perception channels")
+
+    def _convert_detection_snapshot(self, snapshot):
+        """Convert raw detection output into perception channels when needed."""
+        if snapshot is None:
+            return None
+        if not isinstance(snapshot, dict):
+            return snapshot
+        if all(isinstance(v, np.ndarray) for v in snapshot.values() if v is not None):
+            return snapshot
+        if self.perception_model is None:
+            return None
+        try:
+            return self.perception_model.build_channels(self.agent, snapshot)
+        except Exception as exc:
+            logger.error("%s failed to convert detection snapshot: %s", self.agent.get_name(), exc)
+            return None
 
     def _resolve_detection_range(self) -> float:
         """Resolve the maximum detection radius from the agent configuration."""
