@@ -162,13 +162,13 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
                 "dynamics": str, //DEFAULT:"metropolis"
             },
             "messages":{  //DEFAULT:{} empty dict -> no messaging
-                "tx": float, //DEFAULT:1 messages_per_second
+                "send_message_per_seconds": float, //DEFAULT:1 messages sent per second
+                "receive_message_per_seconds": float, //DEFAULT:4 messages pulled per second
                 "comm_range": float|"inf", //DEFAULT:0.1
                 "type": str "broadcast"|"rebroadcast"|"hand_shake", //DEFAULT:"broadcast"
                 "kind": str "anonymous"|"id-aware", //DEFAULT:"anonymous"
                 "channels": str "single"|"dual", //DEFAULT:"dual"
                 "bus": str, //DEFAULT:"auto" (spatial for geometric arenas, global all-to-all for abstract; pluggable via register_message_bus)
-                "rx": float, //DEFAULT:4  receive_per_seconds
                 "rebroadcast_steps": int|"inf", //DEFAULT:"inf". ONLY IF type is "rebroadcast" (agent-side limit on how many times a packet can be forwarded from the local buffer)
                 "handshake_auto": bool, //DEFAULT:true. ONLY IF type is "hand_shake". Broadcast discovery invitations whenever idle.
                 "handshake_timeout": float, //DEFAULT:5 seconds before a silent partner is dropped.
@@ -198,7 +198,6 @@ Object and agent entries must start with "static_" or "movable_" regardless of a
 
 - Saving runs only when `environment.results` is non-empty **and** GUI rendering is disabled; if the block is present but `agent_specs` is omitted, `"base"` is added automatically.
 - Object and agent spawn use the `spawn.*` block (alias `distribute`) with an optional `parameters` dict; placement now honors it when no explicit positions are provided.
-- Messaging rates honor `tx` / `rx` (fallback to `tx_per_second` / `rx_per_second` and legacy names).
 - Message timers accept a `parameters` dict; `average` can be provided directly or inferred (e.g. `max` for uniform, `lambda` for exponential, `mean`/`mu` for gaussian).
 - Agent speed keys `max_linear_velocity` / `max_angular_velocity` are mapped internally to the runtime fields and scaled by `ticks_per_second`.
 

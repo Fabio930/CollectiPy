@@ -244,12 +244,18 @@ class Agent(Entity):
         self.msg_bus_kind = self.messages_config.get("bus", "auto")
         self.msg_delete_trigger = self.messages_config.get("delete_trigger")
         self.msgs_per_sec = self._resolve_message_rate(
-            ("tx", "tx_per_second", "messages_per_seconds"),
-            1.0
+            (
+                "send_message_per_seconds",
+                "send_message_per_second",
+            ),
+            1.0,
         )
         self.msg_receive_per_sec = self._resolve_message_rate(
-            ("rx", "rx_per_second", "receive_per_seconds"),
-            DEFAULT_RX_RATE
+            (
+                "receive_message_per_seconds",
+                "receive_message_per_second",
+            ),
+            DEFAULT_RX_RATE,
         )
         if self.msg_type in {"hand_shake", "rebroadcast"} and self.msg_kind == "anonymous":
             raise ValueError(f"{self.entity()} cannot use kind='anonymous' with message type '{self.msg_type}'.")
@@ -266,6 +272,7 @@ class Agent(Entity):
         self._msg_send_budget_cap = max(1.0, self.msgs_per_sec * 2.0)
         self._msg_receive_budget_cap = max(1.0, self.msg_receive_per_sec * 2.0)
         self._last_tx_tick = -1
+        self._last_rx_tick = -1
         self.rebroadcast_limit = self._resolve_rebroadcast_limit()
         self.handshake_partner = None
         self._handshake_state = "idle"
@@ -323,6 +330,8 @@ class Agent(Entity):
         _ = tick
         if not self.msg_enable or self._msg_send_quanta <= 0:
             return False
+        if self.msg_channel_mode == "single" and self._last_rx_tick == tick:
+            return False
         self._msg_send_budget = min(self._msg_send_budget + self._msg_send_quanta, self._msg_send_budget_cap)
         if self._msg_send_budget >= 1.0:
             self._msg_send_budget -= 1.0
@@ -357,6 +366,7 @@ class Agent(Entity):
             return []
         self._msg_receive_budget = min(self._msg_receive_budget + self._msg_receive_quanta, self._msg_receive_budget_cap)
         allowed = int(self._msg_receive_budget)
+        allowed = min(allowed, 1)
         if allowed <= 0:
             return []
         raw_messages = self.message_bus.receive_messages(self, limit=allowed)
@@ -375,6 +385,8 @@ class Agent(Entity):
         self.messages.extend(messages)
         self._invalidate_message_indexes()
         logger.debug("%s received %d messages", self.get_name(), len(messages))
+        if messages:
+            self._last_rx_tick = tick
         return messages
 
     def clear_message_buffers(self) -> None:
@@ -649,14 +661,17 @@ class Agent(Entity):
         rate = max(0.0, float(rate_per_second))
         return rate / ticks
     
-    def _resolve_message_rate(self, keys: tuple[str, ...], default_value: float) -> float:
-        """Resolve TX/RX quotas supporting multiple aliases."""
+    def _resolve_message_rate(
+        self,
+        keys: tuple[str, ...],
+        default_value: float,
+    ) -> float:
+        """Resolve message send/receive quotas from the configuration."""
         value = None
         for key in keys:
-            if value is not None:
-                break
             if key in self.messages_config:
                 value = self.messages_config.get(key)
+                break
         if value is None:
             value = default_value
         try:

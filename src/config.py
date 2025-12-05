@@ -287,9 +287,18 @@ def _validate_messages_block(messages_cfg):
     timer_cfg = messages_cfg.get("timer")
     if timer_cfg is not None:
         _validate_timer_block(timer_cfg)
-    # Optional numeric rate checks (tx/rx aliases)
-    for key in ("tx", "rx", "tx_per_second", "rx_per_second", "messages_per_seconds", "receive_per_seconds"):
-        if key in messages_cfg and messages_cfg[key] is not None and not isinstance(messages_cfg[key], (int, float)):
+    # Optional numeric rate checks (send/receive)
+    rate_keys = (
+        "send_message_per_seconds",
+        "send_message_per_second",  # allow missing trailing s
+        "receive_message_per_seconds",
+        "receive_message_per_second",  # allow missing trailing s
+    )
+    for key in rate_keys:
+        value = messages_cfg.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)):
             raise ValueError(f"'messages.{key}' must be numeric if provided")
 
 def _validate_arena_cfg(arena_cfg):
