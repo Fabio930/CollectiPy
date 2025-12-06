@@ -9,6 +9,7 @@
 
 import itertools
 import json
+from collections.abc import Callable
 
 from logging_utils import get_logger
 
@@ -53,7 +54,7 @@ DIMENSION_SHAPES_WITH_DIAMETER = {"circle", "cylinder", "sphere", "unbounded"}
 
 logger = get_logger("config")
 
-_ENVIRONMENT_HOOKS: list[callable] = []
+_ENVIRONMENT_HOOKS: list[Callable[[dict], None]] = []
 _ENTITY_HOOKS = {
     "arena": [],
     "object": [],
@@ -323,12 +324,12 @@ def _validate_agent_cfg(agent_cfg):
     if messages_cfg is not None:
         _validate_messages_block(messages_cfg)
 
-def register_environment_hook(func: callable):
+def register_environment_hook(func: Callable[[dict], None]):
     """Allow plugins to mutate the environment before base validation."""
     _ENVIRONMENT_HOOKS.append(func)
     return func
 
-def register_entity_hook(entity_type: str, func: callable):
+def register_entity_hook(entity_type: str, func: Callable[[str, dict], None]):
     """Invoke `func(name, cfg)` before each arena/object/agent validation."""
     if entity_type not in _ENTITY_HOOKS:
         raise ValueError(f"Unknown entity type '{entity_type}' for hooks")
