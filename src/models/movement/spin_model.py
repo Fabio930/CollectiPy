@@ -7,6 +7,8 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import math
 import numpy as np
 from typing import Optional

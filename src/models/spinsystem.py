@@ -8,6 +8,8 @@
 # ------------------------------------------------------------------------------
 
 """Spin system model used by spin-based movement behaviours."""
+from __future__ import annotations
+
 import math
 import numpy as np
 from random import Random
@@ -271,4 +273,3 @@ class PerceptionModule:
         if self.perception_global_inhibition == 0:
             return
         perception_channel -= self.perception_global_inhibition
-

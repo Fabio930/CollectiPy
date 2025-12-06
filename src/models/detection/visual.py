@@ -7,6 +7,8 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import numpy as np
 from plugin_base import DetectionModel
 from plugin_registry import register_detection_model

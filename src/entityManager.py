@@ -8,6 +8,8 @@
 # ------------------------------------------------------------------------------
 
 """EntityManager: synchronises agents and arena."""
+from __future__ import annotations
+
 import math, sys
 import multiprocessing as mp
 import time

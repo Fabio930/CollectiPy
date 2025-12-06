@@ -13,6 +13,8 @@ This module has been extended with a minimal plugin
 system for movement models. The original behaviour is
 preserved when no plugins are registered.
 """
+from __future__ import annotations
+
 import hashlib, math
 from typing import Optional
 import numpy as np

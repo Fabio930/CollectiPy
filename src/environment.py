@@ -8,6 +8,8 @@
 # ------------------------------------------------------------------------------
 
 """Environment: process-level orchestration of the simulation."""
+from __future__ import annotations
+
 import gc
 import json
 import time

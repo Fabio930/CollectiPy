@@ -18,6 +18,8 @@ The aim is to keep backward compatibility with the original project:
 if no plugins are configured, the simulator behaves exactly as before.
 """
 
+from __future__ import annotations
+
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 import numpy as np
 

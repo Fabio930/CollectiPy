@@ -7,6 +7,8 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import math
 from geometry_utils.vector3D import Vector3D
 
