@@ -9,7 +9,7 @@
 
 import itertools
 import json
-from collections.abc import Callable
+from typing import Callable
 
 from logging_utils import get_logger
 
