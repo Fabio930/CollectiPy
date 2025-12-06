@@ -512,7 +512,7 @@ class Environment:
                         targets = ", ".join(f"{c.pid}:{c.name()}" for c in children)
                     except Exception:
                         targets = ", ".join(str(c.pid) for c in children)
-                    logger.critical(
+                    logger.info(
                         "BRUTAL KILL %d child processes%s -> [%s]",
                         len(children),
                         f" ({note})" if note else "",
@@ -608,7 +608,7 @@ class Environment:
                         _safe_kill(proc)
                         proc.join(timeout=0.5)
                         if proc.is_alive():
-                            logger.critical("Process %s still alive after kill attempt", label or proc.pid)
+                            logger.warning("Process %s still alive after kill attempt", label or proc.pid)
                 except Exception as exc:
                     logger.warning("Failed to join %s: %s", label or proc.pid, exc)
 
