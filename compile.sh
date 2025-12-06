@@ -1,15 +1,26 @@
 #!/bin/bash
 set -e
 
-# Pick an available Python 3 interpreter (prefers 3.10, then 3.x).
-if command -v python3.10 >/dev/null 2>&1; then
-    PYTHON_BIN=python3.10
-elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN=python3
-elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN=python
-else
-    echo "Python 3 interpreter not found. Please install Python 3.x." >&2
+MIN_PYTHON="3.10"
+
+is_compatible_python() {
+    "$1" - <<'PY' >/dev/null 2>&1
+import sys
+sys.exit(0 if sys.version_info >= (3, 10) else 1)
+PY
+}
+
+# Pick an available Python 3 interpreter (3.10+).
+PYTHON_BIN=""
+for candidate in python3.10 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && is_compatible_python "$candidate"; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "Python interpreter not found or too old. Please install Python >= $MIN_PYTHON." >&2
     exit 1
 fi
 

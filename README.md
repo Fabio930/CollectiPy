@@ -14,6 +14,8 @@ chmod +x compile.sh run.sh
 
 Edit `run.sh` to point to the config you want to run; the DEFAULT is one of the demos in `config/`.
 
+Python 3.10+ is required (the codebase uses the `|` union type hints from PEP 604); the helper scripts refuse older 3.x interpreters.
+
 ### Install GUI minimum requirements
 
 Required system libraries (Debian/Ubuntu). Run as root or prefix with sudo:
