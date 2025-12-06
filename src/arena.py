@@ -257,7 +257,6 @@ class Arena():
             raise ValueError(f"Invalid hierarchy configuration: {exc}") from exc
 
     @staticmethod
-    @staticmethod
     def _clamp_value_to_float_limits(value: float) -> float:
         """Clamp a numeric value to float representable limits."""
         try:
