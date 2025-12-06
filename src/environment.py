@@ -176,7 +176,7 @@ def set_affinity_safely(proc, num_cores):
     try:
         selected = pick_least_used_free_cores(num_cores)
         if not selected:
-            logger.warning("[WARNING] No free cores: fallback to all cores")
+            logger.info("No free cores: fallback to all cores")
             fallback_count = psutil.cpu_count(logical=True) or 1
             selected = list(range(fallback_count))
         p = psutil.Process(proc.pid)

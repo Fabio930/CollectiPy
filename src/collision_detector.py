@@ -211,7 +211,7 @@ class CollisionDetector:
                 return False
             start_run_logging(log_specs, process_name, run_id)
             current_run = run_id
-            logger.warning("Collision detector logging started for run %s", current_run)
+            logger.info("Collision detector logging started for run %s", current_run)
             return True
 
         try:
