@@ -14,6 +14,21 @@ chmod +x compile.sh run.sh
 
 Edit `run.sh` to point to the config you want to run; the DEFAULT is one of the demos in `config/`.
 
+### Install GUI minimum requirements
+
+Required system libraries (Debian/Ubuntu). Run as root or prefix with sudo:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render0 libxcb-render-util0 \
+    libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xinput0 libxcb-randr0 \
+    libx11-6 libxext6 libxrender1 libxi6 libxcomposite1 libxcursor1 libxdamage1 libxxf86vm1 \
+    libxkbcommon-x11-0 libegl1-mesa libglib2.0-0 libfontconfig1 libfreetype6 libdbus-1-3 libasound2
+```
+
+These packages are the minimum native graphics/audio/windowing libs needed for the GUI on Debian-based systems.
+
 ## Project Structure
 
 - **config/**: Example JSON configurations you can run or extend.

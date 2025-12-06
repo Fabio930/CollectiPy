@@ -1,5 +1,6 @@
 # Runtime dependencies installed via pip
-matplotlib
-numpy
-psutil
-PySide6
+# Minimum versions chosen for Python 3.10 support and tested features.
+matplotlib>=3.6
+numpy>=1.23
+psutil>=5.9
+PySide6>=6.5
