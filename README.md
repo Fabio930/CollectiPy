@@ -14,7 +14,7 @@ chmod +x compile.sh run.sh
 
 Edit `run.sh` to point to the config you want to run; the DEFAULT is one of the demos in `config/`.
 
-Python 3.10+ is required (the codebase uses the `|` union type hints from PEP 604); the helper scripts refuse older 3.x interpreters.
+Python 3.10-3.12 required. The codebase uses the `|` union type hints from PEP 604; the helper scripts refuse older 3.x interpreters. On Debian/Ubuntu install the matching `python3.x-venv` package.
 
 ### Install GUI minimum requirements
 

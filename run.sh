@@ -15,9 +15,13 @@ PY
 
 # Prefer the virtualenv interpreter, then fall back to system Python.
 for candidate in \
+    "$VENV_BIN/python3.12" \
+    "$VENV_BIN/python3.11" \
     "$VENV_BIN/python3.10" \
     "$VENV_BIN/python3" \
     "$VENV_BIN/python" \
+    python3.12 \
+    python3.11 \
     python3.10 \
     python3 \
     python; do

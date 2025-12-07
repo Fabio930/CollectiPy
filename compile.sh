@@ -12,7 +12,7 @@ PY
 
 # Pick an available Python 3 interpreter (3.10+).
 PYTHON_BIN=""
-for candidate in python3.10 python3 python; do
+for candidate in python3.12 python3.11 python3.10 python3 python; do
     if command -v "$candidate" >/dev/null 2>&1 && is_compatible_python "$candidate"; then
         PYTHON_BIN="$candidate"
         break
@@ -21,6 +21,12 @@ done
 
 if [ -z "$PYTHON_BIN" ]; then
     echo "Python interpreter not found or too old. Please install Python >= $MIN_PYTHON." >&2
+    exit 1
+fi
+
+# Ensure ensurepip is available (python3.X-venv package on Debian/Ubuntu).
+if ! "$PYTHON_BIN" -m ensurepip --version >/dev/null 2>&1; then
+    echo "The selected interpreter ($PYTHON_BIN) lacks ensurepip. Install the matching python3-venv package (e.g., python3.12-venv) or use an interpreter with ensurepip available." >&2
     exit 1
 fi
 
