@@ -37,8 +37,8 @@
             "movable_0":{
                 "number": [2],
                 "shape": "cylinder",
-                "linear_velocity": 0.02,
-                "angular_velocity": 45,
+                "max_linear_velocity": 0.02,
+                "max_angular_velocity": 45,
                 "dimensions":{
                     "height": 0.02,
                     "diameter": 0.033

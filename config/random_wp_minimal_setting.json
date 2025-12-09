@@ -22,8 +22,8 @@
                     "diameter": 0.03
                 },
                 "color": "blue",
-                "linear_velocity": 0.03,
-                "angular_velocity": 60,
+                "max_linear_velocity": 0.03,
+                "max_angular_velocity": 60,
                 "moving_behavior": "random_way_point"
             }
         }

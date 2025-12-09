@@ -30,8 +30,8 @@
             "movable_0":{
                 "number": [80],
                 "shape": "cylinder",
-                "linear_velocity": 0.01,
-                "angular_velocity": 45,
+                "max_linear_velocity": 0.01,
+                "max_angular_velocity": 45,
                 "dimensions":{
                     "height": 0.02,
                     "diameter": 0.033

@@ -512,10 +512,14 @@ class Config:
                     agent_cfg = _clone_config_obj(v)
                     if "spawn" not in agent_cfg and isinstance(agent_cfg.get("distribute"), dict):
                         agent_cfg["spawn"] = _clone_config_obj(agent_cfg["distribute"])
-                    if "linear_velocity" not in agent_cfg and "max_linear_velocity" in agent_cfg:
-                        agent_cfg["linear_velocity"] = agent_cfg["max_linear_velocity"]
-                    if "angular_velocity" not in agent_cfg and "max_angular_velocity" in agent_cfg:
-                        agent_cfg["angular_velocity"] = agent_cfg["max_angular_velocity"]
+                    if "linear_velocity" in agent_cfg:
+                        raise ValueError(
+                            f"{k} uses legacy 'linear_velocity'; use 'max_linear_velocity' instead"
+                        )
+                    if "angular_velocity" in agent_cfg:
+                        raise ValueError(
+                            f"{k} uses legacy 'angular_velocity'; use 'max_angular_velocity' instead"
+                        )
                     for hook in _ENTITY_HOOKS["agent"]:
                         hook(k, agent_cfg)
                     _validate_agent_cfg(agent_cfg)

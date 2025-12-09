@@ -2,6 +2,8 @@
 
 CollectiPy is a minimal sandbox for decision-making experiments. It keeps the physics simple and focuses on agent reasoning, arenas, GUI helpers, and data exports. You can disable the GUI, extend movement/detection logic with plugins, or add custom arenas.
 
+This page is for people running the simulator. Developer-oriented details live in `README_DEVELOPERS.md`.
+
 ## Quick Start
 
 ```bash
@@ -12,9 +14,11 @@ chmod +x compile.sh run.sh
 ./run.sh
 ```
 
-Edit `run.sh` to point to the config you want to run; the DEFAULT is one of the demos in `config/`.
+Edit `run.sh` to point to the config you want to run; the default is one of the demos in `config/`.
 
 Python 3.10-3.12 required. The codebase uses the `|` union type hints from PEP 604; the helper scripts refuse older 3.x interpreters. On Debian/Ubuntu install the matching `python3.x-venv` package.
+
+## Requirements
 
 ### Install GUI minimum requirements
 
@@ -31,23 +35,12 @@ sudo apt install -y \
 
 These packages are the minimum native graphics/audio/windowing libs needed for the GUI on Debian-based systems.
 
-## Project Structure
+## Run a scenario
 
-- **config/**: Example JSON configurations you can run or extend.
-- **plugins/**: Package for external plugins (loadable via the config `plugins` list); includes `plugins/examples/group_stats_plugin.py` as a sample logic plugin.
-- **src/**: Core simulator code:
-  - `main.py`: entry point; wires config loading, plugin imports, logging, and environment startup.
-  - `config.py`: config loader/validator plus hook/shape registration helpers for plugins.
-  - `environment.py`, `arena.py`: orchestrate runs, GUI, hierarchy overlays, collision snapshots, and data handling.
-  - `entity.py`, `entityManager.py`: define agents/objects, spawning, messaging, and movement orchestration.
-  - `models/`: built-in movement (`random_walk`, `random_way_point`, `spin_model`), motion (`unicycle`), and detection (`GPS`, `visual` placeholder) plugins.
-  - `plugin_base.py` / `plugin_registry.py`: plugin protocols and registries (movement, motion, logic, detection, message buses) with config-driven auto-import.
-  - `logging_utils.py`, `dataHandling.py`, `message_server.py`, `message_proxy.py`, `collision_detector.py`, `hierarchy_overlay.py`, `geometry_utils/`, `bodies/`.
-- **compile.sh / run.sh**: Helper scripts to set up the venv and launch a selected config.
-
-## Usage
-
-Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.sh run.sh`). Run `./compile.sh` to install the requirements and `./run.sh` to launch the selected config.
+- Ensure the virtual environment exists (`./compile.sh` sets it up; activate with `source .venv/bin/activate` if running commands manually).
+- Select the JSON config under `config/` you want to run. `run.sh` ships with several commented options—uncomment one line or invoke directly: `python src/main.py -c config/random_wp_test_bounded.json`.
+- To run headless, leave `environment.gui` empty in the config. Results saving is enabled only when `environment.results` is present **and** the GUI is disabled.
+- Plugins can be declared via the top-level `plugins` list or `environment.plugins` list in the config (see the developer README for details).
 
 ## GUI controls (current draft)
 
@@ -59,7 +52,7 @@ Give execution permission to `compile.sh` and `run.sh` (e.g., `chmod +x compile.
 - Restore view: `V` or the Restore button (also clears selection/locks)
 - Centroid: `C` or the Centroid button; double-click to lock/unlock on the centroid
 - Agent selection: click agents in arena or graph; double-click locks the camera on that agent
-- Playback slider: a horizontal slider beside the header controls lets you slow the simulation without pausing; it now reports a multiplier between `1.0x` and `2.0x` with `0.05x` resolution (mapped to `("speed", value)` over `[1,2]`) so the arena can insert `tick_interval * (value - 1)` seconds between ticks while keeping the managers synchronized (`src/gui.py`, `src/arena.py`).
+- Playback slider: a horizontal slider beside the header controls lets you slow the simulation without pausing.
 
 ## Config.json Example
 
@@ -211,46 +204,4 @@ Object and agent entries must start with "static_" or "movable_" regardless of a
 - Unbounded arenas: if `r` is missing/invalid, a finite radius is inferred from agent count/size so that all requested agents fit in a reasonable square. Sampling uses the chosen distribution around `c` without wrap-around.
 - Multiple groups sharing the same spawn center: the second (and subsequent) groups are nudged away when their spawn disks overlap (iterated up to 16 attempts with a small margin). If overlap remains, the system falls back to per-entity collision checks and logs a warning.
 
-### Current parser notes
-
-- Saving runs only when `environment.results` is non-empty **and** GUI rendering is disabled; if the block is present but `agent_specs` is omitted, `"base"` is added automatically.
-- Object and agent spawn use the `spawn.*` block (alias `distribute`) with an optional `parameters` dict; placement now honors it when no explicit positions are provided.
-- Message timers accept a `parameters` dict; `average` can be provided directly or inferred (e.g. `max` for uniform, `lambda` for exponential, `mean`/`mu` for gaussian).
-- Agent speed keys `max_linear_velocity` / `max_angular_velocity` are mapped internally to the runtime fields and scaled by `ticks_per_second`.
-
-### Data
-
-Raw traces saved under `environment.results.base_path` obey the spec lists declared in `results.agent_specs` / `results.group_specs`. When an arena hierarchy is configured, each base row also includes the hierarchy node where the agent currently sits so downstream analysis can group by partition. Per-agent pickles (`<group>_<idx>.pkl`) are emitted only when `"base"` is present (sampled `[tick, pos x, pos y, pos z]` rows) and can optionally append `"spin_model"` dumps (`<group>_<idx>_spins.pkl`). Snapshots are taken once per simulated second by DEFAULT (after the last tick in that second); setting `snapshots_per_second: 2` adds a mid-second capture. Tick `0` is always stored so consumers see the initial pose, and the very last tick is forced even if it does not align with the cadence. Group specs apply to global outputs: `"graph_messages"` / `"graph_detection"` write one pickle per tick under `graphs/<mode>/step_<tick>.pkl`, and the helper spec `"graphs"` enables both. Message edges require that the transmitter has range and a non-zero TX budget **and** the receiver advertises a non-zero RX budget; detection edges only appear when the sensing agent has a non-zero acquisition rate in addition to range. All per-step graph pickles are zipped into `{mode}_graphs.zip` at the end of the run, and finally the whole `run_<n>` folder is compressed so analysis scripts can ingest the pickles while storage stays compact.
-
-### Config extensions
-
-Plugins can extend or alter the default parsing rules in `src/config.py` by importing the helper functions and registering hooks before the main config is loaded. Available APIs include `register_environment_hook` (for mutating `environment` before validation), `register_entity_hook` (runs before each arena/object/agent validation), `register_arena_shape`, `register_object_shape`, `register_agent_shape` (to declare new allowable shape IDs and their dimension keys), and `register_message_type` / `register_message_timer_distribution` (to support custom message flows). Example:
-
-```python
-import config
-
-@config.register_environment_hook
-def enable_magic_logging(environment):
-    environment.setdefault("logging", {}).setdefault("level", "DEBUG")
-
-config.register_agent_shape("custom_prism", {"height", "width", "depth"})
-```
-
-The new entries run before `Config.parse_experiments` validates the JSON, so plugins can safely inject additional structures or override defaults while still benefiting from the built-in normalization.
-
-Each pickle is structured for quick DataFrame ingestion: the first record is a header carrying a `columns` list, and all subsequent `{"type": "row"}` entries are dictionaries keyed by those columns. Base traces expose `tick`, `pos x`, `pos y`, `pos z` (plus `hierarchy_node` when enabled). Spin dumps include `tick` and the spin-model fields (`states`, `angles`, `external_field`, `avg_direction_of_activity`). Graph pickles ship `columns: ["source", "target"]` with rows using those keys. Example loader:
-
-```python
-import pickle, pandas as pd
-
-rows = []
-with open("run_0/agent_0.pkl", "rb") as fh:
-    while True:
-        try:
-            entry = pickle.load(fh)
-        except EOFError:
-            break
-        if entry.get("type") == "row":
-            rows.append(entry["value"])
-df = pd.DataFrame(rows)
-```
+For parser notes, data exports, and plugin hooks, see `README_DEVELOPERS.md`.
