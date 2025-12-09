@@ -8,9 +8,10 @@
 # ------------------------------------------------------------------------------
 
 """Graphical user interface for the simulator."""
+# pyright: reportAttributeAccessIssue=false
 import math, time
-from typing import Any, Optional, cast
 import matplotlib.pyplot as plt
+from typing import Any, Optional, cast
 from geometry_utils.vector3D import Vector3D
 from matplotlib import cm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -24,6 +25,8 @@ logger = get_logger("gui")
 Qt = cast(Any, Qt)
 QSizePolicy = cast(Any, QSizePolicy)
 QFrame = cast(Any, QFrame)
+QEvent = cast(Any, QEvent)
+QGraphicsView = cast(Any, QGraphicsView)
 
 class GuiFactory():
 
@@ -52,9 +55,9 @@ class DetachedPanelWindow(QWidget):
     def __init__(self, title: str, close_callback=None):
         super().__init__()
         self.setWindowTitle(title)
-        self.setWindowFlag(Qt.Window, True)
+        self.setWindowFlag(Qt.Window, True)  # type: ignore[attr-defined]
         self._close_callback = close_callback
-        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)  # type: ignore[attr-defined]
         self._force_close = False
 
     def closeEvent(self, event):
@@ -422,15 +425,42 @@ class GUI_2D(QWidget):
                 return True
         return super().eventFilter(watched, event)
 
+    def _normalize_agent_id(self, agent_key):
+        """Return a hashable (group, index) tuple for a selected agent."""
+        if agent_key is None:
+            return None
+        if isinstance(agent_key, (list, tuple)):
+            normalized = tuple(agent_key)
+        else:
+            try:
+                normalized = tuple(agent_key)
+            except Exception:
+                return None
+        if len(normalized) != 2:
+            return None
+        try:
+            hash(normalized)
+        except TypeError:
+            normalized = tuple(
+                tuple(item) if isinstance(item, list) else item
+                for item in normalized
+            )
+            try:
+                hash(normalized)
+            except TypeError:
+                return None
+        return normalized
+
     def _handle_agent_selection(self, agent_key, double_click=False):
         """Handle agent selection regardless of source."""
-        if agent_key is None:
+        normalized_key = self._normalize_agent_id(agent_key)
+        if normalized_key is None:
             self._clear_selection()
             return
-        if agent_key == self.clicked_spin and not double_click:
+        if normalized_key == self.clicked_spin and not double_click:
             self._clear_selection()
             return
-        self.clicked_spin = agent_key
+        self.clicked_spin = normalized_key
         self._show_spin_canvas()
         self.update_spins_plot()
         self._update_connection_legend()
@@ -438,10 +468,10 @@ class GUI_2D(QWidget):
         self._update_graph_views()
         self.update_scene()
         if double_click:
-            self._focus_on_agent(agent_key, force=True, lock=True)
+            self._focus_on_agent(normalized_key, force=True, lock=True)
         else:
             self._unlock_camera()
-            self._focus_on_agent(agent_key, force=False, lock=False)
+            self._focus_on_agent(normalized_key, force=False, lock=False)
 
     def _handle_graph_agent_selection(self, agent_key, double_click=False):
         """Handle agent selection triggered from the graph windows."""

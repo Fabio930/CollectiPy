@@ -11,7 +11,7 @@ import math
 from plugin_base import MovementModel
 from plugin_registry import register_movement_model
 from models.movement.common import apply_motion_state
-from models.utils import normalize_angle
+from models.utility_functions import normalize_angle
 from geometry_utils.vector3D import Vector3D
 from logging_utils import get_logger
 
@@ -66,8 +66,10 @@ class RandomWayPointMovement(MovementModel):
         """Return a new goal position."""
         agent = self.agent
         shape = agent.get_shape()
-        dx = float(shape.max_vert().x - shape.min_vert().x)
-        dy = float(shape.max_vert().y - shape.min_vert().y)
+        shape_min = shape.min_vert()
+        shape_max = shape.max_vert()
+        dx = float(shape_max.x - shape_min.x)
+        dy = float(shape_max.y - shape_min.y)
         agent_radius = 0.5 * max(abs(dx), abs(dy))
         wrap_cfg = self.wrap_config or getattr(agent, "wrap_config", None)
         unbounded = bool(wrap_cfg and wrap_cfg.get("unbounded"))
@@ -102,25 +104,30 @@ class RandomWayPointMovement(MovementModel):
         hierarchy = getattr(agent, "hierarchy_context", None)
         node_id = getattr(agent, "hierarchy_node", None)
         info = getattr(hierarchy, "information_scope", None) if hierarchy is not None else None
+        over_cfg = info.get("over") if isinstance(info, dict) else None
         use_node_bounds = (
             hierarchy is not None
-            and isinstance(info, dict)
-            and info.get("over")
-            and "movement" in info.get("over")
+            and isinstance(over_cfg, dict)
+            and "movement" in over_cfg
             and node_id is not None
         )
 
         if use_node_bounds:
-            try:
-                node = hierarchy.get_node(node_id)
-            except Exception:
+            get_node_fn = getattr(hierarchy, "get_node", None)
+            if callable(get_node_fn):
+                try:
+                    node = get_node_fn(node_id)
+                except Exception:
+                    node = None
+            else:
                 node = None
-            if node and getattr(node, "bounds", None):
-                b = node.bounds
-                min_x = float(getattr(b, "x_min", min_x))
-                min_y = float(getattr(b, "y_min", min_y))
-                max_x = float(getattr(b, "x_max", max_x))
-                max_y = float(getattr(b, "y_max", max_y))
+            if node:
+                bounds = getattr(node, "bounds", None)
+                if bounds:
+                    min_x = float(getattr(bounds, "x_min", min_x))
+                    min_y = float(getattr(bounds, "y_min", min_y))
+                    max_x = float(getattr(bounds, "x_max", max_x))
+                    max_y = float(getattr(bounds, "y_max", max_y))
 
         margin = agent_radius * margin_factor
         min_x += margin
@@ -171,7 +178,7 @@ class RandomWayPointMovement(MovementModel):
             gx = rng.uniform(min_x, max_x)
             gy = rng.uniform(min_y, max_y)
 
-        gz = abs(agent.get_shape().min_vert().z)
+        gz = abs(shape_min.z)
         goal = Vector3D(gx, gy, gz)
         return goal
 
@@ -194,20 +201,21 @@ class RandomWayPointMovement(MovementModel):
         """Sample a point from the configured distribution."""
         rng = self.agent.random_generator
         dist = str(distribution).lower()
-        if dist == "gaussian":
-            std = radius / 3.0
-            x = rng.gauss(center.x, std)
-            y = rng.gauss(center.y, std)
-        elif dist == "ring":
-            r = rng.uniform(radius * 0.5, radius)
-            theta = rng.uniform(0.0, 2 * math.pi)
-            x = center.x + r * math.cos(theta)
-            y = center.y + r * math.sin(theta)
-        else:
-            r = math.sqrt(rng.uniform(0.0, 1.0)) * radius
-            theta = rng.uniform(0.0, 2 * math.pi)
-            x = center.x + r * math.cos(theta)
-            y = center.y + r * math.sin(theta)
+        match dist:
+            case "gaussian":
+                std = radius / 3.0
+                x = rng.gauss(center.x, std)
+                y = rng.gauss(center.y, std)
+            case "ring":
+                r = rng.uniform(radius * 0.5, radius)
+                theta = rng.uniform(0.0, 2 * math.pi)
+                x = center.x + r * math.cos(theta)
+                y = center.y + r * math.sin(theta)
+            case _:
+                r = math.sqrt(rng.uniform(0.0, 1.0)) * radius
+                theta = rng.uniform(0.0, 2 * math.pi)
+                x = center.x + r * math.cos(theta)
+                y = center.y + r * math.sin(theta)
         return Vector3D(x, y, self.agent.position.z)
 
     def _clamp_goal(self, goal: Vector3D, arena_shape, margin: float) -> Vector3D:

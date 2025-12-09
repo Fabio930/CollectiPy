@@ -10,8 +10,8 @@
 from __future__ import annotations
 
 import time, math, random, sys
-from typing import Optional, Any
 import multiprocessing as mp
+from typing import Optional, Any, cast
 from config import Config
 from random import Random
 from bodies.shapes3D import Shape3DFactory
@@ -82,11 +82,21 @@ class Arena():
         """Initialize the instance."""
         self.random_generator = Random()
         self._seed_random = random.SystemRandom()
-        self.ticks_per_second = int(config_elem.environment.get("ticks_per_second", 3))
+        raw_tps = config_elem.environment.get("ticks_per_second", 3) if hasattr(config_elem, "environment") else 3
+        if isinstance(raw_tps, (int, float, str)):
+            try:
+                self.ticks_per_second = int(raw_tps)
+            except (TypeError, ValueError):
+                self.ticks_per_second = 3
+        else:
+            self.ticks_per_second = 3
         configured_seed = config_elem.arena.get("random_seed")
-        if configured_seed is None:
+        if not isinstance(configured_seed, (int, float, str)):
             configured_seed = 0
-        self._configured_seed = int(configured_seed)
+        try:
+            self._configured_seed = int(configured_seed)
+        except (TypeError, ValueError):
+            self._configured_seed = 0
         self.random_seed = self._configured_seed
         self._id = "none" if config_elem.arena.get("_id") == "abstract" else config_elem.arena.get("_id","none") 
         self.objects = {object_type: (config_elem.environment.get("objects",{}).get(object_type),[]) for object_type in config_elem.environment.get("objects",{}).keys()}
@@ -94,6 +104,7 @@ class Arena():
         self.agents_spins = {}
         self.agents_metadata = {}
         self.data_handling = None
+        self._boundary_grid: BoundaryGrid | None = None
         if len(config_elem.results) > 0 and not len(config_elem.gui) > 0 : self.data_handling = DataHandlingFactory.create_data_handling(config_elem)
         self._hierarchy = None
         self._hierarchy_enabled = "hierarchy" in config_elem.arena
@@ -103,16 +114,26 @@ class Arena():
         if isinstance(throttle_cfg, (int, float)):
             throttle_cfg = {"max_backlog": throttle_cfg}
         raw_threshold = throttle_cfg.get("max_backlog", gui_cfg.get("max_backlog", 6))
-        try:
-            threshold = int(raw_threshold)
-        except (TypeError, ValueError):
+        if raw_threshold is None:
             threshold = 6
+        elif not isinstance(raw_threshold, (int, float, str)):
+            threshold = 6
+        else:
+            try:
+                threshold = int(raw_threshold)
+            except (TypeError, ValueError):
+                threshold = 6
         self._gui_backpressure_threshold = max(0, threshold)
         raw_interval = throttle_cfg.get("poll_interval_ms", gui_cfg.get("poll_interval_ms", 8))
-        try:
-            interval_ms = float(raw_interval)
-        except (TypeError, ValueError):
+        if raw_interval is None:
             interval_ms = 8.0
+        elif not isinstance(raw_interval, (int, float, str)):
+            interval_ms = 8.0
+        else:
+            try:
+                interval_ms = float(raw_interval)
+            except (TypeError, ValueError):
+                interval_ms = 8.0
         enabled_flag = throttle_cfg.get("enabled")
         if enabled_flag is None:
             enabled_flag = gui_cfg.get("adaptive_throttle", True)
@@ -227,7 +248,7 @@ class Arena():
         logger.info("Arena closed all resources")
         return
 
-    def get_wrap_config(self):
+    def get_wrap_config(self) -> Optional[dict[str, Any]]:
         """Optional metadata describing wrap-around projection (default: None)."""
         return None
 
@@ -241,8 +262,16 @@ class Arena():
             return None
 
         cfg = self._hierarchy_config or {}
-        depth = int(cfg.get("depth", 0))
-        branches = int(cfg.get("branches", 1))
+        raw_depth = cfg.get("depth", 0)
+        raw_branches = cfg.get("branches", 1)
+        try:
+            depth = int(raw_depth)
+        except (TypeError, ValueError):
+            depth = 0
+        try:
+            branches = int(raw_branches)
+        except (TypeError, ValueError):
+            branches = 1
         info_scope_cfg = cfg.get("information_scope")
 
         try:
@@ -289,9 +318,11 @@ class Arena():
         getter = getattr(shape, "get_radius", None)
         if callable(getter):
             try:
-                r = float(getter())
-                if r > 0:
-                    return r
+                candidate = getter()
+                if isinstance(candidate, (int, float)):
+                    r = float(candidate)
+                    if r > 0:
+                        return r
             except Exception:
                 pass
         center = getattr(shape, "center", None)
@@ -462,7 +493,7 @@ class SolidArena(Arena):
             for n in range(n_entities):
                 entity = entities[n]
                 if not entity.get_orientation_from_dict():
-                    rand_angle = Random.uniform(rng, 0.0, 360.0)
+                    rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
                 position = entity.get_start_position()
                 if not entity.get_position_from_dict():
@@ -478,6 +509,8 @@ class SolidArena(Arena):
                     if not placed:
                         raise Exception(f"Impossible to place object {entity.entity()} in the arena")
                 else:
+                    if position is None:
+                        raise ValueError(f"Configured position missing for object {entity.entity()}")
                     entity.to_origin()
                     target = Vector3D(position.x, position.y, position.z + abs(entity.get_shape().min_vert().z))
                     entity.set_start_position(target)
@@ -568,17 +601,20 @@ class SolidArena(Arena):
                 max_radius = max(max_radius, radius)
         return radii, max_radius if max_radius > 0 else 0.1
 
-    def _estimate_shape_radius(self, shape):
+    @staticmethod
+    def _estimate_shape_radius(shape) -> float:
         """Estimate the shape radius."""
         radius_getter = getattr(shape, "get_radius", None)
         if callable(radius_getter):
             try:
-                r = float(radius_getter())
-                if r > 0:
-                    return r
+                candidate = radius_getter()
+                if isinstance(candidate, (int, float)):
+                    r = float(candidate)
+                    if r > 0:
+                        return r
             except Exception:
                 pass
-        if shape.vertices_list:
+        if getattr(shape, "vertices_list", None):
             center = shape.center_of_mass()
             return max((Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude() for v in shape.vertices_list), default=0.05)
         return 0.05
@@ -657,8 +693,8 @@ class SolidArena(Arena):
             y = min(max(y, min_y), max_y)
             return Vector3D(x, y, z)
         return Vector3D(
-            Random.uniform(rng, min_x, max_x),
-            Random.uniform(rng, min_y, max_y),
+            rng.uniform(min_x, max_x),
+            rng.uniform(min_y, max_y),
             z
         )
 
@@ -848,10 +884,13 @@ class SolidArena(Arena):
                 for q in arena_queues:
                     q.put({**arena_data, "random_seed": self.random_seed})
 
-                latest_agent_data = [None] * n_managers
+                latest_agent_data: list[dict[str, Any] | None] = [None] * n_managers
                 for idx, q in enumerate(agents_queues):
                     latest_agent_data[idx] = self._maybe_get(q, timeout=1.0)
                 if any(d is None for d in latest_agent_data):
+                    break
+                first_entry = latest_agent_data[0]
+                if not isinstance(first_entry, dict):
                     break
                 self.agents_shapes, self.agents_spins, self.agents_metadata = _combine_agent_snapshots(
                     latest_agent_data,
@@ -875,7 +914,7 @@ class SolidArena(Arena):
                     _signal_shutdown("float_limit_violation")
                     shutdown_requested = True
                     break
-                initial_tick_rate = latest_agent_data[0].get("status", [0, self.ticks_per_second])[1]
+                initial_tick_rate = cast(dict[str, Any], first_entry).get("status", [0, self.ticks_per_second])[1]
                 if self.data_handling is not None:
                     self.data_handling.new_run(
                         run,
@@ -1067,8 +1106,12 @@ class SolidArena(Arena):
     def reset(self):
         """Reset the component state."""
         super().reset()
-        min_v = self._clamp_vector_to_float_limits(self.shape.min_vert())
-        max_v = self._clamp_vector_to_float_limits(self.shape.max_vert())
+        min_vert = self.shape.min_vert() if self.shape is not None else None
+        max_vert = self.shape.max_vert() if self.shape is not None else None
+        min_v = self._clamp_vector_to_float_limits(min_vert) if min_vert is not None else None
+        max_v = self._clamp_vector_to_float_limits(max_vert) if max_vert is not None else None
+        if min_v is None or max_v is None:
+            raise ValueError("Arena shape bounds unavailable")
         rng = self.random_generator
         if self.data_handling is not None: self.data_handling.close(self.agents_shapes)
         for (config, entities) in self.objects.values():
@@ -1079,7 +1122,7 @@ class SolidArena(Arena):
                 entity = entities[n]
                 entity.set_start_orientation(entity.get_start_orientation())
                 if not entity.get_orientation_from_dict():
-                    rand_angle = Random.uniform(rng, 0.0, 360.0)
+                    rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
                 position = entity.get_start_position()
                 if not entity.get_position_from_dict():
@@ -1090,8 +1133,8 @@ class SolidArena(Arena):
                     while not done and count < 500:
                         done = True
                         rand_pos = Vector3D(
-                            Random.uniform(rng, min_v.x, max_v.x),
-                            Random.uniform(rng, min_v.y, max_v.y),
+                            rng.uniform(min_v.x, max_v.x),
+                            rng.uniform(min_v.y, max_v.y),
                             position.z
                         )
                         entity.to_origin()
@@ -1115,6 +1158,8 @@ class SolidArena(Arena):
                     if not done:
                         raise Exception(f"Impossible to place object {entity.entity()} in the arena")
                 else:
+                    if position is None:
+                        raise ValueError(f"Configured position missing for object {entity.entity()}")
                     entity.to_origin()
                     entity.set_start_position(Vector3D(position.x, position.y, position.z + abs(entity.get_shape().min_vert().z)))
 
@@ -1126,9 +1171,12 @@ class SolidArena(Arena):
         """Update hierarchy from shape."""
         bounds = None
         if hasattr(self, "shape") and self.shape is not None:
-            min_v = self._clamp_vector_to_float_limits(self.shape.min_vert())
-            max_v = self._clamp_vector_to_float_limits(self.shape.max_vert())
-            bounds = Bounds2D(min_v.x, min_v.y, max_v.x, max_v.y)
+            min_vert = self.shape.min_vert()
+            max_vert = self.shape.max_vert()
+            min_v = self._clamp_vector_to_float_limits(min_vert) if min_vert is not None else None
+            max_v = self._clamp_vector_to_float_limits(max_vert) if max_vert is not None else None
+            if min_v is not None and max_v is not None:
+                bounds = Bounds2D(min_v.x, min_v.y, max_v.x, max_v.y)
         self._hierarchy = self._create_hierarchy(bounds)
         if hasattr(self, "shape") and self.shape is not None and hasattr(self.shape, "metadata"):
             self.shape.metadata["hierarchy"] = self._hierarchy
@@ -1145,11 +1193,14 @@ class UnboundedArena(SolidArena):
         """Initialize the instance."""
         dims = config_elem.arena.get("dimensions", {})
         raw = dims.get("diameter", None)
-        try:
-            self.diameter = float(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            self.diameter = None
-        if not self.diameter or self.diameter <= 0:
+        diameter_val: float = -1.0
+        if isinstance(raw, (int, float, str)):
+            try:
+                diameter_val = float(raw)
+            except (TypeError, ValueError):
+                diameter_val = -1.0
+        self.diameter: float = diameter_val
+        if self.diameter <= 0:
             self.diameter = self._estimate_initial_diameter(config_elem)
         if self.diameter <= 0:
             raise ValueError("UnboundedArena could not derive a positive initial diameter")
@@ -1171,23 +1222,25 @@ class UnboundedArena(SolidArena):
         for cfg in agents_cfg.values():
             if not isinstance(cfg, dict):
                 continue
-            num = cfg.get("number", 0)
-            if isinstance(num, (list, tuple)) and num:
+            num_val = cfg.get("number", 0)
+            if isinstance(num_val, (list, tuple)) and num_val:
+                num_val = num_val[0]
+            if isinstance(num_val, (int, float, str)):
                 try:
-                    num = int(num[0])
-                except Exception:
-                    num = 0
-            try:
-                num_int = int(num)
-            except Exception:
+                    num_int = int(num_val)
+                except (TypeError, ValueError):
+                    num_int = 0
+            else:
                 num_int = 0
             total += max(num_int, 0)
-            try:
-                diam = float(cfg.get("diameter", max_diam))
-                if diam > max_diam:
-                    max_diam = diam
-            except Exception:
-                pass
+            diam_val = cfg.get("diameter", max_diam)
+            if isinstance(diam_val, (int, float, str)):
+                try:
+                    diam = float(diam_val)
+                    if diam > max_diam:
+                        max_diam = diam
+                except (TypeError, ValueError):
+                    pass
         if total <= 0:
             return 2.0
         agent_radius = max_diam * 0.5

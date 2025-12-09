@@ -16,15 +16,16 @@ preserved when no plugins are registered.
 from __future__ import annotations
 
 import hashlib, math
-from typing import Optional
+import models  # noqa: F401  # ensure built-in models register themselves
 import numpy as np
+from typing import Any, Optional
 from random import Random
 from geometry_utils.vector3D import Vector3D
 from bodies.shapes3D import Shape3DFactory
 from plugin_registry import get_logic_model, get_movement_model, get_motion_model
-from models.utils import normalize_angle
-import models  # noqa: F401  # ensure built-in models register themselves
+from models.utility_functions import normalize_angle
 from logging_utils import get_logger
+
 
 logger = get_logger("entity")
 
@@ -100,9 +101,17 @@ class Entity:
         """Return the orientation from dict."""
         return self.orientation_from_dict
 
+    def get_position(self):
+        """Return the position (set by subclasses)."""
+        return getattr(self, "position", None)
+
     def reset(self):
         """Reset the component state."""
         self._reset_detection_scheduler()
+
+    def _reset_detection_scheduler(self):
+        """Reset detection scheduler placeholder (overridden by agents)."""
+        return None
 
     def entity(self) -> str:
         """Return the full entity type."""
@@ -226,6 +235,9 @@ class Agent(Entity):
     def __init__(self, entity_type:str, config_elem:dict, _id:int=0):
         """Initialize the instance."""
         super().__init__(entity_type, config_elem, _id)
+        # Movement/logic plugins are dynamically supplied; keep them untyped to satisfy optional hooks.
+        self._movement_plugin: Any = None
+        self._logic_plugin: Any = None
         self.random_generator = Random()
         self.ticks_per_second = config_elem.get("ticks_per_second", 5)
         self.color = config_elem.get("color", "blue")
@@ -624,13 +636,13 @@ class Agent(Entity):
         """Return messages grouped by sender identifier (lazy-built)."""
         if self._messages_by_sender is None:
             self._build_message_indexes()
-        return self._messages_by_sender
+        return self._messages_by_sender or {}
 
     def get_messages_by_entity(self) -> dict:
         """Return messages grouped by entity/class (lazy-built)."""
         if self._messages_by_entity is None:
             self._build_message_indexes()
-        return self._messages_by_entity
+        return self._messages_by_entity or {}
 
     def _invalidate_message_indexes(self) -> None:
         """Reset cached message groupings to keep a single authoritative list."""

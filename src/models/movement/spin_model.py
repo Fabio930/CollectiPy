@@ -19,7 +19,7 @@ from plugin_registry import (
     get_movement_model,
     register_movement_model,
 )
-from models.utils import normalize_angle
+from models.utility_functions import normalize_angle
 from logging_utils import get_logger
 
 logger = get_logger("movement.spin_model")

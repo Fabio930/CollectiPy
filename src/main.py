@@ -26,6 +26,7 @@ def print_usage(errcode=None):
 
 def main(argv):
     configfile = ""
+    opts = []
     try:
         opts, args = getopt.getopt(argv, "hc:", ["config="])
     except getopt.GetoptError:
@@ -47,7 +48,7 @@ def main(argv):
     exit_code = 0
     try:
         # IMPORTANT: use the resolved path
-        my_config = Config(config_path=config_path_resolved)
+        my_config = Config(config_path=str(config_path_resolved))
         logging_cfg = my_config.environment.get("logging")
         logging_enabled = is_logging_enabled(logging_cfg)
         file_logging_enabled = is_file_logging_enabled(logging_cfg)

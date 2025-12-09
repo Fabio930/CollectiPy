@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
 from bodies.shapes3D import Shape
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
@@ -107,9 +106,11 @@ class CollisionDetector:
         getter = getattr(shape, "get_radius", None)
         if callable(getter):
             try:
-                r = float(getter())
-                if r > 0:
-                    return r
+                candidate = getter()
+                if isinstance(candidate, (int, float)):
+                    r = float(candidate)
+                    if r > 0:
+                        return r
             except Exception:
                 pass
 
@@ -201,9 +202,12 @@ class CollisionDetector:
         def _apply_control_packet(packet: dict) -> bool:
             nonlocal current_run
             run_value = packet.get("run")
-            try:
-                run_id = int(run_value)
-            except (TypeError, ValueError):
+            if isinstance(run_value, (int, float, str)):
+                try:
+                    run_id = int(run_value)
+                except (TypeError, ValueError):
+                    run_id = None
+            else:
                 run_id = None
             if run_id is None:
                 return False

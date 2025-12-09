@@ -10,8 +10,8 @@
 """Central message server for agent communication."""
 
 from __future__ import annotations
-import queue
-import time
+
+import queue, time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from geometry_utils.vector3D import Vector3D
 from geometry_utils.spatialgrid import SpatialGrid
@@ -168,9 +168,12 @@ class MessageServer:
         if not self._log_specs:
             return
         run_value = packet.get("run")
-        try:
-            run_num = int(run_value)
-        except (TypeError, ValueError):
+        if isinstance(run_value, (int, float, str)):
+            try:
+                run_num = int(run_value)
+            except (TypeError, ValueError):
+                return
+        else:
             return
         if run_num <= self._current_run:
             return
@@ -181,7 +184,11 @@ class MessageServer:
     def _handle_agents_snapshot(self, packet: Dict[str, Any]) -> None:
         """Update agent registry from a snapshot packet."""
         agents = packet.get("agents") or []
-        manager_id = int(packet.get("manager_id", 0))
+        manager_raw = packet.get("manager_id", 0)
+        try:
+            manager_id = int(manager_raw)
+        except (TypeError, ValueError):
+            manager_id = 0
 
         logger.debug(
             "[MS] snapshot from manager %d: %d agents: %s",

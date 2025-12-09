@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
-
 from logging_utils import get_logger
 
 logger = get_logger("hierarchy")

@@ -20,13 +20,11 @@ Default directory layout (base_path="data/logs"):
 
 from __future__ import annotations
 
-import logging
-import zipfile
+import logging, zipfile
 import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
-
 from utils.folder_utils import DEFAULT_RESULTS_BASE, LOG_DIRNAME as DEFAULT_LOG_DIRNAME
 
 
@@ -168,6 +166,8 @@ def _prepare_log_artifacts(
     filename_prefix: Optional[str] = None,
 ) -> Dict[str, Path | str | bool | None]:
 
+    if base_path is None:
+        base_path = project_root / "logs"
     log_dir = Path(base_path).expanduser().resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,6 +248,8 @@ class _CompressedLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            if not self._inner_stream:
+                return
             msg = self.format(record).encode("utf-8") + self.terminator
             self._inner_stream.write(msg)
             self._inner_stream.flush()
@@ -264,7 +266,9 @@ class _CompressedLogHandler(logging.Handler):
 
         try:
             if self._zip:
-                self._zip.fp.flush()
+                fp = getattr(self._zip, "fp", None)
+                if fp:
+                    fp.flush()
                 self._zip.close()
         except:
             pass

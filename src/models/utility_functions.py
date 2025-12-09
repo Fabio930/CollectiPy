@@ -18,19 +18,20 @@ def normalize_angle(angle: float) -> float:
 
 def exponential_distribution(random_generator: Random, alpha: float) -> float:
     """Exponential distribution."""
-    u = Random.uniform(random_generator, 0, 1)
+    u = random_generator.random()
     return -alpha * math.log1p(-u)
 
 def wrapped_cauchy_pp(random_generator: Random, c: float) -> float:
     """Wrapped cauchy pp."""
     q = 0.5
-    u = Random.uniform(random_generator, 0, 1)
+    u = random_generator.random()
     val = (1 - c) / (1 + c)
     return 2 * math.atan(val * math.tanh(_PI * (u - q)))
 
 def levy(random_generator: Random, c: float, alpha: float) -> int:
     """Sample the operation."""
-    u = _PI * (Random.uniform(random_generator, 0, 1) - 0.5)
+    rng_uniform = random_generator.uniform
+    u = _PI * (rng_uniform(0, 1) - 0.5)
     if alpha == 1:
         return int(c * math.tan(u))
     v = 0.0

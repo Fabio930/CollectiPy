@@ -11,10 +11,9 @@
 from __future__ import annotations
 
 import math, sys
-import multiprocessing as mp
 import time
-from typing import Optional
-from random import Random
+import multiprocessing as mp
+from typing import Optional, Any, cast
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
 from message_proxy import MessageProxy, NullMessageProxy
@@ -241,6 +240,7 @@ class EntityManager:
                 seed_counter += 1
                 entity.set_random_generator(entity_seed)
                 entity.reset()
+                rng = entity.get_random_generator()
 
                 # Per-entity spawn params used by movement models (e.g. random_way_point).
                 # Z will be adjusted later based on shape min_vert().
@@ -249,7 +249,7 @@ class EntityManager:
 
                 # Orientation.
                 if not entity.get_orientation_from_dict():
-                    rand_angle = Random.uniform(entity.get_random_generator(), 0.0, 360.0)
+                    rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
                     logger.debug("%s initial orientation randomised to %s", entity.get_name(), rand_angle)
                 else:
@@ -270,8 +270,8 @@ class EntityManager:
                         done = True
                         entity.to_origin()
                         rand_pos = Vector3D(
-                            Random.uniform(entity.get_random_generator(), bounds[0], bounds[2]),
-                            Random.uniform(entity.get_random_generator(), bounds[1], bounds[3]),
+                            rng.uniform(bounds[0], bounds[2]),
+                            rng.uniform(bounds[1], bounds[3]),
                             abs(entity.get_shape().min_vert().z),
                         )
                         entity.set_position(rand_pos)
@@ -450,7 +450,10 @@ class EntityManager:
         node_id = getattr(entity, "hierarchy_node", None)
         if not node_id:
             return vector
-        clamped_x, clamped_y = self.hierarchy.clamp_point(node_id, vector.x, vector.y)
+        clamp_fn = getattr(self.hierarchy, "clamp_point", None)
+        if not callable(clamp_fn):
+            return vector
+        clamped_x, clamped_y = cast(tuple[float, float], clamp_fn(node_id, vector.x, vector.y))
         if clamped_x == vector.x and clamped_y == vector.y:
             return vector
         return Vector3D(clamped_x, clamped_y, vector.z)
@@ -482,8 +485,10 @@ class EntityManager:
                     self._global_max.y,
                 )
             else:
-                node = self.hierarchy.get_node(node_id)
-                if not node or not node.bounds:
+                get_node = getattr(self.hierarchy, "get_node", None)
+                node = get_node(node_id) if callable(get_node) else None
+                bounds = getattr(node, "bounds", None) if node is not None else None
+                if not node or bounds is None:
                     if node_id not in self._invalid_hierarchy_nodes:
                         self._invalid_hierarchy_nodes.add(node_id)
                         logger.warning(
@@ -498,7 +503,6 @@ class EntityManager:
                         self._global_max.y,
                     )
                 else:
-                    bounds = node.bounds
                     min_x, min_y, max_x, max_y = (
                         bounds.min_x,
                         bounds.min_y,
@@ -876,7 +880,7 @@ class EntityManager:
                     # ------------------------------------------------------------------
                     # Collision detector snapshot and corrections.
                     # ------------------------------------------------------------------
-                    dec_data_in: dict = {}
+                    dec_data_in: dict[str, Any] = {}
 
                     if self.collisions and dec_agents_in is not None and dec_agents_out is not None:
                         if t % self.snapshot_stride == 0:
@@ -891,9 +895,8 @@ class EntityManager:
                                 pass
 
                             # Wait for corrections from detector for this round.
-                            dec_data_in = self._blocking_get(dec_agents_out)
-                            if not isinstance(dec_data_in, dict):
-                                dec_data_in = {}
+                            dec_data_candidate = self._blocking_get(dec_agents_out)
+                            dec_data_in = dec_data_candidate if isinstance(dec_data_candidate, dict) else {}
 
                     # Apply collision corrections (or call post_step(None) if none).
                     for _, entities in self.agents.values():

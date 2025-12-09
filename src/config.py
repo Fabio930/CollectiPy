@@ -9,10 +9,8 @@
 
 from __future__ import annotations
 
-import itertools
-import json
-from typing import Callable
-
+import itertools, json
+from typing import Callable, Any
 from logging_utils import get_logger
 
 GUI_ON_CLICK_OPTIONS = {"messages", "detection", "spins"}
@@ -568,36 +566,36 @@ class Config:
         return experiments
 
     @property
-    def environment(self) -> dict:
+    def environment(self) -> dict[str, Any]:
         """Return the environment configuration."""
         return self.data.get('environment', {})
 
     @property
-    def arenas(self) -> dict:
+    def arenas(self) -> dict[str, Any]:
         """Return the arena configuration."""
         return self.data.get('environment', {}).get('arenas', {})
 
     @property
-    def arena(self) -> dict:
+    def arena(self) -> dict[str, Any]:
         """Return the arena configuration."""
         return self.data.get('environment', {}).get('arena', {})
 
     @property
-    def objects(self) -> dict:
+    def objects(self) -> dict[str, Any]:
         """Return the object configuration."""
         return self.data.get('environment', {}).get('objects', {})
 
     @property
-    def agents(self) -> dict:
+    def agents(self) -> dict[str, Any]:
         """Return the agent configuration."""
         return self.data.get('environment', {}).get('agents', {})
 
     @property
-    def results(self) -> dict:
+    def results(self) -> dict[str, Any]:
         """Return the results configuration."""
         return self.data.get('environment', {}).get('results', {})
 
     @property
-    def gui(self) -> dict:
+    def gui(self) -> dict[str, Any]:
         """Return the GUI configuration."""
         return self.data.get('environment', {}).get('gui', {})

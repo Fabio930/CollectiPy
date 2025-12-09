@@ -9,8 +9,7 @@
 
 from __future__ import annotations
 
-import math
-import os, json, pickle, shutil, zipfile
+import math, os, json, pickle, shutil, zipfile
 from pathlib import Path
 from config import Config
 from utils.folder_utils import (
@@ -213,6 +212,8 @@ class SpaceDataHandling(DataHandling):
         super().new_run(run, shapes, spins, metadata, ticks_per_second)
         self.agent_name_order = []
         self.agent_lookup = {}
+        if not self.run_folder:
+            raise RuntimeError("run_folder not initialized")
         if shapes is not None:
             for key, entities in shapes.items():
                 for idx, entity in enumerate(entities):
@@ -239,7 +240,7 @@ class SpaceDataHandling(DataHandling):
                         spin_pickler = pickle.Pickler(spin_handle, protocol=pickle.HIGHEST_PROTOCOL)
                         spin_payload = self._resolve_spin_entry((spins or {}).get(key), idx)
                         spin_columns = ["tick"]
-                        if spin_payload:
+                        if isinstance(spin_payload, dict):
                             spin_columns.extend(list(spin_payload.keys()))
                         else:
                             spin_columns.extend(self.SPIN_FIELD_ORDER)
@@ -286,8 +287,8 @@ class SpaceDataHandling(DataHandling):
         if self.spin_dump_enabled and self.agent_spin_files:
             for (key, idx), spin_entry in self.agent_spin_files.items():
                 spin_values = self._resolve_spin_entry(spin_data.get(key), idx)
-                row = {"tick": tick}
-                if spin_values is not None:
+                row: dict[str, object] = {"tick": tick}
+                if isinstance(spin_values, dict):
                     row.update(spin_values)
                 spin_entry["pickler"].dump({"type": "row", "value": row})
         self._write_graph_snapshot(shapes, tick)

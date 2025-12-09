@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import numpy as np
 from random import Random
-from models.utils import normalize_angle
+from models.utility_functions import normalize_angle
 
 _PI = math.pi
 
@@ -34,14 +34,21 @@ class SpinModule:
         self.dynamics = dynamics
         group_angles = np.linspace(0, 2 * _PI, num_groups, endpoint=False)
         self.angles = np.repeat(group_angles, self.num_spins_per_group)
+        self._unit_angle_vectors = np.exp(1j * self.angles)
         self.external_field = np.zeros(self.num_groups * self.num_spins_per_group, dtype=np.float32)
         self.avg_direction = None
         self.J_matrix = self._precompute_j_matrix()
+        self._J_upper = np.triu(self.J_matrix, 1)
+        self._interaction_factor = -(self.J / (self.num_spins_per_group * self.num_groups))
 
     def _random_spins(self):
         """Generate the spins."""
-        rand_vals = np.array([Random.uniform(self.random_generator, 0, 1)
-                              for _ in range(self.num_groups * self.num_spins_per_group)])
+        rng_random = self.random_generator.random
+        rand_vals = np.fromiter(
+            (rng_random() for _ in range(self.num_groups * self.num_spins_per_group)),
+            dtype=np.float32,
+            count=self.num_groups * self.num_spins_per_group
+        )
         spins = (rand_vals < self.p_spin_up).astype(np.uint8)
         return spins.reshape(self.num_groups, self.num_spins_per_group)
 
@@ -59,14 +66,15 @@ class SpinModule:
         """Calculate hamiltonian."""
         state_flat = state.ravel()
         interaction = state_flat[:, None] * state_flat[None, :]
-        H_spin_interactions = -(self.J / (self.num_spins_per_group * self.num_groups)) * np.sum(np.triu(self.J_matrix * interaction, 1))
+        H_spin_interactions = self._interaction_factor * np.sum(self._J_upper * interaction)
         external_field_contribution = -np.dot(self.external_field, state_flat)
         return H_spin_interactions + external_field_contribution
 
     def step(self,timedelay=True, dt=0.1, tau=33):
         """Execute the simulation step."""
-        i = Random.randint(self.random_generator, 0, self.num_groups - 1)
-        j = Random.randint(self.random_generator, 0, self.num_spins_per_group - 1)
+        rng_randint = self.random_generator.randint
+        i = rng_randint(0, self.num_groups - 1)
+        j = rng_randint(0, self.num_spins_per_group - 1)
         state_to_use = self.spins
         if timedelay:
             hybrid_state = self.spins_history[0].copy()
@@ -88,7 +96,7 @@ class SpinModule:
 
     def _metropolis_acceptance(self, i, j, delta_h):
         """Metropolis acceptance."""
-        if delta_h <= 0 or Random.uniform(self.random_generator, 0, 1) < math.exp(-delta_h / self.T):
+        if delta_h <= 0 or self.random_generator.random() < math.exp(-delta_h / self.T):
             self.spins[i, j] ^= 1
 
     def _glauber_acceptance(self, i, j, delta_h, dt, tau):
@@ -97,13 +105,14 @@ class SpinModule:
         N = self.num_spins_per_group
         acceptance_prob = (G * N * dt) / tau * (1 / (1 + math.exp(delta_h / self.T)))
         acceptance_prob = min(acceptance_prob, 1.0)
-        if Random.uniform(self.random_generator, 0, 1) < acceptance_prob:
+        if self.random_generator.random() < acceptance_prob:
             self.spins[i, j] ^= 1
 
     def run_spins(self, steps=1, dt=0.1, tau=33):
         """Run the spins."""
+        step_fn = self.step
         for _ in range(steps):
-            self.step(dt=dt, tau=tau)
+            step_fn(dt=dt, tau=tau)
         return self.spins
 
     def average_direction_of_activity(self):
@@ -112,12 +121,11 @@ class SpinModule:
         if np.all(flattened_spins == 1):
             self.avg_direction = None
             return None
-        unit_vectors = np.exp(1j * self.angles)
         active_mask = flattened_spins == 1
         if not np.any(active_mask):
             self.avg_direction = None
             return None
-        sum_vector = np.sum(unit_vectors[active_mask])
+        sum_vector = np.sum(self._unit_angle_vectors[active_mask])
         self.avg_direction = None
         if sum_vector != 0: self.avg_direction = math.atan2(sum_vector.imag, sum_vector.real)
         return self.avg_direction
@@ -129,11 +137,10 @@ class SpinModule:
     def get_inverse_magnitude_of_activity(self):
         """Return the inverse magnitude of activity."""
         flattened_spins = self.spins.ravel()
-        unit_vectors = np.exp(1j * self.angles)
         active_mask = flattened_spins == 1
         if not np.any(active_mask):
             return float('inf')
-        sum_vector = np.sum(unit_vectors[active_mask])
+        sum_vector = np.sum(self._unit_angle_vectors[active_mask])
         magnitude = abs(sum_vector)
         return 1 / magnitude if magnitude != 0 else float('inf')
 
@@ -143,7 +150,7 @@ class SpinModule:
         active_mask = flattened_spins == 1
         active_angles = self.angles[active_mask]
         if len(active_angles) > 1:
-            unit_vectors = np.exp(1j * active_angles)
+            unit_vectors = self._unit_angle_vectors[active_mask]
             R = abs(np.mean(unit_vectors))
             # Guard against numerical edge cases and clamp into (0, 1).
             if not math.isfinite(R) or R <= 0.0:
@@ -215,33 +222,35 @@ class PerceptionModule:
     def build_channels(self, observer, detections: dict) -> dict[str, np.ndarray]:
         """Convert raw detections into object/agent/combined perception channels."""
         channel_size = self.num_groups * self.num_spins_per_group
-        agent_channel = np.zeros(channel_size)
-        object_channel = np.zeros(channel_size)
+        agent_channel = np.zeros(channel_size, dtype=np.float32)
+        object_channel = np.zeros(channel_size, dtype=np.float32)
+        obs_pos = observer.position
+        obs_orient_z = observer.orientation.z
         for target in detections.get("agents", []) or []:
             position = target.get("position")
             if position is None:
                 continue
-            dx = position.x - observer.position.x
-            dy = position.y - observer.position.y
-            dz = position.z - observer.position.z
+            dx = position.x - obs_pos.x
+            dy = position.y - obs_pos.y
+            dz = position.z - obs_pos.z
             strength = target.get("strength", self.agent_strength)
             width = target.get("width", self.perception_width)
-            self._accumulate_target(agent_channel, dx, dy, dz, width, strength, observer)
+            self._accumulate_target(agent_channel, dx, dy, dz, width, strength, obs_orient_z)
 
         for target in detections.get("objects", []) or []:
             position = target.get("position")
             if position is None:
                 continue
-            dx = position.x - observer.position.x
-            dy = position.y - observer.position.y
-            dz = position.z - observer.position.z
+            dx = position.x - obs_pos.x
+            dy = position.y - obs_pos.y
+            dz = position.z - obs_pos.z
             uncertainty = target.get("uncertainty", 0.0) or 0.0
             width = self.perception_width + uncertainty
             try:
                 strength = float(target.get("strength", 0.0) or 0.0)
             except (TypeError, ValueError):
                 strength = 0.0
-            self._accumulate_target(object_channel, dx, dy, dz, width, strength, observer)
+            self._accumulate_target(object_channel, dx, dy, dz, width, strength, obs_orient_z)
 
         self._apply_global_inhibition(agent_channel)
         self._apply_global_inhibition(object_channel)
@@ -252,14 +261,14 @@ class PerceptionModule:
             "combined": combined_channel,
         }
 
-    def _accumulate_target(self, perception, dx, dy, dz, effective_width, strength, observer):
+    def _accumulate_target(self, perception, dx, dy, dz, effective_width, strength, observer_orient_z):
         """Accumulate weighted contribution of a target into a perception channel."""
-        distance = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+        distance = math.hypot(dx, dy, dz)
         if math.isfinite(self.max_detection_distance) and distance > self.max_detection_distance:
             return
         angle_to_object = math.degrees(math.atan2(-dy, dx))
         if self.reference == "egocentric":
-            angle_to_object -= observer.orientation.z
+            angle_to_object -= observer_orient_z
         angle_to_object = normalize_angle(angle_to_object)
         angle_diffs = np.abs(self.group_angles - math.radians(angle_to_object))
         angle_diffs = np.minimum(angle_diffs, 2 * math.pi - angle_diffs)

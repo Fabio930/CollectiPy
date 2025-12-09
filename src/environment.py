@@ -10,10 +10,7 @@
 """Environment: process-level orchestration of the simulation."""
 from __future__ import annotations
 
-import gc
-import json
-import time
-import psutil
+import gc, json, time, psutil
 import multiprocessing as mp
 from pathlib import Path
 from multiprocessing.context import BaseContext

@@ -6,7 +6,7 @@
 
 import math
 from geometry_utils.vector3D import Vector3D
-from models.utils import normalize_angle
+from models.utility_functions import normalize_angle
 from plugin_base import MotionModel
 from plugin_registry import register_motion_model
 

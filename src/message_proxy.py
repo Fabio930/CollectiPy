@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import queue
 from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-
 from logging_utils import get_logger
 
 logger = get_logger("message_proxy")

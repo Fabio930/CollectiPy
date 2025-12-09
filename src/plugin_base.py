@@ -20,8 +20,8 @@ if no plugins are configured, the simulator behaves exactly as before.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Protocol, Sequence
 import numpy as np
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 class MovementModel(Protocol):
     """
@@ -57,8 +57,9 @@ class DetectionModel(Protocol):
         objects: dict,
         agents: dict,
         arena_shape = None
-    ) -> Mapping[str, np.ndarray] | np.ndarray:
+    ) -> Mapping[str, Any] | Any:
         """Return the perception produced for `agent`."""
+        ...
 
 class MessageBusModel(Protocol):
     """
@@ -84,6 +85,7 @@ class MessageBusModel(Protocol):
 
     def receive_messages(self, receiver: Any, limit: int | None = None) -> Sequence[dict]:
         """Return up to `limit` messages queued for `receiver`."""
+        ...
 
     def close(self) -> None:
         """Release any resources retained by the bus."""
