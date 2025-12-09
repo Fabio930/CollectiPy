@@ -137,6 +137,8 @@ class Agent(Entity):
         self.information_restrictions = self._parse_information_restrictions(scope_config)
         self._info_scope_cache = {}
         self.hierarchy_context = None
+        # Legacy helpers expected by managers.
+        self.make_agent_seed = make_agent_seed
 
     # Messaging/detection/hierarchy wiring
     def set_message_bus(self, backend):
@@ -160,6 +162,69 @@ class Agent(Entity):
         super().set_hierarchy_node(node_id)
         self._invalidate_info_scope_cache()
         self._sync_shape_hierarchy_metadata()
+
+    # Legacy API used by EntityManager
+    def ticks(self) -> int:
+        """Return ticks per second for this agent."""
+        try:
+            return int(self.ticks_per_second)
+        except Exception:
+            return 1
+
+    def set_random_generator(self, seed: int | None):
+        """Seed the internal random generator."""
+        if seed is None:
+            return
+        try:
+            self.random_generator.seed(seed)
+        except Exception:
+            pass
+
+    def get_random_generator(self):
+        """Return the internal random generator."""
+        return self.random_generator
+
+    def get_spin_system_data(self):
+        """Return spin-system payload (None for agents without spin model)."""
+        return None
+
+    def get_max_absolute_velocity(self):
+        """Return the max absolute velocity used by the collision detector."""
+        try:
+            return float(self.max_absolute_velocity)
+        except Exception:
+            return 0.0
+
+    def get_forward_vector(self):
+        """Return the current forward vector used for detector packaging."""
+        try:
+            return self.forward_vector
+        except Exception:
+            return Vector3D()
+
+    def _sync_shape_hierarchy_metadata(self):
+        """Attach hierarchy metadata to the main shape/attachments for GUI and detection."""
+        try:
+            shape = self.get_shape()
+        except Exception:
+            shape = None
+        if shape is None:
+            return
+        try:
+            if hasattr(shape, "metadata"):
+                shape.metadata["hierarchy_node"] = getattr(self, "hierarchy_node", None)
+                shape.metadata["entity_name"] = self.get_name()
+        except Exception:
+            pass
+        try:
+            attachments = getattr(shape, "attachments", None)
+            if attachments:
+                for att in attachments:
+                    if hasattr(att, "metadata"):
+                        att.metadata["hierarchy_node"] = getattr(self, "hierarchy_node", None)
+                        att.metadata["entity_name"] = self.get_name()
+        except Exception:
+            pass
 
     # Messaging ---------------------------------------------------------
     def should_send_message(self, tick):

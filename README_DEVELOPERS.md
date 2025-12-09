@@ -17,6 +17,7 @@ This document complements `README.md` with implementation details, extension poi
 - `src/main.py`: entry point; loads the config, configures logging, imports plugins, builds the environment, and starts the simulation.
 - **Core package** (`src/core/`): main implementation split into subpackages:
   - `core.processes`: `Environment`, `EntityManager`, `ArenaFactory` plus hierarchy overlays and process launch helpers.
+    - `entity_manager/` helpers: `init.py` (placement/seeding) and `loop.py` (main manager run loop), used by `EntityManager` for readability.
   - `core.messaging`: `MessageProxy`, `NullMessageProxy`, `MessageServer`, `run_message_server`.
   - `core.detection`: `DetectionProxy`, `DetectionServer`, `run_detection_server`.
   - `core.collision`: `CollisionDetector`.

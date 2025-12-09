@@ -17,7 +17,8 @@ from core.util.geometry_utils.vector3D import Vector3D
 from core.util.hierarchy_overlay import HierarchyOverlay
 from core.messaging.message_proxy import MessageProxy, NullMessageProxy
 from core.detection.detection_proxy import DetectionProxy
-from core.util.logging_util import get_logger, start_run_logging, shutdown_logging
+from core.util.logging_util import get_logger
+from core.processes.entity_manager import manager_run, initialize_entities
 
 logger = get_logger("entity_manager")
 FLOAT_MAX = sys.float_info.max
@@ -201,182 +202,7 @@ class EntityManager:
 
     def initialize(self, random_seed: int, objects: dict):
         """Initialize entities at the beginning of a run."""
-        logger.info("Initializing agents with random seed %s", random_seed)
-        seed_counter = 0
-        placed_shapes = []
-
-        # Track group-level spawn disks (center, radius) to reduce overlap.
-        group_spawn_specs = []
-
-        # Move everything far away before placement.
-        for (_, entities) in self.agents.values():
-            for entity in entities:
-                entity.set_position(Vector3D(999, 0, 0), False)
-
-        # Global arena metrics used for spawn defaults.
-        width = self._global_max.x - self._global_min.x
-        height = self._global_max.y - self._global_min.y
-        unbounded = bool(self.wrap_config and self.wrap_config.get("unbounded"))
-
-        for (config, entities) in self.agents.values():
-            # ------------------------------------------------------------------
-            # Group-level spawn configuration: center, radius, distribution.
-            # ------------------------------------------------------------------
-            spawn_cfg = config.get("spawn", {}) if isinstance(config, dict) else {}
-            center_spec = spawn_cfg.get("center", [0.0, 0.0])
-            if not isinstance(center_spec, (list, tuple)) or len(center_spec) < 2:
-                center_spec = [0.0, 0.0]
-            base_cx = float(center_spec[0])
-            base_cy = float(center_spec[1])
-            radius = spawn_cfg.get("radius", None)
-            distribution = spawn_cfg.get("distribution", "uniform")
-            spawn_params = spawn_cfg.get("parameters", {}) if isinstance(spawn_cfg.get("parameters"), dict) else {}
-
-            if radius is None:
-                if unbounded:
-                    # Rough estimate: radius grows with sqrt of group size.
-                    n = max(1, len(entities))
-                    radius = max(1.0, math.sqrt(float(n)))
-                else:
-                    # Default to an "inradius" of the arena bounds.
-                    radius = 0.5 * min(width, height) if width > 0 and height > 0 else 1.0
-
-            radius = float(radius) if radius is not None else 1.0
-
-            # Try to separate spawn disks of different groups if they overlap.
-            cx, cy = base_cx, base_cy
-            max_attempts = 16
-            attempt = 0
-            overlap = False
-            while attempt < max_attempts:
-                overlap = False
-                for (pcx, pcy, pr) in group_spawn_specs:
-                    dx = cx - pcx
-                    dy = cy - pcy
-                    dist = math.hypot(dx, dy)
-                    if dist < (radius + pr):
-                        overlap = True
-                        # Push the new center away from the previous one.
-                        if dist == 0.0:
-                            dx, dy = 1.0, 0.0
-                            dist = 1.0
-                        scale = (radius + pr) * 1.1 / dist
-                        cx = pcx + dx * scale
-                        cy = pcy + dy * scale
-                        break
-                if not overlap:
-                    break
-                attempt += 1
-
-            if overlap:
-                logger.warning(
-                    "Spawn disks for different groups still overlap after %s attempts; "
-                    "placement will rely on per-agent collision checks.",
-                    max_attempts,
-                )
-
-            group_spawn_specs.append((cx, cy, radius))
-
-            # ------------------------------------------------------------------
-            # Per-entity initialisation (random generator, reset, spawn params).
-            # ------------------------------------------------------------------
-            for entity in entities:
-                entity_seed = random_seed + seed_counter if random_seed is not None else seed_counter
-                seed_counter += 1
-                entity.set_random_generator(entity_seed)
-                entity.reset()
-                rng = entity.get_random_generator()
-
-                # Per-entity spawn params used by movement models (e.g. random_way_point).
-                # Z will be adjusted later based on shape min_vert().
-                entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
-                entity.spawn_parameters = spawn_params
-
-                # Orientation.
-                if not entity.get_orientation_from_dict():
-                    rand_angle = rng.uniform(0.0, 360.0)
-                    entity.set_start_orientation(Vector3D(0, 0, rand_angle))
-                    logger.debug("%s initial orientation randomised to %s", entity.get_name(), rand_angle)
-                else:
-                    orientation = entity.get_start_orientation()
-                    entity.set_start_orientation(orientation)
-                    logger.debug("%s initial orientation from config %s", entity.get_name(), orientation.z)
-
-                # Position.
-                if not entity.get_position_from_dict():
-                    count = 0
-                    done = False
-                    shape_template = entity.get_shape()
-                    radius = self._estimate_entity_radius(shape_template)
-                    pad = radius * self.PLACEMENT_MARGIN_FACTOR + self.PLACEMENT_MARGIN_EPS
-                    bounds = self._get_entity_xy_bounds(entity, pad=pad)
-
-                    while not done and count < self.PLACEMENT_MAX_ATTEMPTS:
-                        done = True
-                        entity.to_origin()
-                        rand_pos = Vector3D(
-                            rng.uniform(bounds[0], bounds[2]),
-                            rng.uniform(bounds[1], bounds[3]),
-                            abs(entity.get_shape().min_vert().z),
-                        )
-                        entity.set_position(rand_pos)
-                        shape_n = entity.get_shape()
-
-                        # Check overlap with arena.
-                        if shape_n.check_overlap(self.arena_shape)[0]:
-                            done = False
-
-                        # Check overlap with other entities (same group).
-                        if done:
-                            for other_entity in entities:
-                                if other_entity is entity:
-                                    continue
-                                if shape_n.check_overlap(other_entity.get_shape())[0]:
-                                    done = False
-                                    break
-
-                        # Check overlap with previously placed entities (all groups).
-                        if done:
-                            for placed in placed_shapes:
-                                if shape_n.check_overlap(placed)[0]:
-                                    done = False
-                                    break
-
-                        # Check overlap with objects.
-                        if done:
-                            for shapes, _, _, _ in objects.values():
-                                for shape_obj in shapes:
-                                    if shape_n.check_overlap(shape_obj)[0]:
-                                        done = False
-                                        break
-                                if not done:
-                                    break
-
-                        count += 1
-                        if done:
-                            entity.set_start_position(rand_pos, False)
-                            logger.debug("%s placed at %s", entity.get_name(), (rand_pos.x, rand_pos.y, rand_pos.z))
-
-                    if not done:
-                        logger.error("Unable to place agent %s after %s attempts", entity.get_name(), count)
-                        raise Exception(f"Impossible to place agent {entity.entity()} in the arena")
-                else:
-                    entity.to_origin()
-                    position = entity.get_start_position()
-                    adjusted = Vector3D(position.x, position.y, abs(entity.get_shape().min_vert().z))
-                    adjusted = self._clamp_vector_to_entity_bounds(entity, adjusted)
-                    entity.set_start_position(adjusted)
-                    logger.debug(
-                        "%s position from config %s",
-                        entity.get_name(),
-                        (position.x, position.y, position.z),
-                    )
-
-                placed_shapes.append(entity.get_shape())
-                entity.shape.translate_attachments(entity.orientation.z)
-                entity.prepare_for_run(objects, self.get_agent_shapes())
-                logger.debug("%s ready for simulation", entity.get_name())
-                self._apply_wrap(entity)
+        return initialize_entities(self, random_seed, objects)
 
     def close(self):
         """Close resources."""
@@ -487,6 +313,51 @@ class EntityManager:
 
         z = abs(entity.get_shape().min_vert().z)
         return Vector3D(x, y, z)
+
+    def _placement_bounds(self, entity, unbounded: bool):
+        """Return padded XY bounds for spawn placement."""
+        radius = self._estimate_entity_radius(entity.get_shape())
+        pad = radius * self.PLACEMENT_MARGIN_FACTOR + self.PLACEMENT_MARGIN_EPS
+        bounds = self._get_entity_xy_bounds(entity, pad=pad)
+        if unbounded:
+            return bounds
+        return bounds
+
+    def _is_overlapping_spawn(self, placed_shapes: list, entity, position: Vector3D) -> bool:
+        """Return True if placing entity at position would overlap placed shapes or arena walls."""
+        try:
+            orig_pos = entity.get_position()
+        except Exception:
+            orig_pos = None
+        shape = entity.get_shape()
+        try:
+            shape.translate(position)
+        except Exception:
+            return False
+
+        try:
+            # Check overlap with arena.
+            arena_overlap = shape.check_overlap(self.arena_shape)[0]
+        except Exception:
+            arena_overlap = False
+
+        overlapping = arena_overlap
+        if not overlapping:
+            for other in placed_shapes:
+                try:
+                    if shape.check_overlap(other)[0]:
+                        overlapping = True
+                        break
+                except Exception:
+                    continue
+
+        # Restore shape position.
+        if orig_pos is not None:
+            try:
+                shape.translate(orig_pos)
+            except Exception:
+                pass
+        return overlapping
 
     def _clamp_vector_to_entity_bounds(self, entity, vector: Vector3D):
         """Clamp the vector to the hierarchy bounds (if any)."""
@@ -843,278 +714,14 @@ class EntityManager:
         log_context: dict | None = None
     ):
         """Run the simulation routine."""
-        ticks_per_second = 1
-        for (_, entities) in self.agents.values():
-            ticks_per_second = entities[0].ticks()
-            break
-        ticks_limit = time_limit * ticks_per_second + 1 if time_limit > 0 else 0
-        shutdown_requested = False
-        debug_wait_cycles = 0
-
-        run = 1
-        log_context = log_context or {}
-        log_specs = log_context.get("log_specs")
-        process_name = log_context.get("process_name", f"manager_{self.manager_id}")
-        logger.info("EntityManager starting for %s runs (time_limit=%s)", num_runs, time_limit)
-
-        def _is_shutdown_status(payload: dict | None) -> bool:
-            """Return True when the arena asks managers to exit."""
-            if not isinstance(payload, dict):
-                return False
-            status = payload.get("status")
-            if status == "shutdown":
-                return True
-            if isinstance(status, (list, tuple)) and status and status[0] == "shutdown":
-                return True
-            return False
-
-        while run < num_runs + 1:
-            start_run_logging(log_specs, process_name, run)
-            self._configure_cross_detection_scheduler()
-            self._cached_detection_agents = None
-            if self.manager_id == 0 and self.message_tx is not None:
-                try:
-                    self.message_tx.put({"kind": "run_start", "run": int(run)})
-                except Exception as exc:
-                    logger.warning("Failed to notify message server about run %s: %s", run, exc)
-            if self.manager_id == 0 and self.detection_tx is not None:
-                try:
-                    self.detection_tx.put({"kind": "run_start", "run": int(run)})
-                except Exception as exc:
-                    logger.warning("Failed to notify detection server about run %s: %s", run, exc)
-            try:
-                metadata_sent = False
-                metadata_snapshot = self.get_agent_metadata()
-                reset = False
-
-                data_in = self._blocking_get(arena_queue)
-                while data_in is not None:
-                    if _is_shutdown_status(data_in):
-                        shutdown_requested = True
-                        break
-                    status = data_in.get("status")
-                    if isinstance(status, list) and len(status) >= 1 and status[0] == 0:
-                        break
-                    data_in = self._blocking_get(arena_queue)
-                if data_in is None or shutdown_requested:
-                    break
-
-                # Initialisation at start of run.
-                if _is_shutdown_status(data_in):
-                    shutdown_requested = True
-                    break
-                if "objects" not in data_in:
-                    shutdown_requested = True
-                    break
-                if data_in["status"][0] == 0:
-                    self.initialize(data_in["random_seed"], data_in["objects"])
-
-                if self._message_proxy is not None:
-                    all_entities = []
-                    for _, (_, entities) in self.agents.items():
-                        all_entities.extend(entities)
-                    self._message_proxy.reset_mailboxes()
-                    self._message_proxy.sync_agents(all_entities)
-                if self._detection_proxy is not None:
-                    all_entities = []
-                    for _, (_, entities) in self.agents.items():
-                        all_entities.extend(entities)
-                    self._detection_proxy.sync_agents(all_entities)
-
-
-                # First snapshot for GUI (before t=1).
-                initial_snapshot = {
-                    "status": [0, ticks_per_second],
-                    "agents_shapes": self.get_agent_shapes(),
-                    "agents_spins": self.get_agent_spins(),
-                    "agents_metadata": metadata_snapshot,
-                }
-                agents_queue.put(initial_snapshot)
-                metadata_sent = True
-
-                t = 1
-                while True:
-                    if ticks_limit > 0 and t >= ticks_limit:
-                        break
-                    if data_in["status"] == "reset":
-                        reset = True
-                        break
-                    if _is_shutdown_status(data_in):
-                        shutdown_requested = True
-                        break
-
-                    # Keep arena and agents roughly in sync in simulated time.
-                    while data_in["status"][0] / data_in["status"][1] < t / ticks_per_second:
-                        new_msg = self._maybe_get(arena_queue, timeout=0.01)
-                        if new_msg is not None:
-                            data_in = new_msg
-                            if data_in["status"] == "reset":
-                                reset = True
-                                break
-                            if _is_shutdown_status(data_in):
-                                shutdown_requested = True
-                                break
-                            if "objects" not in data_in:
-                                shutdown_requested = True
-                                break
-                        else:
-                            time.sleep(0.00005)
-                        debug_wait_cycles += 1
-                        if debug_wait_cycles % 500 == 0:
-                            try:
-                                backlog = arena_queue.qsize()
-                            except Exception:
-                                backlog = "n/a"
-                            logger.debug(
-                                "[MGR WAIT] mgr=%s run=%s t=%s arena_status=%s backlog=%s shutdown=%s",
-                                self.manager_id,
-                                run,
-                                t,
-                                data_in.get("status"),
-                                backlog,
-                                shutdown_requested,
-                            )
-
-                        # Optional GUI update while waiting (only if queue is empty).
-                        sync_payload = {
-                            "status": [t, ticks_per_second],
-                            "agents_shapes": self.get_agent_shapes(),
-                            "agents_spins": self.get_agent_spins(),
-                        }
-                        if agents_queue.qsize() == 0:
-                            agents_queue.put(sync_payload)
-                    if reset:
-                        break
-                    if shutdown_requested:
-                        break
-
-                    latest = self._maybe_get(arena_queue, timeout=0.0)
-                    if latest is not None:
-                        data_in = latest
-                        if _is_shutdown_status(data_in):
-                            shutdown_requested = True
-                            break
-                        if "objects" not in data_in:
-                            shutdown_requested = True
-                            break
-                    if shutdown_requested:
-                        break
-
-                    agents_snapshot = self._gather_detection_agents(t)
-
-                    # Synchronize message proxy with updated agent positions.
-                    if self._message_proxy is not None:
-                        all_entities = []
-                        for _, (_, entities) in self.agents.items():
-                            all_entities.extend(entities)
-                        self._message_proxy.sync_agents(all_entities)
-                    if self._detection_proxy is not None:
-                        all_entities = []
-                        for _, (_, entities) in self.agents.items():
-                            all_entities.extend(entities)
-                        self._detection_proxy.sync_agents(all_entities)
-
-
-                    # Messaging: send then receive, then main agent step.
-                    for _, entities in self.agents.values():
-                        for entity in entities:
-                            if getattr(entity, "msg_enable", False) and entity.message_bus:
-                                entity.send_message(t)
-
-                    for _, entities in self.agents.values():
-                        for entity in entities:
-                            if getattr(entity, "msg_enable", False) and entity.message_bus:
-                                entity.receive_messages(t)
-                            # Main agent step.
-                            if shutdown_requested:
-                                break
-                            if "objects" not in data_in:
-                                shutdown_requested = True
-                                break
-                            entity.run(t, self.arena_shape, data_in["objects"], agents_snapshot)
-                        if agent_barrier is not None:
-                            agent_barrier.wait()
-
-                    # ------------------------------------------------------------------
-                    # Collision detector snapshot and corrections.
-                    # ------------------------------------------------------------------
-                    dec_data_in: dict[str, Any] = {}
-
-                    if self.collisions and dec_agents_in is not None and dec_agents_out is not None:
-                        if t % self.snapshot_stride == 0:
-                            # Send snapshot for this manager.
-                            detector_data = {
-                                "manager_id": self.manager_id,
-                                "agents": self.pack_detector_data(),
-                            }
-                            try:
-                                dec_agents_in.put(detector_data)
-                            except Exception:
-                                pass
-
-                            # Wait for corrections from detector for this round.
-                            dec_data_candidate = self._blocking_get(dec_agents_out)
-                            dec_data_in = dec_data_candidate if isinstance(dec_data_candidate, dict) else {}
-
-                    # Apply collision corrections (or call post_step(None) if none).
-                    for _, entities in self.agents.values():
-                        if not entities:
-                            continue
-                        group_key = entities[0].entity()
-                        group_corr = dec_data_in.get(group_key, None)  # list of corrections or None
-
-                        if isinstance(group_corr, list):
-                            for idx, entity in enumerate(entities):
-                                corr_vec = group_corr[idx] if idx < len(group_corr) else None
-                                entity.post_step(corr_vec)
-                                self._apply_wrap(entity)
-                                self._clamp_to_arena(entity)
-                        else:
-                            for entity in entities:
-                                entity.post_step(None)
-                                self._apply_wrap(entity)
-                                self._clamp_to_arena(entity)
-                        if agent_barrier is not None:
-                            agent_barrier.wait()
-
-                    # ------------------------------------------------------------------
-                    # GUI snapshot AFTER collision corrections.
-                    # ------------------------------------------------------------------
-                    if shutdown_requested:
-                        break
-
-                    agents_data = {
-                        "status": [t, ticks_per_second],
-                        "agents_shapes": self.get_agent_shapes(),
-                        "agents_spins": self.get_agent_spins(),
-                    }
-                    if not metadata_sent:
-                        agents_data["agents_metadata"] = metadata_snapshot
-                        metadata_sent = True
-
-                    agents_queue.put(agents_data)
-                    t += 1
-
-                if t < ticks_limit and not reset:
-                    break
-                if shutdown_requested:
-                    break
-
-                if run < num_runs:
-                    # Drain extra arena messages with gentle polling.
-                    drained = self._maybe_get(arena_queue, timeout=0.01)
-                    while drained is not None:
-                        data_in = drained
-                        drained = self._maybe_get(arena_queue, timeout=0.0)
-                elif not reset:
-                    self.close()
-
-                if not reset:
-                    run += 1
-                if shutdown_requested:
-                    break
-
-
-            finally:
-                shutdown_logging()
-        logger.info("EntityManager completed all runs")
+        return manager_run(
+            self,
+            num_runs,
+            time_limit,
+            arena_queue,
+            agents_queue,
+            dec_agents_in,
+            dec_agents_out,
+            agent_barrier,
+            log_context,
+        )

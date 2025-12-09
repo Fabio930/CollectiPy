@@ -1064,9 +1064,9 @@ class Environment:
                             _safe_terminate(detection_server_process)
                             if arena_process.is_alive():
                                 _safe_kill(arena_process)
-                            if message_server_process.is_alive():
+                            if message_server_process and message_server_process.is_alive():
                                 _safe_kill(message_server_process)
-                            if detection_server_process.is_alive():
+                            if detection_server_process and detection_server_process.is_alive():
                                 _safe_kill(detection_server_process)
                             for proc in manager_processes:
                                 _wait_for_exit(proc, _process_label(proc), timeout=0.5)
