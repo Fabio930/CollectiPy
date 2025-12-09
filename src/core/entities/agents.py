@@ -900,6 +900,23 @@ class MovableAgent(StaticAgent):
             self._logic_plugin.pre_run(objects, agents)
             logger.debug("%s performed logic pre-run hook via %s", self.get_name(), type(self._logic_plugin).__name__)
 
+    def get_spin_system_data(self):
+        """Return the spin-system payload delegating to the movement plugin when available.
+
+        Older core code expected `Agent.get_spin_system_data()` to provide
+        movement-specific spin payloads. Movement plugins (for example
+        `SpinMovementModel`) may implement `get_spin_system_data()` themselves.
+        Delegate to the plugin when present to ensure the GUI receives the
+        spin data regardless of whether the behaviour is provided by a
+        built-in agent class or a registered movement plugin.
+        """
+        if self._movement_plugin and hasattr(self._movement_plugin, "get_spin_system_data"):
+            try:
+                return self._movement_plugin.get_spin_system_data()
+            except Exception:
+                return None
+        return None
+
     def post_step(self, position_correction: Vector3D):
         """Post step: apply collision correction as a delta, not as an absolute position."""
         if position_correction is not None:
