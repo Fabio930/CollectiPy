@@ -18,7 +18,7 @@ from core.util.hierarchy_overlay import HierarchyOverlay
 from core.messaging.message_proxy import MessageProxy, NullMessageProxy
 from core.detection.detection_proxy import DetectionProxy
 from core.util.logging_util import get_logger
-from core.processes.entity_manager import manager_run, initialize_entities
+from core.main.entity_manager import manager_run, initialize_entities
 
 logger = get_logger("entity_manager")
 FLOAT_MAX = sys.float_info.max

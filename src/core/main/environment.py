@@ -17,7 +17,7 @@ from multiprocessing.context import BaseContext
 from typing import Any, Dict
 from core.configuration.config import Config
 from core.entities import EntityFactory
-from core.processes.arena import ArenaFactory
+from core.main.arena import ArenaFactory
 from core.gui.gui import GuiFactory
 from core.collision.collision_detector import CollisionDetector
 from core.util.logging_util import (
@@ -76,7 +76,7 @@ def _run_manager_process(block_filtered, arena_shape, log_specs,
     root = log_specs.get("project_root")
     initialize_process_console_logging(settings, cfg_path, root)
 
-    from core.processes.entityManager import EntityManager
+    from core.main.entityManager import EntityManager
     mgr = EntityManager(
         block_filtered, arena_shape,
         wrap_config=wrap_config,

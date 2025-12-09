@@ -2,9 +2,9 @@
 Process-level orchestrators and factories.
 """
 
-from core.processes.arena import ArenaFactory
-from core.processes.environment import Environment
-from core.processes.entityManager import EntityManager
+from core.main.arena import ArenaFactory
+from core.main.environment import Environment
+from core.main.entityManager import EntityManager
 from core.util.hierarchy_overlay import HierarchyOverlay, Bounds2D
 
 __all__ = [
