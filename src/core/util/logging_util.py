@@ -25,7 +25,7 @@ import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
-from utils.folder_utils import DEFAULT_RESULTS_BASE, LOG_DIRNAME as DEFAULT_LOG_DIRNAME
+from core.util.folder_util import DEFAULT_RESULTS_BASE, LOG_DIRNAME as DEFAULT_LOG_DIRNAME
 
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"

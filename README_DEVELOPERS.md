@@ -15,16 +15,40 @@ This document complements `README.md` with implementation details, extension poi
 - `config/`: sample JSON configurations; copy and tweak to define new experiments.
 - `plugins/`: external plugin package. Includes `plugins/examples/group_stats_plugin.py` as a ready-to-use logic plugin.
 - `src/main.py`: entry point; loads the config, configures logging, imports plugins, builds the environment, and starts the simulation.
-- `src/config.py`: config loader/validator plus helpers for registering shapes, message timers, and hooks (see Config extensions below).
-- `src/environment.py` / `src/arena.py`: environment creation and orchestration, including GUI wiring, hierarchy overlays, collision snapshots, and data exports.
-- `src/entity.py` / `src/entityManager.py`: agents/objects definitions, spawning, messaging, movement orchestration.
+- **Core package** (`src/core/`): main implementation split into subpackages:
+  - `core.processes`: `Environment`, `EntityManager`, `ArenaFactory` plus hierarchy overlays and process launch helpers.
+  - `core.messaging`: `MessageProxy`, `NullMessageProxy`, `MessageServer`, `run_message_server`.
+  - `core.detection`: `DetectionProxy`, `DetectionServer`, `run_detection_server`.
+  - `core.collision`: `CollisionDetector`.
+  - `core.entities`: split into small modules:
+    - `base` (Entity base type/UIDs)
+    - `objects` (Object/StaticObject/MovableObject)
+    - `agents` (Agent/StaticAgent/MovableAgent, messaging/detection hooks, seed helpers)
+    - `entity_factory` (EntityFactory to instantiate by type)
+    - imports remain available via `core.entities` and the wrapper `src/entity.py`.
+  - `core.configuration`: `Config`, `plugin_base`, `plugin_registry`.
+  - `core.gui`: Qt/matplotlib GUI factory.
+  - `core.util`: logging/data handling, geometry utilities, spatial grid, shapes (`bodies`), hierarchy overlay, and folder helpers.
+- `src/*.py` wrappers: compatibility shims re-exporting the core modules (`config`, `environment`, `arena`, `entityManager`, `message_*`, `detection_*`, `collision_detector`, `logging_util`, `dataHandling`, etc.) for legacy imports.
 - `src/models/`: built-in plugins:
   - `movement/` (`random_walk`, `random_way_point`, `spin_model`)
   - `motion/` (`unicycle` integrator)
   - `detection/` (`GPS`, `visual` placeholder)
-- `src/plugin_base.py` / `src/plugin_registry.py`: plugin protocols and registries (movement, motion, logic, detection, message buses) with config-driven auto-import.
-- `src/logging_utils.py`, `src/dataHandling.py`, `src/message_server.py`, `src/message_proxy.py`, `src/collision_detector.py`, `src/hierarchy_overlay.py`, `src/geometry_utils/`, `src/bodies/`, `src/utils/`: supporting utilities for persistence, networking, geometry, and hierarchy overlays.
 - `compile.sh` / `run.sh`: helper scripts for venv setup and running a selected config.
+
+## Process model (orchestration)
+
+The simulation is decomposed into cooperating processes:
+
+- **Environment** (main) spawns and supervises the others; responsible for logging, config load, plugin import, and CPU affinity.
+- **Arena** (per experiment) drives time, sends object state to managers and optional detector, throttles if the GUI lags.
+- **Managers** (1..N): own a partition of agents; run logic/movement, messaging proxy, and detection proxy; push snapshots to Arena and collision detector.
+- **Collision detector** (optional): asynchronous, all-to-all collision resolution across managers; only created when `collisions` is true.
+- **Message server** (optional): central bus for messages when at least one agent group enables `messages`.
+- **Detection server** (optional, auto when multiple managers): aggregates lightweight agent snapshots, filters via `SpatialGrid` and per-agent `detection_range`, broadcasts visibility-reduced snapshots back to managers. Managers pull at `detection.snapshot_per_second` (default 3 Hz) while uploads happen every manager tick.
+- **GUI** (optional): spawned when `environment.gui` is non-empty; receives arena/agent snapshots from managers for rendering/graphs.
+
+Processes that are not required by the current config are not started (e.g., no message server when messaging is unused; no detection server when a single manager is sufficient; no collision process when `collisions` is false; no GUI when disabled).
 
 ## Configuration deep dive
 
@@ -136,3 +160,10 @@ config.register_agent_shape("custom_prism", {"height", "width", "depth"})
 - Keep sample configs under `config/` and point `run.sh` (or a direct `python src/main.py -c <cfg>`) at them. Use a headless config when you need reproducible traces or batch runs.
 - When capturing results, ensure `environment.results` is set and `environment.gui` is empty; otherwise the simulator prioritizes rendering over persistence.
 - If you add plugins, list their module paths in the config so they are auto-imported on startup. Keep plugin code under `plugins/` to avoid altering core modules.
+
+### Batch / grid expansion
+
+- Multiple arenas (`arena_0`, `arena_1`, …) generate one experiment each.
+- For every arena, list-valued scalar fields on agent/object groups (except `position`, `orientation`, `strength`, `uncertainty`) are expanded with a Cartesian product. Examples: `number: [2, 5]`, `ticks_per_second: [3, 6]`, `motion_model: ["unicycle", "random_walk"]`.
+- Object groups behave the same (`strength`, `number`, etc.).
+- The expanded experiments run sequentially; `environment.num_runs` repeats each one deterministically (unless you randomise seeds).

@@ -13,14 +13,14 @@ import math
 import numpy as np
 from typing import Optional
 from models.spinsystem import SpinModule, PerceptionModule
-from plugin_base import MovementModel
-from plugin_registry import (
+from core.configuration.plugin_base import MovementModel
+from core.configuration.plugin_registry import (
     get_detection_model,
     get_movement_model,
     register_movement_model,
 )
 from models.utility_functions import normalize_angle
-from logging_utils import get_logger
+from core.util.logging_util import get_logger
 
 logger = get_logger("movement.spin_model")
 

@@ -5,10 +5,10 @@
 """Unicycle kinematic model."""
 
 import math
-from geometry_utils.vector3D import Vector3D
+from core.util.geometry_utils.vector3D import Vector3D
 from models.utility_functions import normalize_angle
-from plugin_base import MotionModel
-from plugin_registry import register_motion_model
+from core.configuration.plugin_base import MotionModel
+from core.configuration.plugin_registry import register_motion_model
 
 
 class UnicycleMotionModel(MotionModel):

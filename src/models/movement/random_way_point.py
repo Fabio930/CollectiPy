@@ -8,12 +8,12 @@
 # ------------------------------------------------------------------------------
 
 import math
-from plugin_base import MovementModel
-from plugin_registry import register_movement_model
+from core.configuration.plugin_base import MovementModel
+from core.configuration.plugin_registry import register_movement_model
 from models.movement.common import apply_motion_state
 from models.utility_functions import normalize_angle
-from geometry_utils.vector3D import Vector3D
-from logging_utils import get_logger
+from core.util.geometry_utils.vector3D import Vector3D
+from core.util.logging_util import get_logger
 
 logger = get_logger("movement.random_way_point")
 

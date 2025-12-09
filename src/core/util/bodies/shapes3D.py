@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import math
-from geometry_utils.vector3D import Vector3D
+from core.util.geometry_utils.vector3D import Vector3D
 
 _PI = math.pi
 

@@ -10,9 +10,9 @@
 from __future__ import annotations
 
 import math
-from plugin_base import DetectionModel
-from plugin_registry import register_detection_model
-from logging_utils import get_logger
+from core.configuration.plugin_base import DetectionModel
+from core.configuration.plugin_registry import register_detection_model
+from core.util.logging_util import get_logger
 
 logger = get_logger("detection.gps")
 

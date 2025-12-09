@@ -104,7 +104,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     },
     "objects":{ //REQUIRED can define multiple objects to simulate in the same arena
         "static_0":{
-            "number": list(int), //DEFAULT:[1] each list's entry will define a different simulation
+            "number": list(int), //DEFAULT:[1] each list entry can drive batch expansion (see Batch runs)
             "spawn":{ //OPTIONAL - set spawning distribution for objects too
                 "center":list(float), //DEFAULT [0,0]
                 "radius":float, //DEFAULT auto - the arena radius if bounded, heuristically estimated if unbounded
@@ -133,7 +133,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     "agents":{ //REQUIRED can define multiple agents to simulate in the same arena
         "movable_0":{
             "ticks_per_second": int, //DEFAULT:5
-            "number": list(int), //DEFAULT:[1] each list's entry will define a different simulation
+            "number": list(int), //DEFAULT:[1] each list entry can drive batch expansion (see Batch runs)
             "spawn":{ //OPTIONAL - set spawning distribution used at init
                 "center":list(float), //DEFAULT [0,0]
                 "radius":float, //DEFAULT auto (inradius if bounded, heuristically estimated if unbounded)
@@ -191,6 +191,13 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     }
 }
 ```
+
+### Batch runs / parameter sweeps
+
+- Multiple `arena_*` entries generate one experiment per arena.
+- Any list-valued scalar field (except `position`, `orientation`, `strength`, `uncertainty`) under an agent/object group is expanded via Cartesian product. Example: `movable_0.ticks_per_second: [3, 6]` and `movable_0.motion_model: ["unicycle", "random_walk"]` yield four experiments for that arena. `number` can also be a list to sweep population sizes.
+- The combinations are built per arena, objects, and agent groups, then executed sequentially. `environment.num_runs` repeats each expanded experiment deterministically.
+- Keep the GUI disabled for batch sweeps; when `environment.results` exists and `gui` is empty, exports are written for every expanded experiment/run.
 
 ### Arena, Objects and Agents ruleset
 
