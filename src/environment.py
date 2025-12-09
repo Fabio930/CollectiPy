@@ -65,6 +65,7 @@ def _run_arena_process(arena, num_runs, time_limit,
 def _run_manager_process(block_filtered, arena_shape, log_specs,
                          wrap_config, hierarchy, snapshot_stride, manager_id,
                          collisions, message_tx, message_rx,
+                         detection_tx, detection_rx,
                          num_runs, time_limit,
                          arena_queue, agents_queue,
                          dec_agents_in, dec_agents_out,
@@ -84,7 +85,9 @@ def _run_manager_process(block_filtered, arena_shape, log_specs,
         manager_id=manager_id,
         collisions=collisions,
         message_tx=message_tx,
-        message_rx=message_rx
+        message_rx=message_rx,
+        detection_tx=detection_tx,
+        detection_rx=detection_rx
     )
     mgr.run(
         num_runs, time_limit,
@@ -97,7 +100,7 @@ def _run_manager_process(block_filtered, arena_shape, log_specs,
         }
     )
 
-def _run_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs, dec_control_queue):
+def _run_collision_detector_process(collision_detector, det_in_arg, det_out_arg, dec_arena_in, log_specs, dec_control_queue):
     from logging_utils import initialize_process_console_logging
     settings = log_specs.get("settings")
     cfg_path = log_specs.get("config_path")
@@ -120,6 +123,16 @@ def _run_message_server(channels, log_specs, fully_connected):
     initialize_process_console_logging(settings, cfg_path, root)
     from message_server import run_message_server
     run_message_server(channels, log_specs, fully_connected)
+
+
+def _run_detection_server(channels, log_specs):
+    from logging_utils import initialize_process_console_logging
+    settings = log_specs.get("settings")
+    cfg_path = log_specs.get("config_path")
+    root = log_specs.get("project_root")
+    initialize_process_console_logging(settings, cfg_path, root)
+    from detection_server import run_detection_server
+    run_detection_server(channels, log_specs)
 
 def _run_gui_process(config, arena_vertices, arena_color,
                      gui_in_queue, gui_control_queue,
@@ -671,6 +684,12 @@ class Environment:
             agent_barrier = None
             if n_blocks > 1:
                 agent_barrier = ctx.Barrier(n_blocks)
+            any_messages = False
+            for cfg, _ in agents.values():
+                if cfg.get("messages"):
+                    any_messages = True
+                    break
+            detection_server_needed = n_blocks > 1
             # Detector input/output queues
             dec_agents_in_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
             dec_agents_out_list = [_PipeQueue(ctx) for _ in range(n_blocks)] if self.collisions else [None] * n_blocks
@@ -700,7 +719,12 @@ class Environment:
                 **exp_log_specs,
                 "process_folder": "",
                 "log_file_prefix": "message_server",
-            }
+            } if any_messages else None
+            detection_server_log_specs = {
+                **exp_log_specs,
+                "process_folder": "",
+                "log_file_prefix": "detection_server",
+            } if detection_server_needed else None
             gui_log_specs = {
                 **exp_log_specs,
                 "process_folder": "",
@@ -727,10 +751,22 @@ class Environment:
             _register_process("arena", arena_process)
 
             message_channels = []
+            detection_channels = []
             for _ in range(n_blocks):
-                message_tx = ctx.Queue()
-                message_rx = ctx.Queue()
+                if any_messages:
+                    message_tx = ctx.Queue()
+                    message_rx = ctx.Queue()
+                else:
+                    message_tx = None
+                    message_rx = None
+                if detection_server_needed:
+                    detection_tx = ctx.Queue()
+                    detection_rx = ctx.Queue()
+                else:
+                    detection_tx = None
+                    detection_rx = None
                 message_channels.append((message_tx, message_rx))
+                detection_channels.append((detection_tx, detection_rx))
 
             for idx_block, block in enumerate(agent_blocks):
                 block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
@@ -747,6 +783,8 @@ class Environment:
                         self.collisions,
                         message_channels[idx_block][0],
                         message_channels[idx_block][1],
+                        detection_channels[idx_block][0],
+                        detection_channels[idx_block][1],
                         self.num_runs,
                         self.time_limit,
                         arena_queue_list[idx_block],
@@ -761,15 +799,26 @@ class Environment:
                 _register_process(f"manager_{idx_block}", proc)
             # Message server process (one per environment).
             fully_connected = True #arena_id in ("abstract", "none", None)
-            message_server_process = mp.Process(
-                target=_run_message_server,
-                args=(message_channels, message_server_log_specs, fully_connected),
-            )
+            message_server_process = None
+            detection_server_process = None
+            if any_messages:
+                message_server_process = mp.Process(
+                    target=_run_message_server,
+                    args=(message_channels, message_server_log_specs, fully_connected),
+                )
+            if detection_server_needed:
+                detection_server_process = mp.Process(
+                    target=_run_detection_server,
+                    args=(detection_channels, detection_server_log_specs),
+                )
             gui_process = None
             _register_process("message_server", message_server_process)
+            _register_process("detection_server", detection_server_process)
 
             def _signal_message_server_shutdown():
                 """Request the message server to stop via its queues."""
+                if message_server_process is None:
+                    return
                 shutdown_packet = {"kind": "shutdown"}
                 for tx, _ in message_channels:
                     if tx is None:
@@ -779,8 +828,24 @@ class Environment:
                     except Exception:
                         continue
 
+            def _signal_detection_server_shutdown():
+                """Request the detection server to stop via its queues."""
+                if detection_server_process is None:
+                    return
+                shutdown_packet = {"kind": "shutdown"}
+                for tx, _ in detection_channels:
+                    if tx is None:
+                        continue
+                    try:
+                        tx.put(shutdown_packet)
+                    except Exception:
+                        continue
+
+
             def _stop_message_server_gracefully(timeout: float = 1.0):
                 """Signal shutdown, wait briefly, then terminate if still alive."""
+                if message_server_process is None:
+                    return
                 _signal_message_server_shutdown()
                 logger.info("SHUTDOWN: waiting for message_server to exit")
                 deadline = time.time() + timeout
@@ -796,6 +861,27 @@ class Environment:
                 else:
                     logger.info("Message server exited gracefully after shutdown request")
                 logger.info("SHUTDOWN: message_server alive=%s exitcode=%s", message_server_process.is_alive(), message_server_process.exitcode)
+
+            def _stop_detection_server_gracefully(timeout: float = 1.0):
+                """Signal shutdown, wait briefly, then terminate if still alive."""
+                if detection_server_process is None:
+                    return
+                _signal_detection_server_shutdown()
+                logger.info("SHUTDOWN: waiting for detection_server to exit")
+                deadline = time.time() + timeout
+                while detection_server_process.is_alive() and time.time() < deadline:
+                    time.sleep(0.01)
+                if detection_server_process.is_alive():
+                    logger.warning("Detection server did not exit in %.2fs; terminating", timeout)
+                    _safe_terminate(detection_server_process)
+                    time.sleep(0.05)
+                if detection_server_process.is_alive():
+                    logger.warning("Detection server still alive; killing")
+                    _safe_kill(detection_server_process)
+                else:
+                    logger.info("Detection server exited gracefully after shutdown request")
+                logger.info("SHUTDOWN: detection_server alive=%s exitcode=%s", detection_server_process.is_alive(), detection_server_process.exitcode)
+
 
             def _signal_gui_shutdown():
                 """Request the GUI process to stop via its input queue."""
@@ -859,13 +945,13 @@ class Environment:
                 det_in_arg = dec_agents_in_list if n_blocks > 1 else dec_agents_in_list[0]
                 det_out_arg = dec_agents_out_list if n_blocks > 1 else dec_agents_out_list[0]
 
-            detector_process = None
+            collision_detector_process = None
             if collision_detector:
-                detector_process = mp.Process(
-                    target=_run_detector_process,
+                collision_detector_process = mp.Process(
+                    target=_run_collision_detector_process,
                     args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, collision_log_specs, dec_control_queue)
                 )
-            _register_process("detector", detector_process)
+            _register_process("collision_detector", collision_detector_process)
 
             def _signal_detector_shutdown():
                 """Request the collision detector to stop."""
@@ -879,34 +965,35 @@ class Environment:
 
             def _stop_detector_gracefully(timeout: float = 1.0):
                 """Signal shutdown and wait for the detector to exit."""
-                if detector_process is None:
+                if collision_detector_process is None:
                     return
                 _signal_detector_shutdown()
                 logger.info("SHUTDOWN: waiting for detector to exit")
                 deadline = time.time() + timeout
-                while detector_process.is_alive() and time.time() < deadline:
+                while collision_detector_process.is_alive() and time.time() < deadline:
                     time.sleep(0.0001)
-                if detector_process.is_alive():
+                if collision_detector_process.is_alive():
                     logger.warning("Detector did not exit in %.2fs; terminating", timeout)
-                    _safe_terminate(detector_process)
+                    _safe_terminate(collision_detector_process)
                     time.sleep(0.05)
-                if detector_process.is_alive():
+                if collision_detector_process.is_alive():
                     logger.warning("Detector still alive; killing")
-                    _safe_kill(detector_process)
-                logger.info("SHUTDOWN: detector alive=%s exitcode=%s", detector_process.is_alive(), detector_process.exitcode)
+                    _safe_kill(collision_detector_process)
+                logger.info("SHUTDOWN: detector alive=%s exitcode=%s", collision_detector_process.is_alive(), collision_detector_process.exitcode)
 
             pattern = {
                 "arena": 2,
                 "agents": 2,
-                "detector": 2,
+                "collision": 2,
                 "gui": 2,
                 "messages": 2,
+                "detection": 2,
             }
             if total_agents >= 100:
                 # Scale dedicated cores for heavy agent loads (add 1 every 100 agents).
                 extra_load = total_agents // 100
                 pattern["agents"] = 3 + extra_load
-                pattern["detector"] = 3 + extra_load
+                pattern["collision"] = 3 + extra_load
             killed = 0
             force_exit = False
             try:
@@ -929,9 +1016,12 @@ class Environment:
                     )
                     gui_process.start()
                     _register_process("gui", gui_process)
-                    message_server_process.start()
-                    if detector_process and arena_id not in ("abstract", "none", None):
-                        detector_process.start()
+                    if message_server_process:
+                        message_server_process.start()
+                    if detection_server_process:
+                        detection_server_process.start()
+                    if collision_detector_process and arena_id not in ("abstract", "none", None):
+                        collision_detector_process.start()
                     for proc in manager_processes:
                         proc.start()
                     arena_process.start()
@@ -942,15 +1032,18 @@ class Environment:
                     agent_core_budget = min(n_blocks * 2, available_remaining)
                     agent_core_budget = max(agent_core_budget, 1)
                     assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                    if detector_process:
-                        assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
+                    if collision_detector_process:
+                        assigned_worker_cores.update(set_affinity_safely(collision_detector_process, pattern["collision"]))
                     assigned_worker_cores.update(set_affinity_safely(gui_process, pattern["gui"]))
-                    assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    if message_server_process:
+                        assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    if detection_server_process:
+                        assigned_worker_cores.update(set_affinity_safely(detection_server_process, pattern["detection"]))
 
                     # Supervision loop
                     force_exit = False
                     while True:
-                        processes_to_watch = [arena_process, message_server_process, detector_process] + manager_processes
+                        processes_to_watch = [arena_process, message_server_process, detection_server_process, collision_detector_process] + manager_processes
                         exit_failure = next(
                             (p for p in processes_to_watch if p is not None and p.exitcode not in (None, 0)),
                             None
@@ -968,10 +1061,13 @@ class Environment:
                             _request_arena_shutdown(timeout=0.5, terminate_after=True)
                             _safe_terminate(arena_process)
                             _safe_terminate(message_server_process)
+                            _safe_terminate(detection_server_process)
                             if arena_process.is_alive():
                                 _safe_kill(arena_process)
                             if message_server_process.is_alive():
                                 _safe_kill(message_server_process)
+                            if detection_server_process.is_alive():
+                                _safe_kill(detection_server_process)
                             for proc in manager_processes:
                                 _wait_for_exit(proc, _process_label(proc), timeout=0.5)
                             for proc in manager_processes:
@@ -979,8 +1075,6 @@ class Environment:
                                     _safe_terminate(proc)
                                 if proc.is_alive():
                                     _safe_kill(proc)
-                            _safe_terminate(message_server_process)
-                            _safe_kill(message_server_process)
                             _stop_detector_gracefully()
                             _stop_gui_gracefully()
                             if gui_process.is_alive():
@@ -1019,14 +1113,18 @@ class Environment:
                         _safe_join(arena_process, label="arena", timeout=1.0)
                         for proc in manager_processes:
                             _safe_join(proc, label=_process_label(proc), timeout=1.0)
-                        _safe_join(detector_process, label="detector", timeout=1.0)
+                        _safe_join(collision_detector_process, label="collision_detector", timeout=1.0)
                         _safe_join(gui_process, label="gui", timeout=1.0)
-                        _safe_join(message_server_process, label="message_server", timeout=1.0)
+                        _safe_join(message_server_process, label="message_server", timeout=1.0) if message_server_process else None
+                        _safe_join(detection_server_process, label="detection_server", timeout=1.0) if detection_server_process else None
                         _kill_child_processes("after render shutdown")
                 else:
-                    message_server_process.start()
-                    if detector_process and arena_id not in ("abstract", "none", None):
-                        detector_process.start()
+                    if message_server_process:
+                        message_server_process.start()
+                    if detection_server_process:
+                        detection_server_process.start()
+                    if collision_detector_process and arena_id not in ("abstract", "none", None):
+                        collision_detector_process.start()
                     for proc in manager_processes:
                         proc.start()
                     arena_process.start()
@@ -1035,13 +1133,16 @@ class Environment:
                     agent_core_budget = min(n_blocks * 2, available_remaining)
                     agent_core_budget = max(agent_core_budget, 1)
                     assigned_worker_cores.update(set_shared_affinity(manager_processes, agent_core_budget))
-                    if detector_process:
-                        assigned_worker_cores.update(set_affinity_safely(detector_process, pattern["detector"]))
-                    assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    if collision_detector_process:
+                        assigned_worker_cores.update(set_affinity_safely(collision_detector_process, pattern["collision"]))
+                    if message_server_process:
+                        assigned_worker_cores.update(set_affinity_safely(message_server_process, pattern["messages"]))
+                    if detection_server_process:
+                        assigned_worker_cores.update(set_affinity_safely(detection_server_process, pattern["detection"]))
                     killed = 0
                     # Supervision loop
                     while True:
-                        processes_to_watch = [arena_process, message_server_process, detector_process] + manager_processes
+                        processes_to_watch = [arena_process, message_server_process, detection_server_process, collision_detector_process] + manager_processes
                         exit_failure = next(
                             (p for p in processes_to_watch if p is not None and p.exitcode not in (None, 0)),
                             None
@@ -1065,6 +1166,7 @@ class Environment:
                                     _safe_kill(proc)
                             _stop_detector_gracefully()
                             _stop_message_server_gracefully()
+                            _stop_detection_server_gracefully()
                             break
                         if not arena_alive:
                             _request_arena_shutdown(timeout=0.5, terminate_after=True)
@@ -1073,17 +1175,20 @@ class Environment:
                                 _safe_terminate(proc)
                             _stop_detector_gracefully()
                             _stop_message_server_gracefully()
+                            _stop_detection_server_gracefully()
                             break
                         time.sleep(0.5)
                     _stop_detector_gracefully()
                     _stop_message_server_gracefully()
+                    _stop_detection_server_gracefully()
                     # Join all processes
                     logger.info("SHUTDOWN: joining processes (headless branch)")
                     _safe_join(arena_process, label="arena", timeout=1.0)
                     for proc in manager_processes:
                         _safe_join(proc, label=_process_label(proc), timeout=1.0)
-                    _safe_join(detector_process, label="detector", timeout=1.0)
-                    _safe_join(message_server_process, label="message_server", timeout=1.0)
+                    _safe_join(collision_detector_process, label="collision_detector", timeout=1.0)
+                    _safe_join(message_server_process, label="message_server", timeout=1.0) if message_server_process else None
+                    _safe_join(detection_server_process, label="detection_server", timeout=1.0) if detection_server_process else None
                     if killed == 1:
                         raise RuntimeError("A subprocess exited unexpectedly.")
                     _kill_child_processes("after headless shutdown")
@@ -1094,26 +1199,30 @@ class Environment:
                     _stop_detector_gracefully()
                     _stop_gui_gracefully()
                     _stop_message_server_gracefully()
+                    _stop_detection_server_gracefully()
                     _safe_terminate(arena_process)
-                    _safe_terminate(detector_process)
+                    _safe_terminate(collision_detector_process)
                     _safe_terminate(gui_process)
-                    _safe_terminate(message_server_process)
+                    _safe_terminate(message_server_process) if message_server_process else None
+                    _safe_terminate(detection_server_process) if detection_server_process else None
                     for proc in manager_processes:
                         _safe_terminate(proc)
                     _request_arena_shutdown(timeout=0.2)
                     _safe_join(arena_process, label="arena", timeout=2.0)
                     for proc in manager_processes:
                         _safe_join(proc, label=_process_label(proc), timeout=2.0)
-                    _safe_join(detector_process, label="detector", timeout=2.0)
+                    _safe_join(collision_detector_process, label="collision_detector", timeout=2.0)
                     _safe_join(gui_process, label="gui", timeout=2.0)
-                    _safe_join(message_server_process, label="message_server", timeout=2.0)
+                    _safe_join(message_server_process, label="message_server", timeout=2.0) if message_server_process else None
+                    _safe_join(detection_server_process, label="detection_server", timeout=2.0) if detection_server_process else None
                     _kill_child_processes("final cleanup")
                     # Log final status for all processes to help diagnosing hanging workers.
                     for label, proc in [
                         ("arena", arena_process),
                         ("gui", gui_process),
                         ("message_server", message_server_process),
-                        ("detector", detector_process),
+                        ("detection_server", detection_server_process),
+                        ("collision_detector", collision_detector_process),
                     ]:
                         _log_process_status("post_join", label, proc)
                     for idx, proc in enumerate(manager_processes):

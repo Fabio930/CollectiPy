@@ -1002,7 +1002,7 @@ class SolidArena(Arena):
                                     q.put(arena_data)
                                 if dec_arena_in is not None:
                                     dec_arena_in.put(detector_data)
-                            time.sleep(0.0001)
+                            time.sleep(0.00005)
                         if shutdown_requested:
                             break
 
@@ -1054,7 +1054,7 @@ class SolidArena(Arena):
                         break
                     elif shutdown_requested:
                         break
-                    else: time.sleep(0.0005)
+                    else: time.sleep(0.00025)
                 if shutdown_requested:
                     break
                 if self.data_handling is not None and last_snapshot_info:

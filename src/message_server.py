@@ -45,7 +45,8 @@ class _AgentInfo:
         "hierarchy_node",
         "allowed_nodes",
         "msg_type",
-        "msg_kind"
+        "msg_kind",
+        "entity",
     )
 
     def __init__(
@@ -57,7 +58,8 @@ class _AgentInfo:
         hierarchy_node: Optional[str],
         allowed_nodes: Optional[Sequence[str]],
         msg_type: Optional[str],
-        msg_kind: Optional[str]
+        msg_kind: Optional[str],
+        entity: Optional[str],
     ) -> None:
         """Initialize the instance."""
         self.name = name
@@ -68,6 +70,7 @@ class _AgentInfo:
         self.allowed_nodes = set(allowed_nodes) if allowed_nodes else None
         self.msg_type = msg_type
         self.msg_kind = msg_kind
+        self.entity = entity
 
 
 class MessageServer:
@@ -123,8 +126,8 @@ class MessageServer:
                     any_packet = any_packet or processed
 
                 if not any_packet:
-                    # Avoid busy waiting.
-                    time.sleep(0.0001)
+                    # Avoid busy waiting but keep throughput high.
+                    time.sleep(0.00005)
         finally:
             logger.info("Message server shutting down")
             self._grid.close()
@@ -211,17 +214,19 @@ class MessageServer:
             allowed_nodes = info.get("allowed_nodes")
             msg_type = info.get("msg_type")
             msg_kind = info.get("msg_kind")
+            entity = info.get("entity")
 
-            self._agents[name] = _AgentInfo(
-                name,
-                manager_id,
-                pos,
-                comm_range,
-                node,
-                allowed_nodes,
-                msg_type,
-                msg_kind
-            )
+        self._agents[name] = _AgentInfo(
+            name,
+            manager_id,
+            pos,
+            comm_range,
+            node,
+            allowed_nodes,
+            msg_type,
+            msg_kind,
+            entity,
+        )
 
         # Rebuild spatial index if we are not fully connected.
         if not self.fully_connected:

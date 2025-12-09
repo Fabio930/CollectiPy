@@ -102,6 +102,7 @@ class MessageProxy:
         """
         self._agents = list(agents)
         self._update_agent_index()
+        self._drain_from_server()
         self._send_agents_snapshot()
 
     def send_message(self, sender: Any, msg: Dict[str, Any]) -> None:
@@ -187,9 +188,11 @@ class MessageProxy:
                 pos = agent.get_position()
                 x = float(getattr(pos, "x", 0.0))
                 y = float(getattr(pos, "y", 0.0))
+                z = float(getattr(pos, "z", 0.0))
             except Exception:
                 x = 0.0
                 y = 0.0
+                z = 0.0
 
             # Communication range: optional attribute.
             comm_range = float(getattr(agent, "msg_comm_range", 0.1))
@@ -199,6 +202,15 @@ class MessageProxy:
             allowed_nodes = getattr(agent, "allowed_nodes", None)
             msg_type = getattr(agent, "msg_type", None)
             msg_kind = getattr(agent, "msg_kind", None)
+            entity_val = None
+            ent_attr = getattr(agent, "entity", None)
+            if callable(ent_attr):
+                try:
+                    entity_val = ent_attr()
+                except Exception:
+                    entity_val = None
+            elif ent_attr is not None:
+                entity_val = ent_attr
 
             snapshot.append(
                 {
@@ -206,11 +218,13 @@ class MessageProxy:
                     "manager_id": self._manager_id,
                     "x": x,
                     "y": y,
+                    "z": z,
                     "range": comm_range,
                     "node": node,
                     "allowed_nodes": list(allowed_nodes) if isinstance(allowed_nodes, (set, list, tuple)) else None,
                     "msg_type": msg_type,
-                    "msg_kind": msg_kind
+                    "msg_kind": msg_kind,
+                    "entity": entity_val,
                 }
             )
 

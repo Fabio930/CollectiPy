@@ -10,18 +10,30 @@
 """EntityManager: synchronises agents and arena."""
 from __future__ import annotations
 
-import math, sys
-import time
+import math, sys, time
 import multiprocessing as mp
 from typing import Optional, Any, cast
 from geometry_utils.vector3D import Vector3D
 from hierarchy_overlay import HierarchyOverlay
 from message_proxy import MessageProxy, NullMessageProxy
+from detection_proxy import DetectionProxy
 from logging_utils import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("entity_manager")
 FLOAT_MAX = sys.float_info.max
 FLOAT_MIN = -FLOAT_MAX
+
+
+class _DetectionStub:
+    """Lightweight proxy exposing center_of_mass/metadata for detection."""
+    __slots__ = ("_pos", "metadata")
+    def __init__(self, pos: Vector3D, metadata: dict | None = None) -> None:
+        self._pos = pos
+        self.metadata = metadata or {}
+
+    def center_of_mass(self) -> Vector3D:
+        """Return the stored position."""
+        return self._pos
 
 
 class EntityManager:
@@ -84,6 +96,8 @@ class EntityManager:
         collisions: bool = False,
         message_tx = None,
         message_rx = None,
+        detection_tx = None,
+        detection_rx = None,
     ):
         """Initialize the instance."""
         self.agents = agents
@@ -95,6 +109,8 @@ class EntityManager:
         self.collisions = collisions
         self.message_tx = message_tx
         self.message_rx = message_rx
+        self.detection_tx = detection_tx
+        self.detection_rx = detection_rx
 
         # Single message proxy shared by all messaging-enabled entities
         # in this manager. When None, messaging is effectively disabled.
@@ -106,20 +122,31 @@ class EntityManager:
         all_entities = []
         for _, (_, entities) in self.agents.items():
             all_entities.extend(entities)
+        self._manager_ticks_per_second = (
+            all_entities[0].ticks() if all_entities and hasattr(all_entities[0], "ticks") else 1
+        )
 
-        any_msg_enabled_global = False
-        for cfg, _ in self.agents.values():
-            mc = cfg.get("messages", {}) if isinstance(cfg, dict) else {}
-            if mc:
-                any_msg_enabled_global = True
-                break
-
-        if any_msg_enabled_global and self.message_tx is not None and self.message_rx is not None:
+        if self.message_tx is not None and self.message_rx is not None:
             self._message_proxy = MessageProxy(
                 all_entities, self.message_tx, self.message_rx, manager_id=self.manager_id
             )
         else:
             self._message_proxy = None
+
+        if detection_tx is not None and detection_rx is not None:
+            self._detection_proxy = DetectionProxy(
+                all_entities, detection_tx, detection_rx, manager_id=self.manager_id
+            )
+        else:
+            self._detection_proxy = None
+
+        self._cross_detection_rate = self._resolve_cross_detection_rate()
+        self._cross_det_quanta = None
+        self._cross_det_budget = 0.0
+        self._cross_det_budget_cap = float("inf")
+        self._last_cross_det_tick = -1
+        self._cached_detection_agents: dict | None = None
+        self._configure_cross_detection_scheduler()
 
         self._global_min = self._clamp_vector_to_float_limits(self._global_min)
         self._global_max = self._clamp_vector_to_float_limits(self._global_max)
@@ -142,6 +169,24 @@ class EntityManager:
     # ----------------------------------------------------------------------
     # Initialization
     # ----------------------------------------------------------------------
+    def _resolve_cross_detection_rate(self) -> float:
+        """Return how often (Hz) to pull cross-process detection snapshots."""
+        rate = 3.0
+        for cfg, _ in self.agents.values():
+            det_cfg = cfg.get("detection", {}) if isinstance(cfg, dict) else {}
+            candidate = det_cfg.get("snapshot_per_second") or det_cfg.get("rx_per_second")
+            if candidate is None:
+                continue
+            try:
+                val = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if val > rate:
+                rate = val
+        if rate <= 0:
+            return 0.0
+        return rate
+
     def _initialize_hierarchy_markers(self):
         """Initialize hierarchy markers on entities."""
         if not self.hierarchy:
@@ -537,6 +582,100 @@ class EntityManager:
             shapes[group_key] = group_shapes
         return shapes
 
+    def _build_detection_agents_from_snapshot(self, snapshot) -> dict | None:
+        """Convert a lightweight detection snapshot into shape-like objects."""
+        if not isinstance(snapshot, list):
+            return None
+        grouped: dict[str, list[_DetectionStub]] = {}
+        for info in snapshot:
+            group_val = info.get("entity")
+            if group_val is None:
+                continue
+            try:
+                group = str(group_val)
+            except Exception:
+                continue
+            if not group:
+                continue
+            uid = info.get("uid")
+            try:
+                x = float(info.get("x", 0.0))
+                y = float(info.get("y", 0.0))
+                z = float(info.get("z", 0.0))
+            except (TypeError, ValueError):
+                x = y = z = 0.0
+            meta = {
+                "entity_name": uid,
+                "hierarchy_node": info.get("hierarchy_node"),
+            }
+            grouped.setdefault(group, []).append(_DetectionStub(Vector3D(x, y, z), meta))
+        return grouped if grouped else None
+
+    def _configure_cross_detection_scheduler(self) -> None:
+        """Setup throttling for cross-process detection refresh."""
+        rate = self._cross_detection_rate
+        if math.isinf(rate):
+            self._cross_det_quanta = math.inf
+            self._cross_det_budget_cap = math.inf
+        elif rate <= 0:
+            self._cross_det_quanta = 0.0
+            self._cross_det_budget_cap = 0.0
+        else:
+            ticks = max(1.0, float(self._manager_ticks_per_second))
+            self._cross_det_quanta = rate / ticks
+            self._cross_det_budget_cap = max(1.0, rate * 2.0)
+        # Prime budget to allow the first tick to pull a snapshot.
+        self._cross_det_budget = 1.0
+        self._last_cross_det_tick = -1
+
+    def _should_refresh_cross_detection(self, tick: int | None = None) -> bool:
+        """Return True if we should pull a fresh detection snapshot this tick."""
+        if tick is None or self._cross_det_quanta is None:
+            return True
+        if tick == self._last_cross_det_tick:
+            return False
+        if self._cross_det_quanta == 0.0:
+            return False
+        if math.isinf(self._cross_det_quanta):
+            self._last_cross_det_tick = tick
+            return True
+        self._cross_det_budget = min(
+            self._cross_det_budget + self._cross_det_quanta,
+            self._cross_det_budget_cap,
+        )
+        if self._cross_det_budget >= 1.0:
+            self._cross_det_budget -= 1.0
+            self._last_cross_det_tick = tick
+            return True
+        return False
+
+    def _gather_detection_agents(self, tick: int | None = None) -> dict:
+        """
+        Return agents grouped for perception.
+
+        Prefer the lightweight global snapshot from the detection server (fast,
+        cross-process) and fall back to local shapes when unavailable. Snapshot
+        pulls are throttled by _cross_detection_rate.
+        """
+        if self._should_refresh_cross_detection(tick):
+            snapshot = None
+            if self._detection_proxy is not None:
+                try:
+                    snapshot = self._detection_proxy.get_snapshot()
+                except Exception:
+                    snapshot = None
+            elif self._message_proxy is not None:
+                try:
+                    snapshot = self._message_proxy.get_detection_snapshot()
+                except Exception:
+                    snapshot = None
+            built = self._build_detection_agents_from_snapshot(snapshot) if snapshot is not None else None
+            if built:
+                self._cached_detection_agents = built
+        if self._cached_detection_agents:
+            return self._cached_detection_agents
+        return self.get_agent_shapes()
+
     def get_agent_spins(self) -> dict:
         """Return spin data grouped by entity type."""
         spins = {}
@@ -731,11 +870,18 @@ class EntityManager:
 
         while run < num_runs + 1:
             start_run_logging(log_specs, process_name, run)
+            self._configure_cross_detection_scheduler()
+            self._cached_detection_agents = None
             if self.manager_id == 0 and self.message_tx is not None:
                 try:
                     self.message_tx.put({"kind": "run_start", "run": int(run)})
                 except Exception as exc:
                     logger.warning("Failed to notify message server about run %s: %s", run, exc)
+            if self.manager_id == 0 and self.detection_tx is not None:
+                try:
+                    self.detection_tx.put({"kind": "run_start", "run": int(run)})
+                except Exception as exc:
+                    logger.warning("Failed to notify detection server about run %s: %s", run, exc)
             try:
                 metadata_sent = False
                 metadata_snapshot = self.get_agent_metadata()
@@ -769,6 +915,11 @@ class EntityManager:
                         all_entities.extend(entities)
                     self._message_proxy.reset_mailboxes()
                     self._message_proxy.sync_agents(all_entities)
+                if self._detection_proxy is not None:
+                    all_entities = []
+                    for _, (_, entities) in self.agents.items():
+                        all_entities.extend(entities)
+                    self._detection_proxy.sync_agents(all_entities)
 
 
                 # First snapshot for GUI (before t=1).
@@ -807,7 +958,7 @@ class EntityManager:
                                 shutdown_requested = True
                                 break
                         else:
-                            time.sleep(0.0001)
+                            time.sleep(0.00005)
                         debug_wait_cycles += 1
                         if debug_wait_cycles % 500 == 0:
                             try:
@@ -849,12 +1000,19 @@ class EntityManager:
                     if shutdown_requested:
                         break
 
+                    agents_snapshot = self._gather_detection_agents(t)
+
                     # Synchronize message proxy with updated agent positions.
                     if self._message_proxy is not None:
                         all_entities = []
                         for _, (_, entities) in self.agents.items():
                             all_entities.extend(entities)
                         self._message_proxy.sync_agents(all_entities)
+                    if self._detection_proxy is not None:
+                        all_entities = []
+                        for _, (_, entities) in self.agents.items():
+                            all_entities.extend(entities)
+                        self._detection_proxy.sync_agents(all_entities)
 
 
                     # Messaging: send then receive, then main agent step.
@@ -873,7 +1031,7 @@ class EntityManager:
                             if "objects" not in data_in:
                                 shutdown_requested = True
                                 break
-                            entity.run(t, self.arena_shape, data_in["objects"], self.get_agent_shapes())
+                            entity.run(t, self.arena_shape, data_in["objects"], agents_snapshot)
                         if agent_barrier is not None:
                             agent_barrier.wait()
 
