@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import math
 from core.util.geometry_utils.vector3D import Vector3D
+from core.util.logging_util import get_logger
 
 _PI = math.pi
+logger = get_logger("shapes3D")
 
 
 def _merge_dimension_config(config_elem: dict) -> dict:
@@ -97,6 +99,7 @@ class Shape3DFactory:
     def create_shape(_object:str, shape_type:str, config_elem:dict):
         """Create shape."""
         normalized_cfg = _merge_dimension_config(config_elem)
+        logger.info("Creating shape %s for %s", shape_type, _object)
         if shape_type == "sphere":
             return Sphere(_object, shape_type, normalized_cfg)
         elif shape_type == "unbounded":

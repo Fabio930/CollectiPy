@@ -39,7 +39,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
 
 - Ensure the virtual environment exists (`./compile.sh` sets it up; activate with `source .venv/bin/activate` if running commands manually).
 - Select the JSON config under `config/` you want to run. `run.sh` ships with several commented options—uncomment one line or invoke directly: `python src/main.py -c config/random_wp_test_bounded.json`.
-- To run headless, leave `environment.gui` empty in the config. Results saving is enabled only when `environment.results` is present **and** the GUI is disabled.
+- To run headless, leave `environment.gui` empty in the config. Results saving is enabled only when `environment.results` is present **and** non-empty (e.g., include `base_path` or a specs key) **and** the GUI is disabled.
 - Plugins can be declared via the top-level `plugins` list or `environment.plugins` list in the config (see the developer README for details).
 
 ## GUI controls (current draft)
@@ -78,8 +78,8 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     "logging":{ //DEFAULT:{} omit the block to disable logging
         "base_path": str, //DEFAULT:"./data/logs/"
         "level": str, //DEFAULT:"WARNING" - severity used for all active handlers,
-        "to_file": bool, //DEFAULT:true when the block is present - emit compressed ZIP logs,
-        "to_console": bool, //DEFAULT:false - mirror logs on stdout/stderr,
+        "to_file": bool, //DEFAULT:false when the block is present - emit compressed ZIP logs,
+        "to_console": bool, //DEFAULT:true - mirror logs on stdout/stderr,
     },
     "gui":{ //DEFAULT:{} empty dict -> no rendering
         "_id": str, //DEFAULT:"2D"
@@ -198,7 +198,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
 - Multiple `arena_*` entries generate one experiment per arena.
 - Any list-valued scalar field (except `position`, `orientation`, `strength`, `uncertainty`) under an agent/object group is expanded via Cartesian product. Example: `movable_0.ticks_per_second: [3, 6]` and `movable_0.motion_model: ["unicycle", "random_walk"]` yield four experiments for that arena. `number` can also be a list to sweep population sizes.
 - The combinations are built per arena, objects, and agent groups, then executed sequentially. `environment.num_runs` repeats each expanded experiment deterministically.
-- Keep the GUI disabled for batch sweeps; when `environment.results` exists and `gui` is empty, exports are written for every expanded experiment/run.
+- Keep the GUI disabled for batch sweeps; when `environment.results` exists (and is non-empty) and `gui` is empty, exports are written for every expanded experiment/run.
 
 ### Arena, Objects and Agents ruleset
 

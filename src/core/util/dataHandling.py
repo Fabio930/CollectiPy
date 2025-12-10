@@ -18,16 +18,20 @@ from core.util.folder_util import (
     generate_unique_folder_name,
     resolve_result_specs,
 )
+from core.util.logging_util import get_logger
+
+logger = get_logger("data_handling")
 
 class DataHandlingFactory():
     """Data handling factory."""
     @staticmethod
     def create_data_handling(config_elem: Config):
         """Create data handling."""
-        if config_elem.arena.get("_id") in ("abstract", "none", None):
-            return DataHandling(config_elem)
-        else:
-            return SpaceDataHandling(config_elem)
+        arena_id = config_elem.arena.get("_id")
+        handler_cls = DataHandling if arena_id in ("abstract", "none", None) else SpaceDataHandling
+        handler = handler_cls(config_elem)
+        logger.info("Creating %s for arena %s", handler_cls.__name__, arena_id or "<none>")
+        return handler
 
 class DataHandling():
     """Data handling."""

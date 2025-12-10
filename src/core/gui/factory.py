@@ -15,6 +15,10 @@ from typing import Any
 from PySide6.QtWidgets import QApplication
 
 from core.gui.gui_2d import GUI_2D
+from core.util.logging_util import get_logger
+
+
+logger = get_logger("gui.factory")
 
 
 class GuiFactory:
@@ -33,6 +37,7 @@ class GuiFactory:
     ):
         """Create the GUI matching the requested `_id`."""
         gui_id = config_elem.get("_id")
+        logger.info("Creating GUI type %s", gui_id or "<none>")
         if gui_id in ("2D", "abstract"):
             return QApplication([]), GUI_2D(
                 config_elem,

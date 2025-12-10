@@ -254,7 +254,7 @@ class CollisionDetector:
                                 logger.info("Collision detector logging started for run %s", current_run)
                             # Expected format: {"objects": {id: (shapes, positions)}}
                             self.objects = payload.get("objects", {}) or {}
-                            logger.info("CollisionDetector: objects updated (%d groups)", len(self.objects))
+                            logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
                             idle = False
                     except EOFError:
                         pass
@@ -301,7 +301,7 @@ class CollisionDetector:
                             try:
                                 target_q.put(mgr_corr)
                             except Exception:
-                                logger.info(
+                                logger.warning(
                                     "CollisionDetector: failed to send corrections to manager %d",
                                     manager_id
                                 )
@@ -504,7 +504,7 @@ class CollisionDetector:
 
                         all_responses[idx].append((resp, resp_len))
 
-                        logger.info(
+                        logger.debug(
                             "Collision agent-object: %s -> %s depth=%.4f",
                             name, obj_id, penetration
                         )

@@ -61,12 +61,12 @@ class RuntimeMixin:
         """Log object positions for the provided run/tick context."""
         grouped = self._collect_object_positions()
         if not grouped:
-            logger.info("Run %d %s: no arena objects configured", run, tick_label)
+            logger.debug("Run %d %s: no arena objects configured", run, tick_label)
             return
         counts = {key: len(vals) for key, vals in grouped.items()}
-        logger.info("Run %d %s object positions summary: %s", run, tick_label, counts)
+        logger.debug("Run %d %s object positions summary: %s", run, tick_label, counts)
         for entity_type, entries in grouped.items():
-            logger.info("Run %d %s %s positions: %s", run, tick_label, entity_type, "; ".join(entries))
+            logger.debug("Run %d %s %s positions: %s", run, tick_label, entity_type, "; ".join(entries))
 
     def pack_detector_data(self) -> dict:
         """Pack detector data."""
@@ -201,7 +201,7 @@ class RuntimeMixin:
         while run < num_runs + 1:
             start_run_logging(log_specs, process_name, run)
             try:
-                logger.info(f"Run number {run} started")
+                logger.debug(f"Run number {run} started")
                 self._log_object_positions(run, "tick 0")
                 initial_objects = self.pack_objects_data()
                 arena_data = {

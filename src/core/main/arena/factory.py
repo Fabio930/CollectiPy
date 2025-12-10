@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from core.configuration.config import Config
+from core.util.logging_util import get_logger
 from core.main.arena.shapes import (
     AbstractArena,
     CircularArena,
@@ -23,9 +24,13 @@ from core.main.arena.shapes import (
 class ArenaFactory:
     """Arena factory."""
 
+    _LOGGER = get_logger("arena.factory")
+
     @staticmethod
     def create_arena(config_elem: Config):
         """Create arena."""
+        arena_id = config_elem.arena.get("_id")
+        ArenaFactory._LOGGER.info("Creating arena type %s", arena_id or "<none>")
         if config_elem.arena.get("_id") in ("abstract", "none", None):
             return AbstractArena(config_elem)
         if config_elem.arena.get("_id") == "circle":

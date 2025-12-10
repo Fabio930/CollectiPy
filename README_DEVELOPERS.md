@@ -8,7 +8,7 @@ This document complements `README.md` with implementation details, extension poi
 - Create/refresh the virtual environment with `./compile.sh` (or manually with `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`). On Debian/Ubuntu install the matching `python3.x-venv` package if `ensurepip` is missing.
 - GUI builds need the X11/GL/audio libraries listed in `README.md`; headless runs do not.
 - Run scenarios via `./run.sh` or directly: `python src/main.py -c config/random_wp_test_bounded.json`. Logging and results folders are created inside `environment.logging.base_path` / `environment.results.base_path` when enabled.
-- Saving results is disabled while the GUI is active. Leave `environment.gui` empty and set `environment.results` to capture traces.
+- Saving results is disabled while the GUI is active. Leave `environment.gui` empty and provide a non-empty `environment.results` block (for example, add `base_path` or an `agent_specs` entry) to capture traces.
 
 ## Project layout
 
@@ -161,7 +161,7 @@ config.register_agent_shape("custom_prism", {"height", "width", "depth"})
 ## Development workflow tips
 
 - Keep sample configs under `config/` and point `run.sh` (or a direct `python src/main.py -c <cfg>`) at them. Use a headless config when you need reproducible traces or batch runs.
-- When capturing results, ensure `environment.results` is set and `environment.gui` is empty; otherwise the simulator prioritizes rendering over persistence.
+- When capturing results, ensure `environment.results` is set to a non-empty object (e.g., include `base_path` or specs) and `environment.gui` is empty; otherwise the simulator prioritizes rendering over persistence.
 - If you add plugins, list their module paths in the config so they are auto-imported on startup. Keep plugin code under `plugins/` to avoid altering core modules.
 
 ### Batch / grid expansion
