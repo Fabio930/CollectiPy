@@ -183,7 +183,7 @@ class Environment:
                 parent = psutil.Process()
                 children = parent.children(recursive=True)
                 if children:
-                    logger.critical("Killing %d child processes%s", len(children), f" ({note})" if note else "")
+                    logger.info("Killing %d child processes%s", len(children), f" ({note})" if note else "")
                 for proc in children:
                     try:
                         proc.terminate()
@@ -914,7 +914,7 @@ class Environment:
                         _log_process_status("post_join", label, proc)
                     for idx, proc in enumerate(manager_processes):
                         _log_process_status("post_join", f"manager_{idx}", proc)
-            logger.critical("Environment final cleanup: invoking shutdown_logging()")
+            logger.info("Environment final cleanup: invoking shutdown_logging()")
             shutdown_logging()
             gc.collect()
             used_cores.difference_update(assigned_worker_cores)

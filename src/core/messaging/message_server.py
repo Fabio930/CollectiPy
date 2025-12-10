@@ -200,6 +200,7 @@ class MessageServer:
             [str(a.get("uid")) for a in agents],
         )
         # Update internal registry.
+        seen: set[str] = set()
         for info in agents:
             name = str(info.get("uid"))
             if not name:
@@ -216,17 +217,24 @@ class MessageServer:
             msg_kind = info.get("msg_kind")
             entity = info.get("entity")
 
-        self._agents[name] = _AgentInfo(
-            name,
-            manager_id,
-            pos,
-            comm_range,
-            node,
-            allowed_nodes,
-            msg_type,
-            msg_kind,
-            entity,
-        )
+            self._agents[name] = _AgentInfo(
+                name,
+                manager_id,
+                pos,
+                comm_range,
+                node,
+                allowed_nodes,
+                msg_type,
+                msg_kind,
+                entity,
+            )
+            seen.add(name)
+
+        # Remove any stale agents for this manager that disappeared from
+        # the latest snapshot.
+        stale = [uid for uid, info in self._agents.items() if info.manager_id == manager_id and uid not in seen]
+        for uid in stale:
+            del self._agents[uid]
 
         # Rebuild spatial index if we are not fully connected.
         if not self.fully_connected:

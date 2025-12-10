@@ -318,8 +318,6 @@ class RenderMixin:
             neighbors = self.connection_lookup.get(mode, {}).get(selected_id, set())
             if not neighbors:
                 continue
-            pen = QPen(self.connection_colors[mode], 1.4)
-            pen.setCosmetic(True)
             for neighbor in neighbors:
                 other_center = self._agent_centers.get(neighbor)
                 if other_center is None:
@@ -332,6 +330,10 @@ class RenderMixin:
                         continue
                 end_x = other_center.x * scale + offset_x
                 end_y = other_center.y * scale + offset_y
+                neighbor_meta = self._get_metadata_for_agent(neighbor) or {}
+                edge_color = self._resolve_overlay_edge_color(mode, selected_meta, neighbor_meta)
+                pen = QPen(edge_color, 1.4)
+                pen.setCosmetic(True)
                 line = self.scene.addLine(start_x, start_y, end_x, end_y, pen)
                 if mode == "messages" and has_detection:
                     line.setZValue(5)

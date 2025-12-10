@@ -45,10 +45,18 @@ RESULT_GROUP_SPECS = {"graph_messages", "graph_detection", "graphs", "heading"}
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-MESSAGE_TYPES = {"broadcast", "rebroadcast", "hand-shake"}
+MESSAGE_TYPES = {"broadcast", "rebroadcast", "hand_shake"}
 MESSAGE_KINDS = {"anonymous", "id-aware"}
 MESSAGE_CHANNELS = {"single", "dual"}
 MESSAGE_TIMER_DISTRIBUTIONS = {"fixed", "uniform", "exp", "exponential", "gaussian"}
+
+def canonical_message_type(value: Any) -> str:
+    """Return a normalized message type string (lowercase, hyphen -> underscore)."""
+    if value is None:
+        normalized = ""
+    else:
+        normalized = str(value).strip().lower()
+    return normalized.replace("-", "_")
 
 DIMENSION_SHAPES_WITH_DIAMETER = {"circle", "cylinder", "sphere", "unbounded"}
 
@@ -279,8 +287,12 @@ def _validate_timer_block(timer_cfg):
 def _validate_messages_block(messages_cfg):
     if not isinstance(messages_cfg, dict):
         raise ValueError("The 'messages' block must be a dictionary")
-    if "type" in messages_cfg and messages_cfg["type"] not in MESSAGE_TYPES:
-        raise ValueError(f"Invalid messages.type '{messages_cfg['type']}', allowed: {sorted(MESSAGE_TYPES)}")
+    if "type" in messages_cfg:
+        raw_type = messages_cfg["type"]
+        normalized_type = canonical_message_type(raw_type)
+        if normalized_type not in MESSAGE_TYPES:
+            raise ValueError(f"Invalid messages.type '{raw_type}', allowed: {sorted(MESSAGE_TYPES)}")
+        messages_cfg["type"] = normalized_type
     if "kind" in messages_cfg and messages_cfg["kind"] not in MESSAGE_KINDS:
         raise ValueError(f"Invalid messages.kind '{messages_cfg['kind']}', allowed: {sorted(MESSAGE_KINDS)}")
     if "channels" in messages_cfg and messages_cfg["channels"] not in MESSAGE_CHANNELS:
@@ -353,7 +365,10 @@ def register_agent_shape(shape_id: str, allowed_dimensions: set[str]):
 
 def register_message_type(name: str):
     """Allow plugins to define custom message flow types."""
-    MESSAGE_TYPES.add(name)
+    normalized = canonical_message_type(name)
+    if not normalized:
+        raise ValueError("Message type name must be a non-empty string")
+    MESSAGE_TYPES.add(normalized)
 
 def register_message_timer_distribution(name: str):
     """Allow plugins to add new timer distributions to the messages.timer block."""

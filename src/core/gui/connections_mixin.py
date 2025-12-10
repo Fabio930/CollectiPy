@@ -14,6 +14,7 @@ import math
 from typing import Any
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
 
 class ConnectionsMixin:
@@ -50,6 +51,11 @@ class ConnectionsMixin:
     offset_x: float
     offset_y: float
     is_abstract: bool
+    HANDSHAKE_PENDING_COLOR = QColor(255, 215, 0)
+    HANDSHAKE_CONNECTED_COLOR = QColor(0, 255, 0)
+    HANDSHAKE_COMMUNICATION_COLOR = QColor(255, 0, 0)
+    HANDSHAKE_PENDING_WINDOW = 2
+    HANDSHAKE_COMMUNICATION_WINDOW = 3
 
     def _normalize_agent_id(self, agent_key):
         """Return a hashable (group, index) tuple for a selected agent."""
@@ -404,7 +410,8 @@ class ConnectionsMixin:
                 if self._should_link_messages(node_a["meta"], node_b["meta"], dist):
                     adjacency["messages"][node_a["id"]].add(node_b["id"])
                     adjacency["messages"][node_b["id"]].add(node_a["id"])
-                    edges["messages"].append((i, j))
+                    edge_color = self._resolve_message_edge_color(node_a["meta"], node_b["meta"])
+                    edges["messages"].append((i, j, edge_color))
                 if self._should_link_detection(node_a["meta"], node_b["meta"], dist):
                     adjacency["detection"][node_a["id"]].add(node_b["id"])
                     adjacency["detection"][node_b["id"]].add(node_a["id"])
@@ -518,8 +525,119 @@ class ConnectionsMixin:
         if msg_kind_a and msg_kind_b and msg_kind_a != msg_kind_b:
             return False
 
+        if handshake_a and handshake_b:
+            return True
+
         # Otherwise, the link is allowed.
         return True
+
+    @staticmethod
+    def _is_handshake_pair(meta_a, meta_b):
+        """Return True if both agents use the handshake protocol."""
+        msg_type_a = str(meta_a.get("msg_type") or "").strip().lower()
+        msg_type_b = str(meta_b.get("msg_type") or "").strip().lower()
+        return msg_type_a == "hand_shake" and msg_type_b == "hand_shake"
+
+    @staticmethod
+    def _safe_int(value) -> int:
+        """Safely convert metadata values to integers."""
+        try:
+            return int(value)
+        except Exception:
+            return -1
+
+    def _metadata_tick(self, meta):
+        """Return the shared tick stored in metadata."""
+        if not isinstance(meta, dict):
+            return -1
+        return self._safe_int(meta.get("current_tick"))
+
+    def _shared_tick(self, meta_a, meta_b):
+        """Return the most recent tick available across both metadata entries."""
+        tick = self._metadata_tick(meta_a)
+        if tick >= 0:
+            return tick
+        return self._metadata_tick(meta_b)
+
+    def _is_handshake_connected_pair(self, meta_a, meta_b):
+        """Return True if the handshake pair is actually connected."""
+        if not self._is_handshake_pair(meta_a, meta_b):
+            return False
+        partner_a = meta_a.get("handshake_partner")
+        partner_b = meta_b.get("handshake_partner")
+        name_a = meta_a.get("name")
+        name_b = meta_b.get("name")
+        if not partner_a or not partner_b or not name_a or not name_b:
+            return False
+        if partner_a != name_b or partner_b != name_a:
+            return False
+        if meta_a.get("handshake_state") != "connected" or meta_b.get("handshake_state") != "connected":
+            return False
+        return True
+
+    def _handshake_activity_recent(self, meta_a, meta_b):
+        """Return True if either agent recorded handshake activity recently."""
+        tick = self._shared_tick(meta_a, meta_b)
+        if tick < 0:
+            return False
+        activity_a = self._safe_int(meta_a.get("handshake_activity_tick"))
+        activity_b = self._safe_int(meta_b.get("handshake_activity_tick"))
+        last_activity = max(activity_a, activity_b)
+        if last_activity < 0:
+            return False
+        return tick - last_activity < self.HANDSHAKE_PENDING_WINDOW
+
+    def _handshake_is_pending_pair(self, meta_a, meta_b):
+        """Return True if the pair is negotiating a handshake."""
+        if self._is_handshake_connected_pair(meta_a, meta_b):
+            return False
+        state_a = str(meta_a.get("handshake_state") or "").strip().lower()
+        state_b = str(meta_b.get("handshake_state") or "").strip().lower()
+        if state_a == "awaiting_accept" or state_b == "awaiting_accept":
+            return True
+        if meta_a.get("handshake_pending") or meta_b.get("handshake_pending"):
+            return True
+        if self._handshake_activity_recent(meta_a, meta_b):
+            return True
+        return False
+
+    def _handshake_has_recent_communication(self, meta_a, meta_b):
+        """Return True if a connected handshake pair exchanged messages recently."""
+        tick = self._shared_tick(meta_a, meta_b)
+        if tick < 0:
+            return False
+        for meta in (meta_a, meta_b):
+            activity_tick = self._safe_int(meta.get("handshake_activity_tick"))
+            if activity_tick >= 0 and tick - activity_tick < self.HANDSHAKE_COMMUNICATION_WINDOW:
+                return True
+            for key in ("last_tx_tick", "last_rx_tick"):
+                last_tick = self._safe_int(meta.get(key))
+                if last_tick >= 0 and tick - last_tick < self.HANDSHAKE_COMMUNICATION_WINDOW:
+                    return True
+        return False
+
+    def _handshake_edge_color(self, meta_a, meta_b):
+        """Return the color for a handshake edge depending on its state."""
+        default_color = self.connection_colors.get("messages", QColor(120, 200, 120))
+        if self._is_handshake_connected_pair(meta_a, meta_b):
+            if self._handshake_has_recent_communication(meta_a, meta_b):
+                return self.HANDSHAKE_COMMUNICATION_COLOR
+            return default_color
+        if self._handshake_is_pending_pair(meta_a, meta_b):
+            return self.HANDSHAKE_PENDING_COLOR
+        return default_color
+
+    def _resolve_message_edge_color(self, meta_a, meta_b):
+        """Return the desired edge color for a pair of agents."""
+        if self._is_handshake_pair(meta_a, meta_b):
+            return self._handshake_edge_color(meta_a, meta_b)
+        return self.connection_colors.get("messages", QColor(120, 200, 120))
+
+    def _resolve_overlay_edge_color(self, mode, meta_a, meta_b):
+        """Pick the pen color used when drawing overlay lines for the selected agent."""
+        if mode == "messages":
+            return self._resolve_message_edge_color(meta_a, meta_b)
+        return self.connection_colors.get(mode, QColor(200, 120, 200))
 
     def _should_link_detection(self, meta_a, meta_b, distance):
         """Return True if either agent can detect the other."""

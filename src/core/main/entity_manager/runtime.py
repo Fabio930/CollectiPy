@@ -654,8 +654,9 @@ class EntityManager:
         logger.debug("Pack detector data prepared for %d groups", len(out))
         return out
 
-    def get_agent_metadata(self) -> dict:
+    def get_agent_metadata(self, tick: int | None = None) -> dict:
         """Return per-agent metadata used by the GUI."""
+        current_tick = int(tick) if tick is not None else -1
         metadata = {}
         for _, entities in self.agents.values():
             if not entities:
@@ -675,6 +676,13 @@ class EntityManager:
                         "msg_channels": getattr(entity, "msg_channel_mode", "dual"),
                         "msg_type": getattr(entity, "msg_type", None),
                         "msg_kind": getattr(entity, "msg_kind", None),
+                        "handshake_partner": getattr(entity, "handshake_partner", None),
+                        "handshake_state": getattr(entity, "_handshake_state", "idle"),
+                        "handshake_pending": bool(getattr(entity, "_handshake_pending_accept", None)),
+                        "handshake_activity_tick": int(getattr(entity, "_handshake_activity_tick", -1)),
+                        "last_tx_tick": int(getattr(entity, "_last_tx_tick", -1)),
+                        "last_rx_tick": int(getattr(entity, "_last_rx_tick", -1)),
+                        "current_tick": current_tick,
                         "detection_range": float(entity.get_detection_range()),
                         "detection_type": getattr(entity, "detection", None),
                         "detection_frequency": float(getattr(entity, "detection_rate_per_sec", math.inf)),
@@ -704,12 +712,23 @@ class EntityManager:
                         items[-1]["snapshot_metrics"] = dict(metrics)
                 except Exception:
                     pass
-                try:
-                    orient = entity.get_orientation()
-                    items[-1]["orientation_z"] = float(getattr(orient, "z", 0.0)) if orient is not None else 0.0
-                except Exception:
-                    items[-1]["orientation_z"] = 0.0
+            try:
+                orient = entity.get_orientation()
+                items[-1]["orientation_z"] = float(getattr(orient, "z", 0.0)) if orient is not None else 0.0
+            except Exception:
+                items[-1]["orientation_z"] = 0.0
             metadata[group_key] = items
+        for group_key, entries in metadata.items():
+            for index, meta in enumerate(entries):
+                if not meta.get("handshake_partner"):
+                    continue
+                logger.info(
+                    "metadata handshake link %s[%s] -> %s (%s)",
+                    group_key,
+                    index,
+                    meta.get("handshake_partner"),
+                    meta.get("handshake_state"),
+                )
         return metadata
 
     def get_agent_shapes(self) -> dict:

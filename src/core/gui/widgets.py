@@ -96,15 +96,39 @@ class NetworkGraphWidget(QWidget):
             selected_index = highlight.get("selected")
         highlight_active = bool(highlight_edges or highlight_nodes)
         dim_edge_color = QColor(160, 160, 160, 80)
-        for idx_a, idx_b in edges:
+        processed_edges = []
+        for entry in edges:
+            if isinstance(entry, tuple):
+                if len(entry) >= 2:
+                    idx_a, idx_b = entry[0], entry[1]
+                    edge_color = entry[2] if len(entry) >= 3 and isinstance(entry[2], QColor) else None
+                else:
+                    continue
+            elif isinstance(entry, dict):
+                idx_a = entry.get("from") or entry.get("a")
+                idx_b = entry.get("to") or entry.get("b")
+                edge_color = entry.get("color")
+                if not isinstance(edge_color, QColor):
+                    edge_color = None
+            else:
+                continue
+            if idx_a is None or idx_b is None:
+                continue
+            processed_edges.append((idx_a, idx_b, edge_color))
+        for idx_a, idx_b, edge_color in processed_edges:
             if idx_a not in coords or idx_b not in coords:
                 continue
             edge_key = tuple(sorted((idx_a, idx_b)))
+            base_color = edge_color or self.edge_color
             if highlight_active:
-                color = self.edge_color if edge_key in highlight_edges else dim_edge_color
-                width = 2.0 if edge_key in highlight_edges else 1.0
+                if edge_key in highlight_edges:
+                    color = base_color
+                    width = 2.0
+                else:
+                    color = dim_edge_color
+                    width = 1.0
             else:
-                color = self.edge_color
+                color = base_color
                 width = 1.2
             edge_pen = QPen(color, width)
             edge_pen.setCosmetic(True)

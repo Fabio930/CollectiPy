@@ -84,7 +84,7 @@ def manager_run(
             except Exception as exc:
                 logger.warning("Failed to notify detection server about run %s: %s", run, exc)
         try:
-            metadata_cache = manager.get_agent_metadata()
+            metadata_cache = manager.get_agent_metadata(tick=0)
             reset = False
 
             data_in = manager._blocking_get(arena_queue)
@@ -174,6 +174,7 @@ def manager_run(
                         )
 
                     # Optional GUI update while waiting (only if queue is empty).
+                    metadata_cache = manager.get_agent_metadata(tick=t)
                     sync_payload = {
                         "status": [t, ticks_per_second],
                         "agents_shapes": manager.get_agent_shapes(),
@@ -279,7 +280,7 @@ def manager_run(
                 # Always include up-to-date per-agent metadata so data handlers
                 # can access per-agent `snapshot_metrics` (e.g., heading).
                 try:
-                    metadata_snapshot = manager.get_agent_metadata()
+                    metadata_snapshot = manager.get_agent_metadata(tick=t)
                     metadata_cache = metadata_snapshot
                     agents_data["agents_metadata"] = metadata_snapshot
                 except Exception:

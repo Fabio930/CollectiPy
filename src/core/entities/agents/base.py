@@ -16,6 +16,7 @@ from random import Random
 from typing import Any, Optional
 
 from core.configuration.plugin_registry import get_motion_model
+from core.configuration.config import MESSAGE_TYPES as CONFIG_MESSAGE_TYPES, canonical_message_type
 from core.entities.base import Entity, logger as _base_logger
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.logging_util import get_logger
@@ -25,10 +26,8 @@ import models  # noqa: F401  # ensure built-in models register themselves
 logger = _base_logger
 
 VALID_MESSAGE_CHANNELS = {"single", "dual"}
-CHANNEL_TYPE_MATRIX = {
-    "single": {"hand_shake", "rebroadcast"},
-    "dual": {"broadcast", "rebroadcast", "hand_shake"},
-}
+DEFAULT_MESSAGE_TYPE = "broadcast"
+CHANNEL_TYPE_MATRIX = {mode: CONFIG_MESSAGE_TYPES for mode in VALID_MESSAGE_CHANNELS}
 DEFAULT_RX_RATE = 4.0
 
 
@@ -121,9 +120,18 @@ class Agent(Entity):
         self._handshake_request_tick = -1
         self._handshake_last_seen_tick = -1
         self._handshake_accept_enabled = True
+        self._handshake_partner_position: Vector3D | None = None
         self._handshake_auto_request = bool(self.messages_config.get("handshake_auto", True))
         self._handshake_timeout_ticks = self._resolve_handshake_timeout(self.messages_config.get("handshake_timeout"))
         self.msg_timer_config = self._normalize_message_timer(self.messages_config.get("timer"))
+        self._handshake_activity_tick = -1
+        logger.info(
+            "%s configured messaging type=%s kind=%s channel=%s",
+            self.get_name(),
+            self.msg_type,
+            self.msg_kind,
+            self.msg_channel_mode,
+        )
         # --- detection ---
         self.detection_config = self._normalize_detection_config(config_elem.get("detection"))
         self.detection = self.detection_config.get("type", "GPS")
@@ -442,6 +450,9 @@ class Agent(Entity):
             payload["handshake"] = self._build_handshake_block("end", partner, self._handshake_token)
             payload["dialogue_state"] = "end"
             payload["dialogue_end"] = True
+            logger.info(
+                "%s sending handshake end at tick %s to %s", self.get_name(), tick, partner
+            )
             self._reset_handshake_state()
             return payload
         if self._handshake_pending_accept:
@@ -456,10 +467,18 @@ class Agent(Entity):
             self._handshake_state = "connected"
             self._handshake_pending_accept = None
             self._handshake_last_seen_tick = tick
+            logger.info(
+                "%s accepted handshake with %s at tick %s", self.get_name(), payload["to"], tick
+            )
             return payload
         if self.handshake_partner and self._handshake_state == "connected":
-            # No keepalive payload is needed until a plugin requests it.
-            return None
+            payload = self._compose_message_payload(tick)
+            payload["to"] = self.handshake_partner
+            payload["handshake"] = self._build_handshake_block("keepalive", self.handshake_partner, self._handshake_token)
+            payload["dialogue_state"] = "keepalive"
+            payload["dialogue_end"] = False
+            self._handshake_activity_tick = tick
+            return payload
         if self._handshake_state == "awaiting_accept":
             if (
                 self._handshake_timeout_ticks > 0
@@ -486,6 +505,8 @@ class Agent(Entity):
         self._handshake_token = token
         self._handshake_request_tick = tick
         self._handshake_manual_request = False
+        self._handshake_activity_tick = tick
+        logger.info("%s sending handshake invite at tick %s", self.get_name(), tick)
         return payload
 
     def _build_handshake_block(self, state: str, partner: str | None, token: str | None) -> dict:
@@ -504,18 +525,31 @@ class Agent(Entity):
             if not peer or not state:
                 continue
             if state == "invite":
-                if self.handshake_partner or not self._handshake_accept_enabled:
+                if (
+                    self.handshake_partner
+                    or not self._handshake_accept_enabled
+                    or self._handshake_pending_accept
+                ):
                     continue
                 self._handshake_pending_accept = {"partner": peer, "token": token}
-                self._handshake_last_seen_tick = tick
+                self._record_handshake_activity(msg, tick)
+                logger.info(
+                    "%s queued handshake accept for %s at tick %s",
+                    self.get_name(),
+                    peer,
+                    tick,
+                )
             elif state == "accept":
                 if self._handshake_state == "awaiting_accept" and self._handshake_token == token:
                     self.handshake_partner = peer
                     self._handshake_state = "connected"
-                    self._handshake_last_seen_tick = tick
+                    self._record_handshake_activity(msg, tick)
             elif state == "end":
                 if self.handshake_partner == peer:
                     self._reset_handshake_state()
+            elif state == "keepalive":
+                if self.handshake_partner == peer and self._handshake_state == "connected":
+                    self._record_handshake_activity(msg, tick)
         self._handshake_manual_request = False
 
     def _reset_handshake_state(self):
@@ -528,6 +562,7 @@ class Agent(Entity):
         self._handshake_end_requested = False
         self._handshake_request_tick = -1
         self._handshake_last_seen_tick = -1
+        self._handshake_partner_position = None
 
     def _handshake_check_timeout(self, tick: int):
         """Check handshake timeout."""
@@ -537,6 +572,66 @@ class Agent(Entity):
             and self._handshake_last_seen_tick >= 0
             and tick - self._handshake_last_seen_tick > self._handshake_timeout_ticks
         ):
+            logger.warning(
+                "%s handshake timed out (last seen tick %s, timeout %s); resetting",
+                self.get_name(),
+                self._handshake_last_seen_tick,
+                self._handshake_timeout_ticks,
+            )
+            self._reset_handshake_state()
+            return
+        self._check_handshake_distance()
+
+    def _record_handshake_activity(self, msg: dict, tick: int) -> None:
+        """Update bookkeeping for the latest handshake packet."""
+        self._handshake_last_seen_tick = tick
+        self._handshake_activity_tick = tick
+        pos = self._parse_handshake_position(msg)
+        if pos is not None:
+            self._handshake_partner_position = pos
+
+    def _parse_handshake_position(self, msg: dict) -> Vector3D | None:
+        """Extract the remote agent position from a handshake payload."""
+        pos = msg.get("position")
+        if not isinstance(pos, (list, tuple)):
+            return None
+        if len(pos) < 2:
+            return None
+        try:
+            x = float(pos[0])
+            y = float(pos[1])
+            z = float(pos[2]) if len(pos) > 2 else 0.0
+        except (TypeError, ValueError):
+            return None
+        return Vector3D(x, y, z)
+
+    def _check_handshake_distance(self) -> None:
+        """Reset handshake if the partner drifts outside the communication range."""
+        if self._handshake_state != "connected" or self.handshake_partner is None:
+            return
+        if self._handshake_partner_position is None:
+            return
+        try:
+            own_pos = self.get_position()
+        except Exception:
+            return
+        if own_pos is None:
+            return
+        limit = float(self.msg_comm_range or 0.0)
+        if limit <= 0 or math.isinf(limit):
+            return
+        dx = own_pos.x - self._handshake_partner_position.x
+        dy = own_pos.y - self._handshake_partner_position.y
+        dz = own_pos.z - self._handshake_partner_position.z
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist > limit:
+            logger.info(
+                "%s handshake partner %s out of range %.3f > %.3f; resetting",
+                self.get_name(),
+                self.handshake_partner,
+                dist,
+                limit,
+            )
             self._reset_handshake_state()
 
     def _prepare_rebroadcast_payload(self, tick: int) -> dict | None:
@@ -635,19 +730,17 @@ class Agent(Entity):
         return normalized
 
     def _resolve_message_type(self, msg_type: str, channel_mode: str) -> str:
-        """Return a valid message type given the channel mode."""
-        normalized = str(msg_type or "broadcast").strip().lower()
-        allowed = CHANNEL_TYPE_MATRIX.get(channel_mode, CHANNEL_TYPE_MATRIX["dual"])
-        if normalized not in allowed:
-            fallback = next(iter(allowed))
+        """Return a valid message type no matter the configured channel."""
+        normalized = canonical_message_type(msg_type or DEFAULT_MESSAGE_TYPE)
+        if normalized not in CONFIG_MESSAGE_TYPES:
             logger.warning(
                 "%s invalid message type '%s' for channel '%s'; defaulting to '%s'",
                 self.get_name(),
                 msg_type,
                 channel_mode,
-                fallback,
+                DEFAULT_MESSAGE_TYPE,
             )
-            return fallback
+            return DEFAULT_MESSAGE_TYPE
         return normalized
 
     def _normalize_detection_config(self, cfg: Optional[dict]) -> dict:

@@ -35,8 +35,8 @@
             "movable_0":{
                 "number": [20],
                 "shape": "cylinder",
-                "max_linear_velocity": 0.03,
-                "max_angular_velocity": 45,
+                "max_linear_velocity": 0.005,
+                "max_angular_velocity": 35,
                 "dimensions":{
                     "height": 0.02,
                     "diameter": 0.033
@@ -45,7 +45,8 @@
                 "logic_behavior": "led_state",
                 "moving_behavior":"random_way_point",
                 "messages": {
-                    "comm_range": 0.6,
+                    "handshake_timeout": 17,
+                    "comm_range": 0.2,
                     "type": "hand-shake",
                     "kind": "id-aware"
                 }      
