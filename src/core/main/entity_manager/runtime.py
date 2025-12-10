@@ -1,24 +1,29 @@
 # ------------------------------------------------------------------------------
 #  CollectiPy
-#  Copyright (c) 2025 Fabio Oddi
+# Copyright (c) 2025 Fabio Oddi
 #
-#  This file is part of CollectiPy, released under the BSD 3-Clause License.
+#  This file is part of CollectyPy, released under the BSD 3-Clause License.
 #  You may use, modify, and redistribute this file according to the terms of the
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-"""EntityManager: synchronises agents and arena."""
+"""EntityManager runtime: orchestrates agents, messaging and detection."""
+
 from __future__ import annotations
 
-import math, sys, time
+import math
+import sys
+import time
 import multiprocessing as mp
-from typing import Optional, Any, cast
+from typing import Any, Optional, cast
+
+from core.main.entity_manager.loop import manager_run
+from core.main.entity_manager.initialize import initialize_entities
+from core.messaging.message_proxy import MessageProxy
+from core.detection.detection_proxy import DetectionProxy
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.hierarchy_overlay import HierarchyOverlay
-from core.messaging.message_proxy import MessageProxy, NullMessageProxy
-from core.detection.detection_proxy import DetectionProxy
 from core.util.logging_util import get_logger
-from core.main.entity_manager import manager_run, initialize_entities
 
 logger = get_logger("entity_manager")
 FLOAT_MAX = sys.float_info.max
@@ -27,7 +32,9 @@ FLOAT_MIN = -FLOAT_MAX
 
 class _DetectionStub:
     """Lightweight proxy exposing center_of_mass/metadata for detection."""
+
     __slots__ = ("_pos", "metadata")
+
     def __init__(self, pos: Vector3D, metadata: dict | None = None) -> None:
         self._pos = pos
         self.metadata = metadata or {}
@@ -95,10 +102,10 @@ class EntityManager:
         snapshot_stride: int = 1,
         manager_id: int = 0,
         collisions: bool = False,
-        message_tx = None,
-        message_rx = None,
-        detection_tx = None,
-        detection_rx = None,
+        message_tx=None,
+        message_rx=None,
+        detection_tx=None,
+        detection_rx=None,
     ):
         """Initialize the instance."""
         self.agents = agents
@@ -276,7 +283,7 @@ class EntityManager:
             )
         except Exception:
             return 0.05
-        
+
     @staticmethod
     def _sample_spawn_point(entity, center: Vector3D, radius: float, distribution: str, bounds):
         """Sample a spawn position inside a disk and clamp it to the given bounds."""
@@ -336,7 +343,6 @@ class EntityManager:
             return False
 
         try:
-            # Check overlap with arena.
             arena_overlap = shape.check_overlap(self.arena_shape)[0]
         except Exception:
             arena_overlap = False
@@ -351,7 +357,6 @@ class EntityManager:
                 except Exception:
                     continue
 
-        # Restore shape position.
         if orig_pos is not None:
             try:
                 shape.translate(orig_pos)
@@ -401,213 +406,23 @@ class EntityManager:
                     self._global_max.y,
                 )
             else:
-                get_node = getattr(self.hierarchy, "get_node", None)
-                node = get_node(node_id) if callable(get_node) else None
-                bounds = getattr(node, "bounds", None) if node is not None else None
-                if not node or bounds is None:
-                    if node_id not in self._invalid_hierarchy_nodes:
-                        self._invalid_hierarchy_nodes.add(node_id)
-                        logger.warning(
-                            "%s references unknown hierarchy node '%s'; using arena bounds.",
-                            entity.get_name(),
-                            node_id,
-                        )
+                try:
+                    min_x, min_y, max_x, max_y = self.hierarchy.bounds_of(node_id)
+                except Exception:
                     min_x, min_y, max_x, max_y = (
                         self._global_min.x,
                         self._global_min.y,
                         self._global_max.x,
                         self._global_max.y,
                     )
-                else:
-                    min_x, min_y, max_x, max_y = (
-                        bounds.min_x,
-                        bounds.min_y,
-                        bounds.max_x,
-                        bounds.max_y,
-                    )
 
-        padded = (min_x + pad, min_y + pad, max_x - pad, max_y - pad)
-        if padded[0] >= padded[2] or padded[1] >= padded[3]:
-            cx = (min_x + max_x) * 0.5
-            cy = (min_y + max_y) * 0.5
-            return (cx, cy, cx, cy)
-        return padded
+        min_x += pad
+        min_y += pad
+        max_x -= pad
+        max_y -= pad
 
-    # ----------------------------------------------------------------------
-    # Data extraction for GUI / detector
-    # ----------------------------------------------------------------------
-    def get_agent_shapes(self) -> dict:
-        """Return agent shapes grouped by entity type."""
-        shapes = {}
-        for _, entities in self.agents.values():
-            if not entities:
-                continue
-            group_key = entities[0].entity()
-            group_shapes = []
-            for entity in entities:
-                shape = entity.get_shape()
-                if hasattr(shape, "metadata"):
-                    shape.metadata["entity_name"] = entity.get_name()
-                    shape.metadata["hierarchy_node"] = getattr(entity, "hierarchy_node", None)
-                group_shapes.append(shape)
-            shapes[group_key] = group_shapes
-        return shapes
+        return min_x, min_y, max_x, max_y
 
-    def _build_detection_agents_from_snapshot(self, snapshot) -> dict | None:
-        """Convert a lightweight detection snapshot into shape-like objects."""
-        if not isinstance(snapshot, list):
-            return None
-        grouped: dict[str, list[_DetectionStub]] = {}
-        for info in snapshot:
-            group_val = info.get("entity")
-            if group_val is None:
-                continue
-            try:
-                group = str(group_val)
-            except Exception:
-                continue
-            if not group:
-                continue
-            uid = info.get("uid")
-            try:
-                x = float(info.get("x", 0.0))
-                y = float(info.get("y", 0.0))
-                z = float(info.get("z", 0.0))
-            except (TypeError, ValueError):
-                x = y = z = 0.0
-            meta = {
-                "entity_name": uid,
-                "hierarchy_node": info.get("hierarchy_node"),
-            }
-            grouped.setdefault(group, []).append(_DetectionStub(Vector3D(x, y, z), meta))
-        return grouped if grouped else None
-
-    def _configure_cross_detection_scheduler(self) -> None:
-        """Setup throttling for cross-process detection refresh."""
-        rate = self._cross_detection_rate
-        if math.isinf(rate):
-            self._cross_det_quanta = math.inf
-            self._cross_det_budget_cap = math.inf
-        elif rate <= 0:
-            self._cross_det_quanta = 0.0
-            self._cross_det_budget_cap = 0.0
-        else:
-            ticks = max(1.0, float(self._manager_ticks_per_second))
-            self._cross_det_quanta = rate / ticks
-            self._cross_det_budget_cap = max(1.0, rate * 2.0)
-        # Prime budget to allow the first tick to pull a snapshot.
-        self._cross_det_budget = 1.0
-        self._last_cross_det_tick = -1
-
-    def _should_refresh_cross_detection(self, tick: int | None = None) -> bool:
-        """Return True if we should pull a fresh detection snapshot this tick."""
-        if tick is None or self._cross_det_quanta is None:
-            return True
-        if tick == self._last_cross_det_tick:
-            return False
-        if self._cross_det_quanta == 0.0:
-            return False
-        if math.isinf(self._cross_det_quanta):
-            self._last_cross_det_tick = tick
-            return True
-        self._cross_det_budget = min(
-            self._cross_det_budget + self._cross_det_quanta,
-            self._cross_det_budget_cap,
-        )
-        if self._cross_det_budget >= 1.0:
-            self._cross_det_budget -= 1.0
-            self._last_cross_det_tick = tick
-            return True
-        return False
-
-    def _gather_detection_agents(self, tick: int | None = None) -> dict:
-        """
-        Return agents grouped for perception.
-
-        Prefer the lightweight global snapshot from the detection server (fast,
-        cross-process) and fall back to local shapes when unavailable. Snapshot
-        pulls are throttled by _cross_detection_rate.
-        """
-        if self._should_refresh_cross_detection(tick):
-            snapshot = None
-            if self._detection_proxy is not None:
-                try:
-                    snapshot = self._detection_proxy.get_snapshot()
-                except Exception:
-                    snapshot = None
-            elif self._message_proxy is not None:
-                try:
-                    snapshot = self._message_proxy.get_detection_snapshot()
-                except Exception:
-                    snapshot = None
-            built = self._build_detection_agents_from_snapshot(snapshot) if snapshot is not None else None
-            if built:
-                self._cached_detection_agents = built
-        if self._cached_detection_agents:
-            return self._cached_detection_agents
-        return self.get_agent_shapes()
-
-    def get_agent_spins(self) -> dict:
-        """Return spin data grouped by entity type."""
-        spins = {}
-        for _, entities in self.agents.values():
-            if not entities:
-                continue
-            spins[entities[0].entity()] = [entity.get_spin_system_data() for entity in entities]
-        return spins
-
-    def get_agent_metadata(self) -> dict:
-        """Return per-agent metadata used by the GUI."""
-        metadata = {}
-        for _, entities in self.agents.values():
-            if not entities:
-                continue
-            group_key = entities[0].entity()
-            items = []
-            for entity in entities:
-                msg_enabled = bool(getattr(entity, "msg_enable", False))
-                msg_range = float(getattr(entity, "msg_comm_range", float("inf"))) if msg_enabled else 0.0
-                items.append(
-                    {
-                        "name": entity.get_name(),
-                        "msg_enable": msg_enabled,
-                        "msg_comm_range": msg_range,
-                        "msg_tx_rate": float(getattr(entity, "msgs_per_sec", 0.0)),
-                        "msg_rx_rate": float(getattr(entity, "msg_receive_per_sec", 0.0)),
-                        "msg_channels": getattr(entity, "msg_channel_mode", "dual"),
-                        "msg_type": getattr(entity, "msg_type", None),
-                        "msg_kind": getattr(entity, "msg_kind", None),
-                        "detection_range": float(entity.get_detection_range()),
-                        "detection_type": getattr(entity, "detection", None),
-                        "detection_frequency": float(getattr(entity, "detection_rate_per_sec", math.inf)),
-                    }
-                )
-            metadata[group_key] = items
-        return metadata
-
-    def pack_detector_data(self) -> dict:
-        """
-        Build the payload for the asynchronous CollisionDetector.
-
-        Returns:
-            {club: (shapes, velocities, forward_vectors, positions, names)}
-        """
-        out = {}
-        for _, entities in self.agents.values():
-            if not entities:
-                continue
-            shapes = [entity.get_shape() for entity in entities]
-            velocities = [entity.get_max_absolute_velocity() for entity in entities]
-            vectors = [entity.get_forward_vector() for entity in entities]
-            positions = [entity.get_position() for entity in entities]
-            names = [entity.get_name() for entity in entities]
-            out[entities[0].entity()] = (shapes, velocities, vectors, positions, names)
-        logger.debug("Pack detector data prepared for %d groups", len(out))
-        return out
-
-    # ----------------------------------------------------------------------
-    # Wrap / clamp
-    # ----------------------------------------------------------------------
     def _apply_wrap(self, entity):
         """Apply toroidal wrap, if configured."""
         if not self.wrap_config or self.wrap_config.get("unbounded"):
@@ -700,6 +515,201 @@ class EntityManager:
             )
 
     # ----------------------------------------------------------------------
+    # Cross-manager detection
+    # ----------------------------------------------------------------------
+    def _configure_cross_detection_scheduler(self):
+        """Setup throttling for cross-process detection refresh."""
+        rate = self._cross_detection_rate
+        if math.isinf(rate):
+            self._cross_det_quanta = math.inf
+            self._cross_det_budget_cap = math.inf
+        elif rate <= 0:
+            self._cross_det_quanta = 0.0
+            self._cross_det_budget_cap = 0.0
+        else:
+            ticks = max(1.0, float(self._manager_ticks_per_second))
+            self._cross_det_quanta = rate / ticks
+            self._cross_det_budget_cap = max(1.0, rate * 2.0)
+        # Prime budget to allow the first tick to pull a snapshot.
+        self._cross_det_budget = 1.0
+        self._last_cross_det_tick = -1
+
+    def _should_refresh_cross_detection(self, tick: int | None = None) -> bool:
+        """Return True if we should pull a fresh detection snapshot this tick."""
+        if tick is None or self._cross_det_quanta is None:
+            return True
+        if tick == self._last_cross_det_tick:
+            return False
+        if self._cross_det_quanta == 0.0:
+            return False
+        if math.isinf(self._cross_det_quanta):
+            self._last_cross_det_tick = tick
+            return True
+        self._cross_det_budget = min(
+            self._cross_det_budget + self._cross_det_quanta,
+            self._cross_det_budget_cap,
+        )
+        if self._cross_det_budget >= 1.0:
+            self._cross_det_budget -= 1.0
+            self._last_cross_det_tick = tick
+            return True
+        return False
+
+    # ----------------------------------------------------------------------
+    # Snapshots/helpers used by loop
+    # ----------------------------------------------------------------------
+    def _build_entity_detection_stub(self, entity):
+        """Return a detection stub wrapping the entity's shape/metadata."""
+        try:
+            shape = entity.get_shape()
+            pos = shape.center_of_mass()
+            meta = getattr(shape, "metadata", {}) if hasattr(shape, "metadata") else {}
+            return _DetectionStub(pos, meta)
+        except Exception:
+            return _DetectionStub(Vector3D())
+
+    def _cached_detection_entities(self):
+        """Return cached detection entities (shape stubs) for this manager."""
+        if self._cached_detection_agents is not None:
+            return self._cached_detection_agents
+        cache = {}
+        for group_name, (_, entities) in self.agents.items():
+            cache[group_name] = [_build if (_build := self._build_entity_detection_stub(e)) else None for e in entities]
+        self._cached_detection_agents = cache
+        return cache
+
+    def _build_detection_agents_from_snapshot(self, snapshot) -> dict | None:
+        """Convert a lightweight detection snapshot into shape-like objects."""
+        if not isinstance(snapshot, list):
+            return None
+        grouped: dict[str, list[_DetectionStub]] = {}
+        for info in snapshot:
+            group_val = info.get("entity")
+            if group_val is None:
+                continue
+            try:
+                group = str(group_val)
+            except Exception:
+                continue
+            if not group:
+                continue
+            uid = info.get("uid")
+            try:
+                x = float(info.get("x", 0.0))
+                y = float(info.get("y", 0.0))
+                z = float(info.get("z", 0.0))
+            except (TypeError, ValueError):
+                x = y = z = 0.0
+            meta = {
+                "entity_name": uid,
+                "hierarchy_node": info.get("hierarchy_node"),
+            }
+            grouped.setdefault(group, []).append(_DetectionStub(Vector3D(x, y, z), meta))
+        return grouped if grouped else None
+
+    def _gather_detection_agents(self, tick: int | None = None) -> dict:
+        """
+        Return agents grouped for perception.
+
+        Prefer the lightweight global snapshot from the detection server (fast,
+        cross-process) and fall back to local shapes when unavailable. Snapshot
+        pulls are throttled by _cross_detection_rate.
+        """
+        if self._should_refresh_cross_detection(tick):
+            snapshot = None
+            if self._detection_proxy is not None:
+                try:
+                    snapshot = self._detection_proxy.get_snapshot()
+                except Exception:
+                    snapshot = None
+            elif self._message_proxy is not None:
+                try:
+                    snapshot = self._message_proxy.get_detection_snapshot()
+                except Exception:
+                    snapshot = None
+            built = self._build_detection_agents_from_snapshot(snapshot) if snapshot is not None else None
+            if built:
+                self._cached_detection_agents = built
+        if self._cached_detection_agents:
+            return self._cached_detection_agents
+        return self.get_agent_shapes()
+
+    def pack_detector_data(self) -> dict:
+        """
+        Build the payload for the asynchronous CollisionDetector.
+
+        Returns:
+            {club: (shapes, velocities, forward_vectors, positions, names)}
+        """
+        out = {}
+        for _, entities in self.agents.values():
+            if not entities:
+                continue
+            shapes = [entity.get_shape() for entity in entities]
+            velocities = [entity.get_max_absolute_velocity() for entity in entities]
+            vectors = [entity.get_forward_vector() for entity in entities]
+            positions = [entity.get_position() for entity in entities]
+            names = [entity.get_name() for entity in entities]
+            out[entities[0].entity()] = (shapes, velocities, vectors, positions, names)
+        logger.debug("Pack detector data prepared for %d groups", len(out))
+        return out
+
+    def get_agent_metadata(self) -> dict:
+        """Return per-agent metadata used by the GUI."""
+        metadata = {}
+        for _, entities in self.agents.values():
+            if not entities:
+                continue
+            group_key = entities[0].entity()
+            items = []
+            for entity in entities:
+                msg_enabled = bool(getattr(entity, "msg_enable", False))
+                msg_range = float(getattr(entity, "msg_comm_range", float("inf"))) if msg_enabled else 0.0
+                items.append(
+                    {
+                        "name": entity.get_name(),
+                        "msg_enable": msg_enabled,
+                        "msg_comm_range": msg_range,
+                        "msg_tx_rate": float(getattr(entity, "msgs_per_sec", 0.0)),
+                        "msg_rx_rate": float(getattr(entity, "msg_receive_per_sec", 0.0)),
+                        "msg_channels": getattr(entity, "msg_channel_mode", "dual"),
+                        "msg_type": getattr(entity, "msg_type", None),
+                        "msg_kind": getattr(entity, "msg_kind", None),
+                        "detection_range": float(entity.get_detection_range()),
+                        "detection_type": getattr(entity, "detection", None),
+                        "detection_frequency": float(getattr(entity, "detection_rate_per_sec", math.inf)),
+                    }
+                )
+            metadata[group_key] = items
+        return metadata
+
+    def get_agent_shapes(self) -> dict:
+        """Return agent shapes grouped by entity type."""
+        shapes = {}
+        for _, entities in self.agents.values():
+            if not entities:
+                continue
+            group_key = entities[0].entity()
+            group_shapes = []
+            for entity in entities:
+                shape = entity.get_shape()
+                if hasattr(shape, "metadata"):
+                    shape.metadata["entity_name"] = entity.get_name()
+                    shape.metadata["hierarchy_node"] = getattr(entity, "hierarchy_node", None)
+                group_shapes.append(shape)
+            shapes[group_key] = group_shapes
+        return shapes
+
+    def get_agent_spins(self) -> dict:
+        """Return spin data grouped by entity type."""
+        spins = {}
+        for _, entities in self.agents.values():
+            if not entities:
+                continue
+            spins[entities[0].entity()] = [entity.get_spin_system_data() for entity in entities]
+        return spins
+
+    # ----------------------------------------------------------------------
     # Main loop
     # ----------------------------------------------------------------------
     def run(
@@ -708,13 +718,13 @@ class EntityManager:
         time_limit: int,
         arena_queue: mp.Queue,
         agents_queue: mp.Queue,
-        dec_agents_in: Optional[mp.Queue],
-        dec_agents_out: Optional[mp.Queue],
+        dec_agents_in: Optional[mp.Queue] = None,
+        dec_agents_out: Optional[mp.Queue] = None,
         agent_barrier=None,
-        log_context: dict | None = None
+        log_context: dict | None = None,
     ):
-        """Run the simulation routine."""
-        return manager_run(
+        """Run the simulation loop."""
+        manager_run(
             self,
             num_runs,
             time_limit,
@@ -722,6 +732,6 @@ class EntityManager:
             agents_queue,
             dec_agents_in,
             dec_agents_out,
-            agent_barrier,
-            log_context,
+            agent_barrier=agent_barrier,
+            log_context=log_context,
         )

@@ -1,8 +1,8 @@
-import sys, getopt, logging, json, gc
+import sys, getopt, logging, json, gc, os, tempfile
 from pathlib import Path
-from config import Config
-from environment import EnvironmentFactory
-from plugin_registry import load_plugins_from_config
+from core.configuration.config import Config
+from core.main.environment import EnvironmentFactory
+from core.configuration.plugin_registry import load_plugins_from_config
 from core.util.logging_util import (
     configure_logging,
     is_file_logging_enabled,
@@ -44,6 +44,10 @@ def main(argv):
         print_usage(1)
 
     config_path_resolved = Path(configfile).expanduser().resolve()
+    # Ensure multiprocessing temp files avoid /dev/shm on constrained environments.
+    os.environ.setdefault("TMPDIR", "/tmp")
+    os.environ.setdefault("MP_TEMPORARY_DIRECTORY", os.environ["TMPDIR"])
+    tempfile.tempdir = os.environ["TMPDIR"]
 
     exit_code = 0
     try:

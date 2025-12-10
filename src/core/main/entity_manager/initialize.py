@@ -44,7 +44,7 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
         if callable(getter):
             try:
                 r = getter()
-                if isinstance(r, (int, float)):
+                if isinstance(r, (int, float)) and r > 0:
                     return float(r)
             except Exception:
                 pass

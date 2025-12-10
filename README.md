@@ -52,7 +52,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
 - Restore view: `V` or the Restore button (also clears selection/locks)
 - Centroid: `C` or the Centroid button; double-click to lock/unlock on the centroid
 - Agent selection: click agents in arena or graph; double-click locks the camera on that agent
-- Playback slider: a horizontal slider beside the header controls lets you slow the simulation without pausing.
+- Playback slider: a horizontal slider beside the header controls lets you slow the simulation.
 
 ## Config.json Example
 
