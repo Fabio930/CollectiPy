@@ -178,6 +178,7 @@ def manager_run(
                         "status": [t, ticks_per_second],
                         "agents_shapes": manager.get_agent_shapes(),
                         "agents_spins": manager.get_agent_spins(),
+                        "agents_metadata": metadata_cache,
                     }
                     if agents_queue.qsize() == 0:
                         agents_queue.put(sync_payload)

@@ -11,12 +11,7 @@
 
 from __future__ import annotations
 
-<<<<<<< Updated upstream:src/core/entities/agents/base.py
-import hashlib
-import math
-=======
 import hashlib, math
->>>>>>> Stashed changes:src/core/entities/agents.py
 from random import Random
 from typing import Any, Optional
 

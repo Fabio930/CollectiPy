@@ -10,23 +10,12 @@
 """Environment: process-level orchestration of the simulation."""
 from __future__ import annotations
 
-import gc
-import json
+import gc, json, psutil, time
 import multiprocessing as mp
-<<<<<<< Updated upstream:src/core/main/environment/runtime.py
-import os
-import time
-=======
->>>>>>> Stashed changes:src/core/main/environment.py
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import Any, Dict
 
-<<<<<<< Updated upstream:src/core/main/environment/runtime.py
-import psutil
-
-=======
->>>>>>> Stashed changes:src/core/main/environment.py
 from core.configuration.config import Config
 from core.main.arena import ArenaFactory
 from core.main.environment.affinity import (
@@ -155,9 +144,7 @@ class Environment:
         )
         if session_logs_root is not None:
             session_logs_root.mkdir(parents=True, exist_ok=True)
-<<<<<<< Updated upstream:src/core/main/environment/runtime.py
-=======
-        logger.critical(
+        logger.info(
             "Environment start: experiments=%d logging=%s file_logging=%s",
             len(self.experiments),
             logging_enabled,
@@ -182,7 +169,6 @@ class Environment:
                         exc2,
                     )
                     raise
->>>>>>> Stashed changes:src/core/main/environment.py
         try:
             env_core = pick_least_used_free_cores(1)
             if env_core:
@@ -518,58 +504,6 @@ class Environment:
                         args=(message_channels, message_server_log_specs, fully_connected),
                     )
                 if detection_server_needed:
-<<<<<<< Updated upstream:src/core/main/environment/runtime.py
-                    detection_tx = ctx.Queue()
-                    detection_rx = ctx.Queue()
-                else:
-                    detection_tx = None
-                    detection_rx = None
-                message_channels.append((message_tx, message_rx))
-                detection_channels.append((detection_tx, detection_rx))
-
-            for idx_block, block in enumerate(agent_blocks):
-                block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
-                proc = mp.Process(
-                    target=_run_manager_process,
-                    args=(
-                        block_filtered,
-                        arena_shape,
-                        exp_log_specs,
-                        wrap_config,
-                        arena_hierarchy,
-                        self.snapshot_stride,
-                        idx_block,
-                        self.collisions,
-                        message_channels[idx_block][0],
-                        message_channels[idx_block][1],
-                        detection_channels[idx_block][0],
-                        detection_channels[idx_block][1],
-                        self.num_runs,
-                        self.time_limit,
-                        arena_queue_list[idx_block],
-                        agents_queue_list[idx_block],
-                        dec_agents_in_list[idx_block],
-                        dec_agents_out_list[idx_block],
-                        agent_barrier,
-                    ),
-                )
-
-                manager_processes.append(proc)
-                _register_process(f"manager_{idx_block}", proc)
-            fully_connected = True
-            message_server_process = None
-            detection_server_process = None
-            if any_messages:
-                message_server_process = mp.Process(
-                    target=_run_message_server,
-                    args=(message_channels, message_server_log_specs, fully_connected),
-                )
-            if detection_server_needed:
-                detection_server_process = mp.Process(
-                    target=_run_detection_server,
-                    args=(detection_channels, detection_server_log_specs),
-                )
-=======
                     detection_server_process = mp.Process(
                         target=_run_detection_server,
                         args=(detection_channels, detection_server_log_specs),
@@ -580,7 +514,6 @@ class Environment:
                 )
                 shutdown_logging()
                 raise
->>>>>>> Stashed changes:src/core/main/environment.py
             gui_process = None
             _register_process("message_server", message_server_process)
             _register_process("detection_server", detection_server_process)

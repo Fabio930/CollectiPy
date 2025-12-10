@@ -172,15 +172,7 @@ class RuntimeMixin:
             """
             shapes: dict = {}
             spins: dict = {}
-<<<<<<< Updated upstream
-            metadata = {k: list(v) for k, v in cached_metadata.items()}
-=======
-            # Rebuild metadata for this tick from manager snapshots to
-            # preserve per-manager ordering (same order used for shapes/spins).
-            # Fallback to cached metadata only for groups that did not produce
-            # any snapshot in this batch.
             metadata = {}
->>>>>>> Stashed changes
             for snap in snapshots:
                 if not snap:
                     continue
@@ -190,15 +182,12 @@ class RuntimeMixin:
                     spins.setdefault(grp, []).extend(vals)
                 for grp, vals in snap.get("agents_metadata", {}).items():
                     metadata.setdefault(grp, []).extend(vals)
-<<<<<<< Updated upstream
-=======
             # For any group that did not appear in this batch, keep the
             # previously cached metadata so downstream code still has
             # something to work with.
             for k, v in cached_metadata.items():
                 if k not in metadata:
                     metadata[k] = list(v)
->>>>>>> Stashed changes
             # If no metadata arrived in this batch, keep cached metadata.
             return shapes, spins, metadata
 

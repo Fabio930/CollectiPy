@@ -81,46 +81,7 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                 if not entity.get_orientation_from_dict():
                     rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
-<<<<<<< Updated upstream
-                position = entity.get_start_position()
-                if not entity.get_position_from_dict():
-                    placed = self._place_entity_random(
-                        entity,
-                        radii_map[id(entity)],
-                        occupancy,
-                        rng,
-                        min_v,
-                        max_v,
-                        spawn_cfg,
-                    )
-                    if not placed:
-                        raise Exception(f"Impossible to place object {entity.entity()} in the arena")
-                else:
-                    if position is None:
-                        raise ValueError(f"Configured position missing for object {entity.entity()}")
-                    entity.to_origin()
-                    target = Vector3D(position.x, position.y, position.z + abs(entity.get_shape().min_vert().z))
-                    entity.set_start_position(target)
-                    shape = entity.get_shape()
-                    if shape.check_overlap(self.shape)[0]:
-                        logger.warning(
-                            "Configured position for object %s overlaps arena walls; re-sampling position.",
-                            entity.entity(),
-                        )
-                        placed = self._place_entity_random(
-                            entity,
-                            radii_map[id(entity)],
-                            occupancy,
-                            rng,
-                            min_v,
-                            max_v,
-                            spawn_cfg,
-                        )
-                        if not placed:
-                            raise Exception(f"Impossible to place object {entity.entity()} in the arena")
-                    else:
-                        self._register_shape_in_grid(shape, target, radii_map[id(entity)], occupancy)
-=======
+
                 placed = self._place_entity_random(
                     entity,
                     radii_map[id(entity)],
@@ -132,7 +93,6 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                 )
                 if not placed:
                     raise Exception(f"Impossible to place object {entity.entity()} in the arena")
->>>>>>> Stashed changes
 
     def reset(self):
         """Reset the component state."""
@@ -157,45 +117,7 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                     rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
                 position = entity.get_start_position()
-<<<<<<< Updated upstream
-                if not entity.get_position_from_dict():
-                    count = 0
-                    done = False
-                    shape_n = entity.get_shape()
-                    shape_type_n = entity.get_shape_type()
-                    while not done and count < 500:
-                        done = True
-                        rand_pos = Vector3D(
-                            rng.uniform(min_v.x, max_v.x),
-                            rng.uniform(min_v.y, max_v.y),
-                            position.z,
-                        )
-                        entity.to_origin()
-                        entity.set_position(rand_pos)
-                        shape_n = entity.get_shape()
-                        if shape_n.check_overlap(self.shape)[0]:
-                            done = False
-                        if done:
-                            for m in range(n_entities):
-                                if m == n:
-                                    continue
-                                other_entity = entities[m]
-                                other_shape = other_entity.get_shape()
-                                other_shape_type = other_entity.get_shape_type()
-                                if shape_type_n == other_shape_type and shape_n.check_overlap(other_shape)[0]:
-                                    done = False
-                                    break
-                        count += 1
-                        if done:
-                            entity.set_start_position(rand_pos)
-                    if not done:
-                        raise Exception(f"Impossible to place object {entity.entity()} in the arena")
-                else:
-                    if position is None:
-                        raise ValueError(f"Configured position missing for object {entity.entity()}")
-                    entity.to_origin()
-                    entity.set_start_position(Vector3D(position.x, position.y, position.z + abs(entity.get_shape().min_vert().z)))
-=======
+
                 count = 0
                 done = False
                 shape_n = entity.get_shape()
@@ -227,7 +149,6 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                         entity.set_start_position(rand_pos)
                 if not done:
                     raise Exception(f"Impossible to place object {entity.entity()} in the arena")
->>>>>>> Stashed changes
 
     def _update_hierarchy_from_shape(self):
         """Update hierarchy from shape."""
