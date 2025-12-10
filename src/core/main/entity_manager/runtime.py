@@ -111,7 +111,7 @@ class EntityManager:
         self.agents = agents
         self.arena_shape = arena_shape
         self.wrap_config = wrap_config
-        self.hierarchy = hierarchy
+        self.hierarchy: Optional[HierarchyOverlay] = hierarchy
         self.snapshot_stride = max(1, snapshot_stride)
         self.manager_id = manager_id
         self.collisions = collisions
@@ -381,9 +381,10 @@ class EntityManager:
 
     def _get_entity_xy_bounds(self, entity, pad: float = 0.0):
         """Return xy bounds padded inward by `pad` to keep placements inside walls."""
+        hierarchy = self.hierarchy
         use_hierarchy = False
-        if self.hierarchy:
-            info = getattr(self.hierarchy, "information_scope", None)
+        if hierarchy:
+            info = getattr(hierarchy, "information_scope", None)
             if info and isinstance(info, dict):
                 over = info.get("over")
                 if over and "movement" in over:
@@ -407,7 +408,12 @@ class EntityManager:
                 )
             else:
                 try:
-                    min_x, min_y, max_x, max_y = self.hierarchy.bounds_of(node_id)
+                    min_x, min_y, max_x, max_y = hierarchy.bounds_of(node_id) if hierarchy else (
+                        self._global_min.x,
+                        self._global_min.y,
+                        self._global_max.x,
+                        self._global_max.y,
+                    )
                 except Exception:
                     min_x, min_y, max_x, max_y = (
                         self._global_min.x,
@@ -712,11 +718,11 @@ class EntityManager:
                         items[-1]["snapshot_metrics"] = dict(metrics)
                 except Exception:
                     pass
-            try:
-                orient = entity.get_orientation()
-                items[-1]["orientation_z"] = float(getattr(orient, "z", 0.0)) if orient is not None else 0.0
-            except Exception:
-                items[-1]["orientation_z"] = 0.0
+                try:
+                    orient = entity.get_orientation()
+                    items[-1]["orientation_z"] = float(getattr(orient, "z", 0.0)) if orient is not None else 0.0
+                except Exception:
+                    items[-1]["orientation_z"] = 0.0
             metadata[group_key] = items
         for group_key, entries in metadata.items():
             for index, meta in enumerate(entries):

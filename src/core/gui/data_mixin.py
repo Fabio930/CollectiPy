@@ -11,14 +11,40 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable, TYPE_CHECKING
 
 from matplotlib import cm
 
 from core.util.logging_util import start_run_logging
 
 
-class DataMixin:
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    class _DataMixinProps(Protocol):
+        _clear_selection: Callable[..., None]
+        _show_spin_canvas: Callable[..., None]
+        ax: Any
+        figure: Any
+        canvas: Any
+        _log_info: Callable[..., None]
+        stop_gracefully: Callable[..., None]
+        running: bool
+        _refresh_agent_centers: Callable[..., None]
+        _connection_features_active: Callable[..., bool]
+        _rebuild_connection_graphs: Callable[..., None]
+        _update_graph_views: Callable[..., None]
+        _clear_connection_caches: Callable[..., None]
+        update_scene: Callable[..., None]
+        update: Callable[..., None]
+        spin_panel_visible: bool
+        _update_connection_legend: Callable[..., None]
+        reset: bool
+else:
+    _DataMixinProps = object
+
+
+class DataMixin(_DataMixinProps):
     """Mixin that updates GUI state from queues and plots."""
 
     gui_in_queue: Any

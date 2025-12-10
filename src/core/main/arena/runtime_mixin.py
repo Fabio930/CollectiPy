@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, cast
+from typing import Any, Protocol, TYPE_CHECKING, cast
 
 from core.util.logging_util import start_run_logging, shutdown_logging
 
@@ -20,7 +20,34 @@ from core.util.logging_util import get_logger
 logger = get_logger("arena")
 
 
-class RuntimeMixin:
+if TYPE_CHECKING:
+    class _RuntimeMixinProps(Protocol):
+        objects: dict[Any, Any]
+        _gui_backpressure_enabled: bool
+        _gui_backpressure_threshold: int
+        _gui_backpressure_interval: float
+        _gui_backpressure_active: bool
+        ticks_per_second: int
+        random_seed: int
+        _speed_multiplier: float
+        agents_shapes: dict
+        agents_spins: dict
+        agents_metadata: dict
+        data_handling: Any
+        quiet: bool
+
+        def _maybe_get(self, q: Any, timeout: float = 0.0) -> Any: ...
+        def _find_float_limit_violation(self, agents_shapes: dict | None, objects_data: dict | None = None) -> tuple | None: ...
+        def increment_seed(self) -> None: ...
+        def randomize_seed(self) -> None: ...
+        def reset(self) -> None: ...
+        def close(self) -> None: ...
+
+else:
+    _RuntimeMixinProps = object
+
+
+class RuntimeMixin(_RuntimeMixinProps):
     """Mixin implementing the main arena run loop and logging helpers."""
 
     def pack_objects_data(self) -> dict:

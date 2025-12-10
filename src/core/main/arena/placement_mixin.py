@@ -11,13 +11,25 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.main.arena.base import BOUNDARY_RADIUS_EPS, FLOAT_MAX, FLOAT_MIN
 from core.util.geometry_utils.vector3D import Vector3D
 
+if TYPE_CHECKING:
+    from typing import Protocol
 
-class PlacementMixin:
+    class _PlacementMixinProps(Protocol):
+        objects: dict[Any, Any]
+        shape: Any
+        _boundary_grid: Any
+        _grid_cell_size: float | None
+        _grid_origin: Vector3D | None
+else:
+    _PlacementMixinProps = object
+
+
+class PlacementMixin(_PlacementMixinProps):
     """Helper methods for spawning entities and boundary checks."""
 
     _boundary_grid: Any

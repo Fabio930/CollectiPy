@@ -55,6 +55,10 @@ class NullMessageProxy:
         """Release any resources retained by the proxy."""
         return
 
+    def get_detection_snapshot(self) -> None:
+        """Return None to satisfy detection-aware callers when the server is unavailable."""
+        return None
+
 
 class MessageProxy:
     """
@@ -152,6 +156,10 @@ class MessageProxy:
     def close(self) -> None:
         """Release any resources retained by the proxy."""
         return
+
+    def get_detection_snapshot(self) -> None:
+        """Return None when the message proxy cannot supply detection snapshots."""
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers

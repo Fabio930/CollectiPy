@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QResizeEvent
@@ -22,6 +22,18 @@ from core.util.geometry_utils.vector3D import Vector3D
 
 class CameraMixin:
     """Mixin providing camera logic for the 2D GUI."""
+
+    if TYPE_CHECKING:
+        from PySide6.QtWidgets import QPushButton
+
+        def update_scene(self) -> None: ...
+
+        centroid_button: Optional[QPushButton]
+        def minimumWidth(self) -> int: ...
+        def width(self) -> int: ...
+        def height(self) -> int: ...
+        def resize(self, *args: Any, **kwargs: Any) -> None: ...
+        def resizeEvent(self, event: Optional[QResizeEvent]) -> None: ...
 
     _view_rect: Optional[QRectF]
     _view_initialized: bool
@@ -470,6 +482,6 @@ class CameraMixin:
     def resizeEvent(self, event: Optional[QResizeEvent]):
         """Handle Qt resize events."""
         if event is not None:
-            super().resizeEvent(event)
+            QWidget.resizeEvent(cast(QWidget, self), event)
         self._sync_scene_rect_with_view()
         self.update_scene()

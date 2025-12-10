@@ -26,7 +26,9 @@ class StaticAgent(Agent):
             self.shape_type = "dense"
         self.shape = Shape3DFactory.create_shape("agent", config_elem.get("shape", "point"), dict(config_elem))
         marker = Shape3DFactory.create_shape("mark", "circle", {"_id": "led", "color": "red", "diameter": 0.01})
-        self.shape.add_attachment(marker)
+        shape = self.shape
+        if shape:
+            shape.add_attachment(marker)
         self._led_attachment = marker
         self._led_default_color = marker.color()
         self._level_attachment = None
@@ -39,8 +41,10 @@ class StaticAgent(Agent):
     def to_origin(self):
         """To origin."""
         self.position = Vector3D()
-        self.shape.center = self.position
-        self.shape.set_vertices()
+        shape = self.shape
+        if shape:
+            shape.center = self.position
+            shape.set_vertices()
 
     def set_start_position(self, new_position: Vector3D, _translate: bool = True):
         """Set the start position."""
@@ -51,7 +55,9 @@ class StaticAgent(Agent):
         """Set the position."""
         self.position = new_position
         if _translate:
-            self.shape.translate(self.position)
+            shape = self.shape
+            if shape:
+                shape.translate(self.position)
 
     def set_start_orientation(self, new_orientation: Vector3D):
         """Set the start orientation."""
@@ -61,7 +67,9 @@ class StaticAgent(Agent):
     def set_orientation(self, new_orientation: Vector3D):
         """Set the orientation."""
         self.orientation = new_orientation
-        self.shape.rotate(self.start_orientation.z)
+        shape = self.shape
+        if shape:
+            shape.rotate(self.start_orientation.z)
 
     def get_start_position(self):
         """Return the start position."""

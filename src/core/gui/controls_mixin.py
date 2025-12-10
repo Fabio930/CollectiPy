@@ -11,13 +11,51 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING, Callable, cast
 
-from PySide6.QtCore import Qt, QEvent, QTimer
-from PySide6.QtGui import QMouseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import Qt as _Qt, QEvent, QTimer
+from PySide6.QtGui import QMouseEvent, QWheelEvent, QKeySequence, QShortcut
+
+Qt = cast(Any, _Qt)
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import QWidget
+
+    class _ControlsMixinProps:
+        view: Any
+        scene: Any
+        spin_window: Any
+        _sync_scene_rect_with_view: Callable[..., None]
+        update_scene: Callable[..., None]
+        _zoom_camera: Callable[..., None]
+        get_agent_at: Callable[..., Any]
+        _handle_agent_selection: Callable[..., None]
+        _pan_camera_by_scene_delta: Callable[..., None]
+        _unlock_camera: Callable[..., None]
+        _update_centroid_button_label: Callable[..., None]
+        _preserve_arena_view_width: Callable[..., None]
+        _restore_view: Callable[..., None]
+        _recompute_graph_layout: Callable[..., None]
+        _update_graph_filter_controls: Callable[..., None]
+        _update_graph_views: Callable[..., None]
+        _update_side_container_visibility: Callable[..., None]
+        _graph_filter_labels: dict
+        timer: Any
+        _shutdown_logging: Callable[..., None]
+        _focus_on_centroid: Callable[..., None]
+        _clear_selection: Callable[..., None]
+        speed_label: Any
+        _focus_on_centroid: Callable[..., None]
+        _clear_selection: Callable[..., None]
+        spin_window: Any
+        closeEvent: Callable[[QCloseEvent], None]
+    _ControlsMixinBase = QWidget
+else:
+    _ControlsMixinBase = object
 
 
-class ControlsMixin:
+class ControlsMixin(_ControlsMixinBase):
     """Mixin responsible for user interaction and UI controls."""
 
     view: Any
@@ -43,16 +81,43 @@ class ControlsMixin:
     _camera_lock: Any
     hierarchy_overlay: Any
 
-    def eventFilter(self, watched, event):
+    if TYPE_CHECKING:
+        view: Any
+        scene: Any
+        spin_window: Any
+        _sync_scene_rect_with_view: Callable[..., None]
+        update_scene: Callable[..., None]
+        _zoom_camera: Callable[..., None]
+        get_agent_at: Callable[..., Any]
+        _handle_agent_selection: Callable[..., None]
+        _pan_camera_by_scene_delta: Callable[..., None]
+        _unlock_camera: Callable[..., None]
+        _update_centroid_button_label: Callable[..., None]
+        def _nudge_camera(self, dx_sign: float, dy_sign: float) -> None: ...
+        _focus_on_centroid: Callable[..., None]
+        _clear_selection: Callable[..., None]
+        _preserve_arena_view_width: Callable[..., None]
+        _restore_view: Callable[..., None]
+        _recompute_graph_layout: Callable[..., None]
+        _update_graph_filter_controls: Callable[..., None]
+        _update_graph_views: Callable[..., None]
+        _update_side_container_visibility: Callable[..., None]
+        _graph_filter_labels: dict
+        timer: Any
+        _shutdown_logging: Callable[..., None]
+        speed_label: Any
+        _log_info: Callable[..., None]
+
+    def eventFilter(self, watched: Any, event: QEvent) -> bool:
         """Handle Qt event filtering."""
-        ev = event
         if watched == self.view.viewport():
             if event.type() == QEvent.Type.Resize:
                 self._sync_scene_rect_with_view()
                 self.update_scene()
                 return False
             if event.type() == QEvent.Type.Wheel:
-                delta = ev.angleDelta().y()
+                wheel_event = cast(QWheelEvent, event)
+                delta = wheel_event.angleDelta().y()
                 if delta != 0:
                     steps = delta / 120.0
                     base = 0.94
@@ -61,7 +126,8 @@ class ControlsMixin:
                 return True
             if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
                 if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.LeftButton:
-                    scene_pos = self.view.mapToScene(ev.pos())
+                    mouse_event = event
+                    scene_pos = self.view.mapToScene(mouse_event.pos())
                     if getattr(self, "is_abstract", False):
                         item = self.scene.itemAt(scene_pos, self.view.transform())
                         data = item.data(0) if item is not None else None
@@ -71,12 +137,14 @@ class ControlsMixin:
                     self._handle_agent_selection(new_selection, double_click=(event.type() == QEvent.Type.MouseButtonDblClick))
                     return True
                 if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.RightButton and event.type() == QEvent.Type.MouseButtonPress:
+                    mouse_event = event
                     self._panning = True
-                    self._pan_last_scene_pos = self.view.mapToScene(ev.pos())
+                    self._pan_last_scene_pos = self.view.mapToScene(mouse_event.pos())
                     return True
             if event.type() == QEvent.Type.MouseMove and self._panning:
-                if self._pan_last_scene_pos is not None:
-                    current_scene_pos = self.view.mapToScene(ev.pos())
+                if self._pan_last_scene_pos is not None and isinstance(event, QMouseEvent):
+                    mouse_event = event
+                    current_scene_pos = self.view.mapToScene(mouse_event.pos())
                     delta = current_scene_pos - self._pan_last_scene_pos
                     self._pan_camera_by_scene_delta(delta)
                     self._pan_last_scene_pos = current_scene_pos

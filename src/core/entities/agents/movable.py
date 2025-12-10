@@ -127,8 +127,10 @@ class MovableAgent(StaticAgent):
         """Post step: apply collision correction as a delta, not as an absolute position."""
         if position_correction is not None:
             self.position = self.position + position_correction
-            self.shape.translate(self.position)
-            self.shape.translate_attachments(self.orientation.z)
+            shape = self.get_shape()
+            if shape:
+                shape.translate(self.position)
+                shape.translate_attachments(self.orientation.z)
             logger.debug(
                 "%s position corrected by detector with delta %s -> new pos %s",
                 self.get_name(),
@@ -156,8 +158,10 @@ class MovableAgent(StaticAgent):
         if self._logic_plugin and hasattr(self._logic_plugin, "after_movement"):
             self._logic_plugin.after_movement(self, tick, arena_shape, objects, agents)
         self._apply_motion(tick)
-        self.shape.translate(self.position)
-        self.shape.translate_attachments(self.orientation.z)
+        shape = self.get_shape()
+        if shape:
+            shape.translate(self.position)
+            shape.translate_attachments(self.orientation.z)
 
     def _apply_motion(self, tick: int):
         """Apply the motion using the configured kinematic model."""
@@ -165,9 +169,11 @@ class MovableAgent(StaticAgent):
             self._motion_model.step(self, tick)
         else:
             self._legacy_motion_step()
-        self.shape.rotate(self.delta_orientation.z)
-        self.shape.translate(self.position)
-        self.shape.translate_attachments(self.orientation.z)
+        shape = self.get_shape()
+        if shape:
+            shape.rotate(self.delta_orientation.z)
+            shape.translate(self.position)
+            shape.translate_attachments(self.orientation.z)
         logger.debug(
             "%s applied motion -> position=%s orientation=%s delta=%s",
             self.get_name(),
@@ -198,10 +204,14 @@ class MovableAgent(StaticAgent):
                 {"_id": "idle", "color": self._get_level_color(), "width": 0.012, "depth": 0.012},
             )
             marker.metadata["placement"] = "opposite"
-            self.shape.add_attachment(marker)
+            shape = self.get_shape()
+            if shape:
+                shape.add_attachment(marker)
             self._level_attachment = marker
         self._update_level_attachment_color()
-        self.shape.translate_attachments(self.orientation.z)
+        shape = self.get_shape()
+        if shape:
+            shape.translate_attachments(self.orientation.z)
 
     def _get_level_color(self, level: Optional[int] = None) -> str:
         """Return the level color."""

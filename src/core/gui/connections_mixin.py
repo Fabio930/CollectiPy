@@ -11,9 +11,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
 
@@ -56,6 +55,21 @@ class ConnectionsMixin:
     HANDSHAKE_COMMUNICATION_COLOR = QColor(255, 0, 0)
     HANDSHAKE_PENDING_WINDOW = 2
     HANDSHAKE_COMMUNICATION_WINDOW = 3
+
+    if TYPE_CHECKING:
+        from typing import Callable
+
+        update_spins_plot: Callable[..., None]
+        update_scene: Callable[..., None]
+        _focus_on_agent: Callable[..., None]
+        _unlock_camera: Callable[..., None]
+        _refresh_agent_centers: Callable[..., None]
+        _set_graph_filter_label: Callable[..., None]
+        _apply_graph_view_mode: Callable[..., None]
+        _capture_viewport_width: Callable[..., None]
+        _main_layout: Any
+        _preserve_arena_view_width: Callable[..., None]
+        _update_centroid_button_label: Callable[..., None]
 
     def _normalize_agent_id(self, agent_key):
         """Return a hashable (group, index) tuple for a selected agent."""

@@ -10,17 +10,23 @@
 """Reusable Qt widgets for the GUI."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QEvent, Signal
-from PySide6.QtGui import QColor, QPen, QBrush
+from typing import Any, cast
+
+from PySide6.QtCore import Qt as _Qt, QEvent as _QEvent, Signal
+from PySide6.QtGui import QColor, QPen, QBrush, QMouseEvent
 from PySide6.QtWidgets import (
     QLabel,
     QWidget,
     QVBoxLayout,
-    QSizePolicy,
+    QSizePolicy as _QSizePolicy,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
 )
+
+Qt = cast(Any, _Qt)
+QSizePolicy = cast(Any, _QSizePolicy)
+QEvent = cast(Any, _QEvent)
 
 
 class NetworkGraphWidget(QWidget):
@@ -191,16 +197,18 @@ class NetworkGraphWidget(QWidget):
                     halo_pen,
                 )
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, watched: Any, event: _QEvent):
         """Handle click selection on graph nodes."""
         if watched == self._view.viewport():
-            if event.type() == QEvent.MouseButtonDblClick:
-                agent_id = self._agent_at(event.pos())
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                mouse_event = cast(QMouseEvent, event)
+                agent_id = self._agent_at(mouse_event.pos())
                 if agent_id is not None:
                     self.agent_selected.emit(agent_id, True)
                     return True
-            if event.type() == QEvent.MouseButtonPress:
-                agent_id = self._agent_at(event.pos())
+            if event.type() == QEvent.Type.MouseButtonPress:
+                mouse_event = cast(QMouseEvent, event)
+                agent_id = self._agent_at(mouse_event.pos())
                 if agent_id is not None:
                     self.agent_selected.emit(agent_id, False)
                     return True

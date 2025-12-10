@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QPolygonF, QColor, QPen, QBrush
@@ -23,7 +24,7 @@ class RenderMixin:
     scene: any
     arena_vertices: list
     arena_color: str
-    wrap_config: dict
+    wrap_config: Optional[dict]
     unbounded_mode: bool
     hierarchy_overlay: list
     abstract_dot_items: list

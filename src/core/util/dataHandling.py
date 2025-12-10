@@ -300,24 +300,26 @@ class SpaceDataHandling(DataHandling):
                     if self.hierarchy_enabled:
                         row["hierarchy_node"] = self._resolve_hierarchy_node(entity)
                     # include orientation if available in metadata
+                    group_meta = self.agents_metadata.get(key, []) if self.agents_metadata else []
+                    entry_meta = group_meta[idx] if idx < len(group_meta) else {}
+                    orient_z_raw = entry_meta.get("orientation_z") if isinstance(entry_meta, dict) else None
                     try:
-                        group_meta = self.agents_metadata.get(key, []) if self.agents_metadata else []
-                        entry_meta = group_meta[idx] if idx < len(group_meta) else {}
-                        orient_z = entry_meta.get("orientation_z") if isinstance(entry_meta, dict) else None
-                        if orient_z is None:
-                            # fall back to 0.0
-                            orient_z = 0.0
-                        row["orientation_z"] = float(orient_z)
-                    except Exception:
-                        row["orientation_z"] = 0.0
+                        orient_z = float(orient_z_raw) if orient_z_raw is not None else 0.0
+                    except (TypeError, ValueError):
+                        orient_z = 0.0
+                    row["orientation_z"] = orient_z
                     # include heading_last_deg if provided by a logic plugin via snapshot_metrics
-                    try:
-                        entry_meta = group_meta[idx] if idx < len(group_meta) else {}
-                        sm = entry_meta.get("snapshot_metrics") if isinstance(entry_meta, dict) else None
-                        if isinstance(sm, dict) and sm.get("heading_last_deg") is not None:
-                            row["heading_last_deg"] = float(sm.get("heading_last_deg"))
-                    except Exception:
-                        pass
+                    entry_meta = group_meta[idx] if idx < len(group_meta) else {}
+                    sm = entry_meta.get("snapshot_metrics") if isinstance(entry_meta, dict) else None
+                    if isinstance(sm, dict):
+                        heading_last_deg = sm.get("heading_last_deg")
+                    else:
+                        heading_last_deg = None
+                    if heading_last_deg is not None:
+                        try:
+                            row["heading_last_deg"] = float(heading_last_deg)
+                        except (TypeError, ValueError):
+                            pass
                     entry["pickler"].dump({"type": "row", "value": row})
         # Write group-level heading aggregates when requested
         if "heading" in self.group_specs and self._group_heading_file:
@@ -363,24 +365,41 @@ class SpaceDataHandling(DataHandling):
         """Close the component resources."""
         if self.agents_files:
             for entry in self.agents_files.values():
-                entry["handle"].flush()
-                entry["handle"].close()
+                handle = entry.get("handle")
+                if handle:
+                    try:
+                        handle.flush()
+                    except Exception:
+                        pass
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
             self.agents_files.clear()
         if self.agent_spin_files:
             for entry in self.agent_spin_files.values():
-                entry["handle"].flush()
-                entry["handle"].close()
+                handle = entry.get("handle")
+                if handle:
+                    try:
+                        handle.flush()
+                    except Exception:
+                        pass
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
             self.agent_spin_files.clear()
         self._finalize_graph_archives()
         # Close group heading file if open
         try:
-            if getattr(self, "_group_heading_file", None):
+            group_file = getattr(self, "_group_heading_file", None)
+            if group_file:
                 try:
-                    self._group_heading_file.flush()
+                    group_file.flush()
                 except Exception:
                     pass
                 try:
-                    self._group_heading_file.close()
+                    group_file.close()
                 except Exception:
                     pass
         except Exception:

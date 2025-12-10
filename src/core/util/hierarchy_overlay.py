@@ -175,6 +175,12 @@ class HierarchyOverlay:
         for node_id, node in self.nodes.items():
             self.level_colors[node_id] = base_palette[node.level % len(base_palette)]
 
+    def bounds_of(self, node_id: str) -> tuple[float, float, float, float]:
+        """Return the bounds tuple for the requested node (or the arena root)."""
+        node = self.nodes.get(node_id)
+        bounds = node.bounds if node is not None else self.bounds
+        return (bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max)
+
     # ------------------------------------------------------------------
     # Information scope
     # ------------------------------------------------------------------

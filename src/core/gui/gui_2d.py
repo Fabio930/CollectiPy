@@ -10,15 +10,13 @@
 """2D GUI implementation."""
 from __future__ import annotations
 
-import math
 from typing import Any, Optional, cast
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from PySide6.QtCore import Qt, QPointF, Signal, QTimer, QRectF, QEvent
+from PySide6.QtCore import Qt as _Qt, Signal, QTimer, QRectF, QEvent
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication,
     QWidget,
     QVBoxLayout,
     QLabel,
@@ -26,10 +24,10 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QPushButton,
     QHBoxLayout,
-    QSizePolicy,
+    QSizePolicy as _QSizePolicy,
     QComboBox,
     QToolButton,
-    QFrame,
+    QFrame as _QFrame,
     QSlider,
 )
 
@@ -44,9 +42,9 @@ from core.util.logging_util import get_logger, shutdown_logging
 
 logger = get_logger("gui")
 # Help static analyzers with Qt dynamic attributes/constants.
-Qt = cast(Any, Qt)
-QSizePolicy = cast(Any, QSizePolicy)
-QFrame = cast(Any, QFrame)
+Qt = cast(Any, _Qt)
+QSizePolicy = cast(Any, _QSizePolicy)
+QFrame = cast(Any, _QFrame)
 QEvent = cast(Any, QEvent)
 QGraphicsView = cast(Any, QGraphicsView)
 

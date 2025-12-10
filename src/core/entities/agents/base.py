@@ -19,7 +19,6 @@ from core.configuration.plugin_registry import get_motion_model
 from core.configuration.config import MESSAGE_TYPES as CONFIG_MESSAGE_TYPES, canonical_message_type
 from core.entities.base import Entity, logger as _base_logger
 from core.util.geometry_utils.vector3D import Vector3D
-from core.util.logging_util import get_logger
 import models  # noqa: F401  # ensure built-in models register themselves
 
 
@@ -67,6 +66,10 @@ class Agent(Entity):
         self.detection_range = 0.1
         self.linear_velocity_cmd = 0.0
         self.angular_velocity_cmd = 0.0
+        self.config_elem = config_elem
+        self.max_absolute_velocity: float | None = None
+        self.forward_vector: Vector3D | None = None
+        self.shape: Any | None = None
         self.motion_model_name = config_elem.get("motion_model", "unicycle")
         self._motion_model = get_motion_model(self.motion_model_name, self)
         if self._motion_model is None:
@@ -232,26 +235,29 @@ class Agent(Entity):
         """Return spin-system payload (None for agents without spin model)."""
         return None
 
-    def get_max_absolute_velocity(self):
+    def get_max_absolute_velocity(self) -> float:
         """Return the max absolute velocity used by the collision detector."""
+        value = self.max_absolute_velocity
+        if value is None:
+            return 0.0
         try:
-            return float(self.max_absolute_velocity)
+            return float(value)
         except Exception:
             return 0.0
 
     def get_forward_vector(self):
         """Return the current forward vector used for detector packaging."""
-        try:
-            return self.forward_vector
-        except Exception:
+        if self.forward_vector is None:
             return Vector3D()
+        return self.forward_vector
+
+    def get_shape(self) -> Any | None:
+        """Return the agent shape if available."""
+        return getattr(self, "shape", None)
 
     def _sync_shape_hierarchy_metadata(self):
         """Attach hierarchy metadata to the main shape/attachments for GUI and detection."""
-        try:
-            shape = self.get_shape()
-        except Exception:
-            shape = None
+        shape = self.get_shape()
         if shape is None:
             return
         try:
@@ -680,7 +686,7 @@ class Agent(Entity):
             return 0.0
         return seconds * self.ticks_per_second
 
-    def _resolve_rebroadcast_limit(self) -> Optional[int]:
+    def _resolve_rebroadcast_limit(self) -> float | None:
         """Return the max rebroadcast count for rebroadcast mode."""
         if self.msg_type != "rebroadcast":
             return None
