@@ -12,8 +12,8 @@ This document complements `README.md` with implementation details, extension poi
 
 ## Project layout
 
-- `config/`: sample JSON configurations; copy and tweak to define new experiments.
-- `plugins/`: external plugin package. Includes `plugins/examples/group_stats_plugin.py` as a ready-to-use logic plugin.
+- `config/`: sample JSON configurations; copy and tweak to define new experiments (see `config/random_wp_test_bounded_plugin_ex.json` for a plugin-enabled run that imports `plugins.examples.led_state_plugin`).
+- `plugins/`: external plugin package. Includes `plugins/examples/led_state_plugin.py`, a ready-to-use logic plugin that visualizes messaging/handshake activity via the agents' LEDs.
 - `src/main.py`: entry point; loads the config, configures logging, imports plugins, builds the environment, and starts the simulation.
 - **Core package** (`src/core/`): main implementation split into subpackages:
   - `core.processes`: `Environment`, `EntityManager`, `ArenaFactory` plus hierarchy overlays and process launch helpers.
@@ -143,6 +143,8 @@ register_movement_model("my_movement", lambda agent: MyMovement(agent))
 ```
 
 Agents can opt in via `"moving_behavior": "my_movement"` in the config. Similar helpers exist for `register_detection_model`, `register_logic_model`, and `register_motion_model`. Message buses can be swapped with `register_message_bus`, returning a `plugin_base.MessageBusModel` implementation.
+
+CollectiPy ships with `plugins/examples/led_state_plugin.py`, a logic plugin that tints each agent's LED according to ongoing messaging and handshake activity. Import that module (see `config/random_wp_test_bounded_plugin_ex.json`) and set `"logic_behavior": "led_state"` on an agent group to reproduce the demo.
 
 Config parsing can also be extended by registering hooks in `config.py`:
 

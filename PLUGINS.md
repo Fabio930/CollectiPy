@@ -18,8 +18,8 @@ plugin system** focused on agent movement models.
 - `src/models/detection/`:
   built-in GPS (and placeholder visual) detection plugins.
 - `plugins/` (top-level, sibling of `src/`):
-  package for external plugins. It includes `plugins/examples/group_stats_plugin.py`
-  as a ready-to-use example logic plugin.
+  package for external plugins. It includes `plugins/examples/led_state_plugin.py`
+  as a ready-to-use example logic plugin that colors agent LEDs based on messaging activity.
 
 ## Agent routines
 
@@ -88,10 +88,11 @@ starts.
 Similarly, detection or logic models can be registered with
 `register_detection_model` / `register_logic_model`. They become
 available through the respective `*_behavior` fields in the config. The repo
-ships with a simple example logic plugin (`heading_sampler`) in
-`plugins/examples/group_stats_plugin.py`; add
-`"plugins": ["plugins.examples.group_stats_plugin"]` to the config and set an
-agent group's `"logic_behavior": "heading_sampler"` to enable it.
+ships with a simple example logic plugin (`led_state`) in
+`plugins/examples/led_state_plugin.py`; add
+`"plugins": ["plugins.examples.led_state_plugin"]` to the config and set an
+agent group's `"logic_behavior": "led_state"` (see `config/random_wp_test_bounded_plugin_ex.json`)
+to enable the LED-based messaging indicator.
 
 Motion/kinematics models follow the same registry pattern. To provide a custom
 integrator (e.g., a bicycle model), implement `plugin_base.MotionModel` and

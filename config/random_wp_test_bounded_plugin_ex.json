@@ -1,13 +1,9 @@
 {
+    "plugins": ["plugins.examples.led_state_plugin"],
     "environment":{
         "collisions": true,
         "time_limit": 0,
         "num_runs": 1,
-        "logging":{
-            "level":"info",
-            "to_file":true,
-            "to_console":false
-        },
         "gui":{
             "_id": "2D",
             "on_click": ["messages"],
@@ -46,11 +42,12 @@
                     "diameter": 0.033
                 },
                 "color": "blue",
+                "logic_behavior": "led_state",
                 "moving_behavior":"random_way_point",
                 "messages": {
                     "comm_range": 0.6,
-                    "type": "broadcast",
-                    "kind": "anonymous"
+                    "type": "hand-shake",
+                    "kind": "id-aware"
                 }      
             }
         }   

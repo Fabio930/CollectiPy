@@ -69,6 +69,8 @@ class DataHandling():
         self._last_snapshot_tick = None
         self._graph_step_dirs = {}
         self._graphs_root = None
+        # File handle for group-level heading output (created on new_run if requested)
+        self._group_heading_file = None
         self.hierarchy_enabled = bool(getattr(config_elem, "arena", {}).get("hierarchy"))
 
     def _parse_snapshot_rate(self, value):
@@ -230,6 +232,8 @@ class SpaceDataHandling(DataHandling):
                         header = ["tick", "pos x", "pos y", "pos z"]
                         if self.hierarchy_enabled:
                             header.append("hierarchy_node")
+                        # Add orientation column to base agent dump when requested
+                        header.append("orientation_z")
                         pickler.dump({"type": "header", "value": header, "columns": header})
                         self.agents_files[(key, idx)] = {"handle": file_handle, "pickler": pickler, "columns": header}
                     if self.spin_dump_enabled:
@@ -250,6 +254,14 @@ class SpaceDataHandling(DataHandling):
         # Capture the bootstrap snapshot (tick 0) right away.
         if self.base_dump_enabled or self.spin_dump_enabled or self.graph_messages_enabled or self.graph_detection_enabled:
             self.save(shapes, spins, metadata, tick=0, ticks_per_second=self._ticks_per_second, force=True)
+
+        # Prepare group-level heading file if requested
+        self._group_heading_file = None
+        if "heading" in self.group_specs and self.run_folder:
+            gh_path = os.path.join(self.run_folder, "group_heading.csv")
+            fh = open(gh_path, "w", encoding="utf-8")
+            fh.write("tick,group,heading_mean_deg\n")
+            self._group_heading_file = fh
 
     def save(self, shapes, spins, metadata, tick: int, ticks_per_second: int | None = None, force: bool = False):
         """Save sampled data for the current tick."""
@@ -283,7 +295,56 @@ class SpaceDataHandling(DataHandling):
                     }
                     if self.hierarchy_enabled:
                         row["hierarchy_node"] = self._resolve_hierarchy_node(entity)
+                    # include orientation if available in metadata
+                    try:
+                        group_meta = self.agents_metadata.get(key, []) if self.agents_metadata else []
+                        entry_meta = group_meta[idx] if idx < len(group_meta) else {}
+                        orient_z = entry_meta.get("orientation_z") if isinstance(entry_meta, dict) else None
+                        if orient_z is None:
+                            # fall back to 0.0
+                            orient_z = 0.0
+                        row["orientation_z"] = float(orient_z)
+                    except Exception:
+                        row["orientation_z"] = 0.0
+                    # include heading_last_deg if provided by a logic plugin via snapshot_metrics
+                    try:
+                        entry_meta = group_meta[idx] if idx < len(group_meta) else {}
+                        sm = entry_meta.get("snapshot_metrics") if isinstance(entry_meta, dict) else None
+                        if isinstance(sm, dict) and sm.get("heading_last_deg") is not None:
+                            row["heading_last_deg"] = float(sm.get("heading_last_deg"))
+                    except Exception:
+                        pass
                     entry["pickler"].dump({"type": "row", "value": row})
+        # Write group-level heading aggregates when requested
+        if "heading" in self.group_specs and self._group_heading_file:
+            try:
+                for key, entities in (shapes or {}).items():
+                    group_meta = (self.agents_metadata or {}).get(key, [])
+                    vals = []
+                    for idx in range(len(entities)):
+                        meta = group_meta[idx] if idx < len(group_meta) else {}
+                        if isinstance(meta, dict):
+                            sm = meta.get("snapshot_metrics") or {}
+                            v = sm.get("heading_window_deg")
+                            if v is None:
+                                v = sm.get("heading_last_deg")
+                            # fallback to reported orientation_z when snapshot_metrics missing
+                            if v is None:
+                                v = meta.get("orientation_z")
+                            try:
+                                if v is not None:
+                                    vals.append(float(v))
+                            except Exception:
+                                pass
+                    if vals:
+                        mean_val = sum(vals) / len(vals)
+                        self._group_heading_file.write(f"{tick},{key},{mean_val:.6f}\n")
+                    else:
+                        # write empty or NaN
+                        self._group_heading_file.write(f"{tick},{key},\n")
+                self._group_heading_file.flush()
+            except Exception:
+                pass
         if self.spin_dump_enabled and self.agent_spin_files:
             for (key, idx), spin_entry in self.agent_spin_files.items():
                 spin_values = self._resolve_spin_entry(spin_data.get(key), idx)
@@ -307,6 +368,19 @@ class SpaceDataHandling(DataHandling):
                 entry["handle"].close()
             self.agent_spin_files.clear()
         self._finalize_graph_archives()
+        # Close group heading file if open
+        try:
+            if getattr(self, "_group_heading_file", None):
+                try:
+                    self._group_heading_file.flush()
+                except Exception:
+                    pass
+                try:
+                    self._group_heading_file.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         super().close(shapes)
 
     def _agent_identifier(self, key, idx, shape_obj):

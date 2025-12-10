@@ -68,10 +68,11 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
         "base_path": str, //DEFAULT:"./data/" (only used when this block is present; does not enable dumps by itself),
         "agent_specs": list(str) //DEFAULT:[] - enable per-agent exports (when this block is present but specs are omitted, "base" is applied by default):
             "base" // stream sampled [tick, x, y, z] positions for every agent (adds the current hierarchy node when a hierarchy is configured)
-            "spin_model", // append spin-system payloads alongside the base rows.
+            "spin_model" // append spin-system payloads alongside the base rows.
         "group_specs": list(str) //DEFAULT:[] - enable aggregated exports:
             "graph_messages"|"graph_detection" // adjacency snapshots for the selected channel
-            "graphs", // shorthand enabling both message/detection graphs
+            "graphs" // shorthand enabling both message/detection graphs
+            "heading", // append agent orientation.
         "snapshots_per_second": int, //DEFAULT:1 (1 = end-of-second only, 2 = mid-second + end-second captures).
     },
     "logging":{ //DEFAULT:{} omit the block to disable logging

@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.logging_util import get_logger
 

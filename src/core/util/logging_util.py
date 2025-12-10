@@ -20,7 +20,7 @@ Default directory layout (base_path="data/logs"):
 
 from __future__ import annotations
 
-import logging, zipfile
+import atexit, logging, os, threading, zipfile
 import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +38,7 @@ DEFAULT_LOGGING_SETTINGS = {
     "to_file": False,
 }
 
+_SHUTDOWN_REGISTERED = False
 
 def _normalize_logging_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -154,6 +155,8 @@ def configure_logging(
     # Silence very noisy modules
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
+    _ensure_shutdown_registered()
+
 
 # ------------------------------------------------------------------------------
 #  PATH PREPARATION
@@ -222,19 +225,29 @@ class _CompressedLogHandler(logging.Handler):
         self._context = context
         self._zip = None
         self._inner_stream = None
+        self._archive_path: Path | None = None
+        self._temp_archive_path: Path | None = None
+        self._lock = threading.RLock()
+        self._closed = False
         try:
             self._activate()
         except Exception:
             # If we cannot activate the zip (e.g., interrupted run), fall back to NullHandler-like behaviour.
             self._zip = None
             self._inner_stream = None
+            self._temp_archive_path = None
+            self._archive_path = None
 
     def _activate(self):
         archive_path: Path = self._context["log_path"]
         archive_path.parent.mkdir(parents=True, exist_ok=True)
 
+        temp_path = archive_path.parent / f"{archive_path.name}.tmp"
+        self._temp_archive_path = temp_path
+        self._archive_path = archive_path
+
         self._zip = zipfile.ZipFile(
-            archive_path,
+            temp_path,
             mode="w",
             compression=zipfile.ZIP_DEFLATED,
             compresslevel=9,
@@ -244,6 +257,7 @@ class _CompressedLogHandler(logging.Handler):
 
         # IMPORTANT: write in binary mode only
         self._inner_stream = self._zip.open(inner_name, mode="w")
+        self._archive_path = archive_path
 
 
     def emit(self, record):
@@ -257,25 +271,39 @@ class _CompressedLogHandler(logging.Handler):
             self.handleError(record)
 
     def close(self):
-        try:
-            if self._inner_stream:
-                self._inner_stream.flush()
-                self._inner_stream.close()
-        except:
-            pass
-
-        try:
-            if self._zip:
-                fp = getattr(self._zip, "fp", None)
-                if fp:
-                    fp.flush()
-                self._zip.close()
-        except:
-            pass
-
-        self._inner_stream = None
-        self._zip = None
-
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            archive_path = self._archive_path
+            temp_path = self._temp_archive_path
+            try:
+                if self._inner_stream:
+                    self._inner_stream.flush()
+                    self._inner_stream.close()
+            except Exception:
+                pass
+            try:
+                if self._zip:
+                    fp = getattr(self._zip, "fp", None)
+                    if fp:
+                        fp.flush()
+                    self._zip.close()
+            except Exception:
+                pass
+            self._inner_stream = None
+            self._zip = None
+            if temp_path and archive_path:
+                try:
+                    os.replace(temp_path, archive_path)
+                    self._temp_archive_path = None
+                except Exception:
+                    pass
+            elif temp_path:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
         super().close()
 
 # ------------------------------------------------------------------------------
@@ -361,9 +389,22 @@ def shutdown_logging():
     """Flush and close all logging handlers."""
     root = logging.getLogger()
     for h in root.handlers[:]:
-        try: h.flush()
-        except: pass
-        try: h.close()
-        except: pass
+        try:
+            h.flush()
+        except Exception:
+            pass
+        try:
+            h.close()
+        except Exception:
+            pass
         root.removeHandler(h)
     logging.shutdown()
+
+
+def _ensure_shutdown_registered() -> None:
+    """Register logging shutdown at interpreter exit."""
+    global _SHUTDOWN_REGISTERED
+    if _SHUTDOWN_REGISTERED:
+        return
+    atexit.register(shutdown_logging)
+    _SHUTDOWN_REGISTERED = True

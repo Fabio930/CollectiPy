@@ -84,8 +84,7 @@ def manager_run(
             except Exception as exc:
                 logger.warning("Failed to notify detection server about run %s: %s", run, exc)
         try:
-            metadata_sent = False
-            metadata_snapshot = manager.get_agent_metadata()
+            metadata_cache = manager.get_agent_metadata()
             reset = False
 
             data_in = manager._blocking_get(arena_queue)
@@ -127,10 +126,9 @@ def manager_run(
                 "status": [0, ticks_per_second],
                 "agents_shapes": manager.get_agent_shapes(),
                 "agents_spins": manager.get_agent_spins(),
-                "agents_metadata": metadata_snapshot,
+                "agents_metadata": metadata_cache,
             }
             agents_queue.put(initial_snapshot)
-            metadata_sent = True
 
             t = 1
             while True:
@@ -277,9 +275,15 @@ def manager_run(
                     "agents_shapes": manager.get_agent_shapes(),
                     "agents_spins": manager.get_agent_spins(),
                 }
-                if not metadata_sent:
+                # Always include up-to-date per-agent metadata so data handlers
+                # can access per-agent `snapshot_metrics` (e.g., heading).
+                try:
+                    metadata_snapshot = manager.get_agent_metadata()
+                    metadata_cache = metadata_snapshot
                     agents_data["agents_metadata"] = metadata_snapshot
-                    metadata_sent = True
+                except Exception:
+                    if metadata_cache is not None:
+                        agents_data["agents_metadata"] = metadata_cache
 
                 agents_queue.put(agents_data)
                 t += 1

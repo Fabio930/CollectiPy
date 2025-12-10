@@ -11,8 +11,12 @@
 
 from __future__ import annotations
 
+<<<<<<< Updated upstream:src/core/entities/agents/base.py
 import hashlib
 import math
+=======
+import hashlib, math
+>>>>>>> Stashed changes:src/core/entities/agents.py
 from random import Random
 from typing import Any, Optional
 
@@ -60,6 +64,9 @@ class Agent(Entity):
         # Movement/logic plugins are dynamically supplied; keep them untyped to satisfy optional hooks.
         self._movement_plugin: Any = None
         self._logic_plugin: Any = None
+        # LED attachment used by GUI/rendering; defaults to red unless overridden.
+        self._led_attachment: Any = None
+        self._led_default_color: str = "red"
         self.random_generator = Random()
         self.ticks_per_second = config_elem.get("ticks_per_second", 5)
         self.color = config_elem.get("color", "blue")
@@ -182,6 +189,41 @@ class Agent(Entity):
     def get_random_generator(self):
         """Return the internal random generator."""
         return self.random_generator
+
+    # ------------------------------------------------------------------
+    # LED helpers (attachment is optional, safe no-op if missing)
+    # ------------------------------------------------------------------
+    def get_default_led_color(self) -> str:
+        """Return the default LED color (usually the attachment initial color)."""
+        return getattr(self, "_led_default_color", "red")
+
+    def set_led_color(self, color: str | None) -> None:
+        """
+        Set the LED attachment color.
+
+        The LED attachment is the marker added in StaticAgent; calling this
+        method when no LED is present is a no-op.
+        """
+        if color is None:
+            color = self.get_default_led_color()
+        attachment = getattr(self, "_led_attachment", None)
+        if attachment is None:
+            return
+        try:
+            attachment.set_color(color)
+        except Exception:
+            pass
+
+    def get_led_color(self) -> str | None:
+        """Return the current LED attachment color (or None if not available)."""
+        attachment = getattr(self, "_led_attachment", None)
+        if attachment is None:
+            return None
+        return attachment.color()
+
+    def reset_led_color(self) -> None:
+        """Reset the LED to its default color."""
+        self.set_led_color(self.get_default_led_color())
 
     def get_spin_system_data(self):
         """Return spin-system payload (None for agents without spin model)."""

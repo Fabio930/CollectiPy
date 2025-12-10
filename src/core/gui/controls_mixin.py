@@ -11,7 +11,11 @@
 from __future__ import annotations
 
 import time
+<<<<<<< Updated upstream
 from typing import Optional, Any
+=======
+from typing import Any
+>>>>>>> Stashed changes
 
 from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import QMouseEvent, QKeySequence, QShortcut

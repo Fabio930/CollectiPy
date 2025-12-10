@@ -41,7 +41,7 @@ ALLOWED_AGENT_SHAPES = {"sphere", "cube", "cylinder", "none"}
 AGENT_DIMENSION_CONSTRAINTS = OBJECT_DIMENSION_CONSTRAINTS
 
 RESULT_AGENT_SPECS = {"base", "spin_model"}
-RESULT_GROUP_SPECS = {"graph_messages", "graph_detection", "graphs"}
+RESULT_GROUP_SPECS = {"graph_messages", "graph_detection", "graphs", "heading"}
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -401,16 +401,14 @@ class Config:
             else:
                 if not isinstance(td, int) or td < 1:
                     raise ValueError("Optional field 'time_delay' must be an integer >= 1 in {}".format(entity.get('_id', 'entity')))
-        # check on position field
         if 'position' in entity:
-            tmp = entity['position']
-            if not (isinstance(tmp, list) and all(isinstance(t, list) and len(t) in (2, 3) and all(isinstance(x, (int, float)) for x in t) for t in tmp)):
-                raise ValueError(f"Optional field 'position' must be a list of [x, y] o [x, y, z] arrays in {entity.get('_id', 'entity')}")
-        # check on orientation field
+            raise ValueError(
+                f"The 'position' attribute for {entity.get('_id', 'entity')} is no longer supported; use the 'spawn' configuration instead"
+            )
         if 'orientation' in entity:
-            tmp = entity['orientation']
-            if not (isinstance(tmp, list) and all(isinstance(t, list) and len(t) in (1, 3) and all(isinstance(x, (int, float)) for x in t) for t in tmp)):
-                raise ValueError(f"Optional field 'orientation' must be a list of [z] o [x, y, z] arrays in {entity.get('_id', 'entity')}")
+            raise ValueError(
+                f"The 'orientation' attribute for {entity.get('_id', 'entity')} is no longer supported; rely on spawn/orientation sampling"
+            )
         if 'strength' in entity:
             tmp = entity['strength']
             if not isinstance(tmp, list) and all(isinstance(t, (int,float)) for t in tmp):
@@ -419,7 +417,7 @@ class Config:
             tmp = entity['uncertainty']
             if not isinstance(tmp, list) and all(isinstance(t, (int,float)) for t in tmp):
                 raise ValueError(f"Optional field 'strength' must be a list of int|float in {entity.get('_id', 'entity')}")
-        list_fields = [f for f in required_fields + optional_fields if f in entity and isinstance(entity[f], list) and f not in ("position","orientation","strength","uncertainty")]
+        list_fields = [f for f in required_fields + optional_fields if f in entity and isinstance(entity[f], list) and f not in ("strength","uncertainty")]
         if not list_fields:
             return [entity]
         values = []
@@ -458,6 +456,17 @@ class Config:
         if 'gui' in environment:
             _validate_gui_block(environment['gui'])
 
+        # Validate top-level ticks_per_second when provided: must be integer > 0
+        if 'ticks_per_second' in environment:
+            try:
+                raw_tps = environment.get('ticks_per_second')
+                tps_val = int(raw_tps)
+            except Exception:
+                raise ValueError("environment.ticks_per_second must be an integer > 0")
+            if tps_val <= 0:
+                raise ValueError("environment.ticks_per_second must be greater than 0")
+            environment['ticks_per_second'] = tps_val
+
         for hook in _ENVIRONMENT_HOOKS:
             hook(environment)
 
@@ -482,7 +491,7 @@ class Config:
 
         object_required_fields = ['_id', 'number']
         object_optional_fields = [
-            'strength', 'uncertainty','position','orientation','hierarchy_node','hierarchy'
+            'strength', 'uncertainty', 'hierarchy_node', 'hierarchy'
         ]
         try:
             for k, v in environment['objects'].items():
@@ -505,11 +514,20 @@ class Config:
             raise ValueError("The 'objects' field is required with dictionary entries 'static_#' or 'movable_#'")
 
         agent_required_fields = ['number']
-        agent_optional_fields = ['ticks_per_second','position','orientation','hierarchy_node']
+        agent_optional_fields = ['ticks_per_second', 'hierarchy_node']
         try:
             for k, v in environment['agents'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
                     agent_cfg = _clone_config_obj(v)
+                    # Validate per-agent ticks_per_second if present: must be integer > 0
+                    if 'ticks_per_second' in agent_cfg:
+                        try:
+                            agent_tps = int(agent_cfg.get('ticks_per_second'))
+                        except Exception:
+                            raise ValueError(f"{k}.ticks_per_second must be an integer > 0")
+                        if agent_tps <= 0:
+                            raise ValueError(f"{k}.ticks_per_second must be greater than 0")
+                        agent_cfg['ticks_per_second'] = agent_tps
                     if "spawn" not in agent_cfg and isinstance(agent_cfg.get("distribute"), dict):
                         agent_cfg["spawn"] = _clone_config_obj(agent_cfg["distribute"])
                     if "linear_velocity" in agent_cfg:

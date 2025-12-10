@@ -45,29 +45,6 @@ class StaticObject(Object):
                 self.uncertainty = temp_uncertainty[_id]
             except Exception:
                 self.uncertainty = temp_uncertainty[-1]
-        temp_position = config_elem.get("position", None)
-        if temp_position is not None:
-            self.position_from_dict = True
-            try:
-                self.start_position = Vector3D(
-                    temp_position[_id][0], temp_position[_id][1], temp_position[_id][2]
-                )
-            except Exception:
-                self.start_position = Vector3D(
-                    temp_position[-1][0], temp_position[-1][1], temp_position[-1][2]
-                )
-        temp_orientation = config_elem.get("orientation", None)
-        if temp_orientation is not None:
-            self.orientation_from_dict = True
-            try:
-                self.start_orientation = Vector3D(
-                    temp_orientation[_id][0], temp_orientation[_id][1], temp_orientation[_id][2]
-                )
-            except Exception:
-                self.start_orientation = Vector3D(
-                    temp_orientation[-1][0], temp_orientation[-1][1], temp_orientation[-1][2]
-                )
-            self.orientation = self.start_orientation
 
     def to_origin(self):
         """Translate object to origin."""

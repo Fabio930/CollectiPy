@@ -10,10 +10,14 @@
 """Base arena definitions (seed handling, object creation, hierarchy)."""
 from __future__ import annotations
 
+<<<<<<< Updated upstream
 import math
 import random
 import sys
 import time
+=======
+import math, random, sys, time
+>>>>>>> Stashed changes
 from typing import Any, Optional
 
 from core.configuration.config import Config

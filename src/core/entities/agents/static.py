@@ -25,15 +25,23 @@ class StaticAgent(Agent):
         if config_elem.get("shape") in ("sphere", "cube", "cuboid", "cylinder"):
             self.shape_type = "dense"
         self.shape = Shape3DFactory.create_shape("agent", config_elem.get("shape", "point"), dict(config_elem))
+<<<<<<< Updated upstream
         self.shape.add_attachment(
             Shape3DFactory.create_shape("mark", "circle", {"_id": "led", "color": "red", "diameter": 0.01})
         )
+=======
+        marker = Shape3DFactory.create_shape("mark", "circle", {"_id": "led", "color": "red", "diameter": 0.01})
+        self.shape.add_attachment(marker)
+        self._led_attachment = marker
+        self._led_default_color = marker.color()
+>>>>>>> Stashed changes
         self._level_attachment = None
         self._sync_shape_hierarchy_metadata()
         self.position = Vector3D()
         self.orientation = Vector3D()
         self.start_position = Vector3D()
         self.start_orientation = Vector3D()
+<<<<<<< Updated upstream
         temp_position = config_elem.get("position", None)
         self.perception_distance = config_elem.get("perception_distance", 0.1)
         if temp_position is not None:
@@ -52,6 +60,9 @@ class StaticAgent(Agent):
                     temp_orientation[-1][0], temp_orientation[-1][1], temp_orientation[-1][2]
                 )
             self.orientation = self.start_orientation
+=======
+        self.perception_distance = config_elem.get("perception_distance", 0.1)
+>>>>>>> Stashed changes
 
     def to_origin(self):
         """To origin."""

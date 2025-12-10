@@ -20,7 +20,6 @@ if no plugins are configured, the simulator behaves exactly as before.
 
 from __future__ import annotations
 
-import numpy as np
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 class MovementModel(Protocol):

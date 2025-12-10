@@ -680,6 +680,35 @@ class EntityManager:
                         "detection_frequency": float(getattr(entity, "detection_rate_per_sec", math.inf)),
                     }
                 )
+                # Expose current motion commands and deltas for debugging
+                try:
+                    items[-1]["linear_velocity_cmd"] = float(getattr(entity, "linear_velocity_cmd", 0.0))
+                    items[-1]["angular_velocity_cmd"] = float(getattr(entity, "angular_velocity_cmd", 0.0))
+                except Exception:
+                    pass
+                try:
+                    # delta_orientation and forward_vector may be Vector3D
+                    dov = getattr(entity, "delta_orientation", None)
+                    if dov is not None:
+                        items[-1]["delta_orientation_z"] = float(getattr(dov, "z", 0.0))
+                    fv = getattr(entity, "forward_vector", None)
+                    if fv is not None:
+                        items[-1]["forward_vector_x"] = float(getattr(fv, "x", 0.0))
+                        items[-1]["forward_vector_y"] = float(getattr(fv, "y", 0.0))
+                except Exception:
+                    pass
+                # Optional per-agent snapshot metrics and orientation used by data handlers
+                try:
+                    metrics = getattr(entity, "snapshot_metrics", None)
+                    if metrics is not None:
+                        items[-1]["snapshot_metrics"] = dict(metrics)
+                except Exception:
+                    pass
+                try:
+                    orient = entity.get_orientation()
+                    items[-1]["orientation_z"] = float(getattr(orient, "z", 0.0)) if orient is not None else 0.0
+                except Exception:
+                    items[-1]["orientation_z"] = 0.0
             metadata[group_key] = items
         return metadata
 

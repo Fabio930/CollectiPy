@@ -13,14 +13,20 @@ from __future__ import annotations
 import gc
 import json
 import multiprocessing as mp
+<<<<<<< Updated upstream:src/core/main/environment/runtime.py
 import os
 import time
+=======
+>>>>>>> Stashed changes:src/core/main/environment.py
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import Any, Dict
 
+<<<<<<< Updated upstream:src/core/main/environment/runtime.py
 import psutil
 
+=======
+>>>>>>> Stashed changes:src/core/main/environment.py
 from core.configuration.config import Config
 from core.main.arena import ArenaFactory
 from core.main.environment.affinity import (
@@ -149,6 +155,34 @@ class Environment:
         )
         if session_logs_root is not None:
             session_logs_root.mkdir(parents=True, exist_ok=True)
+<<<<<<< Updated upstream:src/core/main/environment/runtime.py
+=======
+        logger.critical(
+            "Environment start: experiments=%d logging=%s file_logging=%s",
+            len(self.experiments),
+            logging_enabled,
+            file_logging_enabled,
+        )
+        def _create_queue(label: str):
+            """Try to create an IPC queue, falling back to _PipeQueue on permission failures."""
+            try:
+                return ctx.Queue()
+            except PermissionError as exc:
+                logger.critical(
+                    "Permission denied creating %s; falling back to PipeQueue: %s",
+                    label,
+                    exc,
+                )
+                try:
+                    return _PipeQueue(ctx)
+                except Exception as exc2:
+                    logger.critical(
+                        "PipeQueue fallback failed for %s: %s",
+                        label,
+                        exc2,
+                    )
+                    raise
+>>>>>>> Stashed changes:src/core/main/environment.py
         try:
             env_core = pick_least_used_free_cores(1)
             if env_core:
@@ -427,16 +461,64 @@ class Environment:
             manager_processes = []
             _register_process("arena", arena_process)
 
-            message_channels = []
-            detection_channels = []
-            for _ in range(n_blocks):
+            try:
+                message_channels = []
+                detection_channels = []
+                for idx_block in range(n_blocks):
+                    if any_messages:
+                        message_tx = _create_queue(f"message_tx_{idx_block}")
+                        message_rx = _create_queue(f"message_rx_{idx_block}")
+                    else:
+                        message_tx = None
+                        message_rx = None
+                    if detection_server_needed:
+                        detection_tx = _create_queue(f"detection_tx_{idx_block}")
+                        detection_rx = _create_queue(f"detection_rx_{idx_block}")
+                    else:
+                        detection_tx = None
+                        detection_rx = None
+                    message_channels.append((message_tx, message_rx))
+                    detection_channels.append((detection_tx, detection_rx))
+
+                for idx_block, block in enumerate(agent_blocks):
+                    block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
+                    proc = mp.Process(
+                        target=_run_manager_process,
+                        args=(
+                            block_filtered,
+                            arena_shape,
+                            exp_log_specs,
+                            wrap_config,
+                            arena_hierarchy,
+                            self.snapshot_stride,
+                            idx_block,
+                            self.collisions,
+                            message_channels[idx_block][0],
+                            message_channels[idx_block][1],
+                            detection_channels[idx_block][0],
+                            detection_channels[idx_block][1],
+                            self.num_runs,
+                            self.time_limit,
+                            arena_queue_list[idx_block],
+                            agents_queue_list[idx_block],
+                            dec_agents_in_list[idx_block],
+                            dec_agents_out_list[idx_block],
+                            agent_barrier,
+                        ),
+                    )
+
+                    manager_processes.append(proc)
+                    _register_process(f"manager_{idx_block}", proc)
+                fully_connected = True
+                message_server_process = None
+                detection_server_process = None
                 if any_messages:
-                    message_tx = ctx.Queue()
-                    message_rx = ctx.Queue()
-                else:
-                    message_tx = None
-                    message_rx = None
+                    message_server_process = mp.Process(
+                        target=_run_message_server,
+                        args=(message_channels, message_server_log_specs, fully_connected),
+                    )
                 if detection_server_needed:
+<<<<<<< Updated upstream:src/core/main/environment/runtime.py
                     detection_tx = ctx.Queue()
                     detection_rx = ctx.Queue()
                 else:
@@ -487,6 +569,18 @@ class Environment:
                     target=_run_detection_server,
                     args=(detection_channels, detection_server_log_specs),
                 )
+=======
+                    detection_server_process = mp.Process(
+                        target=_run_detection_server,
+                        args=(detection_channels, detection_server_log_specs),
+                    )
+            except Exception:
+                logger.critical(
+                    "Environment failed to bootstrap subprocesses; forcing logging shutdown"
+                )
+                shutdown_logging()
+                raise
+>>>>>>> Stashed changes:src/core/main/environment.py
             gui_process = None
             _register_process("message_server", message_server_process)
             _register_process("detection_server", detection_server_process)
@@ -887,6 +981,7 @@ class Environment:
                         _log_process_status("post_join", label, proc)
                     for idx, proc in enumerate(manager_processes):
                         _log_process_status("post_join", f"manager_{idx}", proc)
+            logger.critical("Environment final cleanup: invoking shutdown_logging()")
             shutdown_logging()
             gc.collect()
             used_cores.difference_update(assigned_worker_cores)
