@@ -20,7 +20,7 @@ Default directory layout (base_path="data/logs"):
 
 from __future__ import annotations
 
-import atexit, logging, os, threading, zipfile
+import atexit, io, logging, os, threading, zipfile
 import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
@@ -215,26 +215,28 @@ def get_logger(component: str) -> logging.Logger:
 # ------------------------------------------------------------------------------
 class _CompressedLogHandler(logging.Handler):
     """
-    Creates a ZIP archive for this process and writes logs inside it.
+    Accumulates logs in a plain text file while running and builds a ZIP archive
+    only when the handler is closed. This avoids keeping a ZipFile open across
+    forks, which was causing the main log archive to be corrupted.
     """
 
-    terminator = b"\n"   # in binario
+    terminator = b"\n"
 
     def __init__(self, context):
         super().__init__()
         self._context = context
-        self._zip = None
-        self._inner_stream = None
+        self._log_file: io.BufferedWriter | None = None
+        self._log_file_path: Path | None = None
         self._archive_path: Path | None = None
         self._temp_archive_path: Path | None = None
         self._lock = threading.RLock()
         self._closed = False
+        self._owner_pid = os.getpid()
         try:
             self._activate()
         except Exception:
-            # If we cannot activate the zip (e.g., interrupted run), fall back to NullHandler-like behaviour.
-            self._zip = None
-            self._inner_stream = None
+            self._log_file = None
+            self._log_file_path = None
             self._temp_archive_path = None
             self._archive_path = None
 
@@ -246,59 +248,58 @@ class _CompressedLogHandler(logging.Handler):
         self._temp_archive_path = temp_path
         self._archive_path = archive_path
 
-        self._zip = zipfile.ZipFile(
-            temp_path,
-            mode="w",
-            compression=zipfile.ZIP_DEFLATED,
-            compresslevel=9,
-        )
-
         inner_name = self._context["inner_log_name"]
-
-        # IMPORTANT: write in binary mode only
-        self._inner_stream = self._zip.open(inner_name, mode="w")
-        self._archive_path = archive_path
-
+        log_path = archive_path.parent / inner_name
+        self._log_file_path = log_path
+        self._log_file = log_path.open("wb")
 
     def emit(self, record):
+        if os.getpid() != self._owner_pid or not self._log_file:
+            return
         try:
-            if not self._inner_stream:
-                return
             msg = self.format(record).encode("utf-8") + self.terminator
-            self._inner_stream.write(msg)
-            self._inner_stream.flush()
+            self._log_file.write(msg)
+            self._log_file.flush()
         except Exception:
             self.handleError(record)
 
     def close(self):
+        if os.getpid() != self._owner_pid:
+            super().close()
+            return
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            log_path = self._log_file_path
             archive_path = self._archive_path
             temp_path = self._temp_archive_path
             try:
-                if self._inner_stream:
-                    self._inner_stream.flush()
-                    self._inner_stream.close()
+                if self._log_file:
+                    self._log_file.flush()
+                    self._log_file.close()
             except Exception:
                 pass
-            try:
-                if self._zip:
-                    fp = getattr(self._zip, "fp", None)
-                    if fp:
-                        fp.flush()
-                    self._zip.close()
-            except Exception:
-                pass
-            self._inner_stream = None
-            self._zip = None
-            if temp_path and archive_path:
+            finally:
+                self._log_file = None
+            if temp_path and archive_path and log_path:
                 try:
+                    with zipfile.ZipFile(
+                        temp_path,
+                        mode="w",
+                        compression=zipfile.ZIP_DEFLATED,
+                        compresslevel=9,
+                    ) as zf:
+                        zf.write(log_path, self._context["inner_log_name"])
                     os.replace(temp_path, archive_path)
                     self._temp_archive_path = None
                 except Exception:
                     pass
+                finally:
+                    try:
+                        log_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
             elif temp_path:
                 try:
                     temp_path.unlink(missing_ok=True)

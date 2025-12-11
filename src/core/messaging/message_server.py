@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import queue, time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.geometry_utils.spatialgrid import SpatialGrid
 from core.util.logging_util import get_logger, start_run_logging, shutdown_logging

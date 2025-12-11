@@ -14,7 +14,7 @@ class LedStateLogic:
     COMMUNICATION_COLOR = "white"
     COMMUNICATION_TICKS = 3
     HANDSHAKE_DISPLAY_DURATION = 2
-    HANDSHAKE_SEQUENCE = tuple("abcdef")
+    HANDSHAKE_SEQUENCE = tuple("abc")
 
     def __init__(self, agent: Any):
         self.agent = agent
