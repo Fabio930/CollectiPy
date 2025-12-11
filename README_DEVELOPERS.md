@@ -86,8 +86,8 @@ The full commented schema lives in `README.md` under "Config.json Example".
   - GUI backpressure: `gui.max_backlog` (alias of `gui.throttle.max_backlog`), `gui.poll_interval_ms` (alias of `gui.throttle.poll_interval_ms`), and `gui.adaptive_throttle` (alias of `gui.throttle.enabled`) let you pause the simulation loop when the GUI queue grows too much (defaults: enabled, backlog 6, poll interval 8 ms).
   - `snapshot_stride` (already in the schema): also passed to managers to thin collision snapshots.
 - **Spawn/placement aliases**:
-  - `distribute` is accepted as an alias of `spawn` for agents/objects.
-  - `position` / `orientation`: lists of explicit poses (objects and agents) instead of sampled spawn; each entry must be `[x, y]` or `[x, y, z]` for position and `[z]` or `[x, y, z]` for orientation.
+- `distribute` is accepted as an alias of `spawn` for agents/objects.
+- `position` / `orientation`: lists of explicit poses (objects and agents) instead of sampled spawn; each entry must be `[x, y]` or `[x, y, z]` for position and `[z]` or `[x, y, z]` for orientation. The entries are applied in creation order (extras are ignored, missing entities fall back to the spawn/orientation logic) and these lists are not part of the Cartesian expansion that generates multiple experiments.
 - **Objects**:
   - `strength` / `uncertainty` accept lists; a single-value list is broadcast to all instances of that object type.
 - **Agents**:

@@ -17,6 +17,7 @@ from core.util.bodies.shapes3D import Shape3DFactory
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.hierarchy_overlay import Bounds2D
 from core.util.logging_util import get_logger
+from core.util.pose_utils import get_explicit_orientation, get_explicit_position
 
 logger = get_logger("arena")
 
@@ -76,19 +77,44 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                 entity.set_position(Vector3D(999, 0, 0), False)
             for n in range(n_entities):
                 entity = entities[n]
-                if not entity.get_orientation_from_dict():
+                fallback_z = 0.0
+                shape = entity.get_shape()
+                if shape is not None:
+                    fallback_z = abs(shape.min_vert().z)
+                explicit_orientation = get_explicit_orientation(entity)
+                if explicit_orientation is not None:
+                    entity.orientation_from_dict = True
+                    entity.set_start_orientation(Vector3D(0, 0, explicit_orientation))
+                elif not entity.get_orientation_from_dict():
                     rand_angle = rng.uniform(0.0, 360.0)
                     entity.set_start_orientation(Vector3D(0, 0, rand_angle))
 
-                placed = self._place_entity_random(
-                    entity,
-                    radii_map[id(entity)],
-                    occupancy,
-                    rng,
-                    min_v,
-                    max_v,
-                    spawn_cfg,
-                )
+                explicit_position = get_explicit_position(entity, fallback_z)
+                placed = False
+                if explicit_position is not None:
+                    placed = self._place_entity_at_point(
+                        entity,
+                        explicit_position,
+                        radii_map[id(entity)],
+                        occupancy,
+                    )
+                    entity.position_from_dict = placed
+                    if not placed:
+                        logger.warning(
+                            "%s explicit position %s overlaps or exits bounds; using spawn sampling",
+                            entity.entity(),
+                            (explicit_position.x, explicit_position.y, explicit_position.z),
+                        )
+                if not placed:
+                    placed = self._place_entity_random(
+                        entity,
+                        radii_map[id(entity)],
+                        occupancy,
+                        rng,
+                        min_v,
+                        max_v,
+                        spawn_cfg,
+                    )
                 if not placed:
                     raise Exception(f"Impossible to place object {entity.entity()} in the arena")
 
@@ -110,23 +136,38 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                 entity.set_position(Vector3D(999, 0, 0), False)
             for n in range(n_entities):
                 entity = entities[n]
-                entity.set_start_orientation(entity.get_start_orientation())
-                if not entity.get_orientation_from_dict():
-                    rand_angle = rng.uniform(0.0, 360.0)
-                    entity.set_start_orientation(Vector3D(0, 0, rand_angle))
+                explicit_orientation = get_explicit_orientation(entity)
+                if explicit_orientation is not None:
+                    entity.orientation_from_dict = True
+                    entity.set_start_orientation(Vector3D(0, 0, explicit_orientation))
+                else:
+                    entity.set_start_orientation(entity.get_start_orientation())
+                    if not entity.get_orientation_from_dict():
+                        rand_angle = rng.uniform(0.0, 360.0)
+                        entity.set_start_orientation(Vector3D(0, 0, rand_angle))
                 position = entity.get_start_position()
+                position_z = position.z if position is not None else 0.0
 
+                explicit_position = get_explicit_position(entity, position_z)
                 count = 0
                 done = False
                 shape_n = entity.get_shape()
                 shape_type_n = entity.get_shape_type()
+                explicit_candidate = explicit_position
+                used_explicit = False
                 while not done and count < 500:
                     done = True
-                    rand_pos = Vector3D(
-                        rng.uniform(min_v.x, max_v.x),
-                        rng.uniform(min_v.y, max_v.y),
-                        position.z,
-                    )
+                    if explicit_candidate is not None:
+                        rand_pos = explicit_candidate
+                        explicit_candidate = None
+                        candidate_is_explicit = True
+                    else:
+                        rand_pos = Vector3D(
+                            rng.uniform(min_v.x, max_v.x),
+                            rng.uniform(min_v.y, max_v.y),
+                            position_z,
+                        )
+                        candidate_is_explicit = False
                     entity.to_origin()
                     entity.set_position(rand_pos)
                     shape_n = entity.get_shape()
@@ -145,6 +186,8 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
                     count += 1
                     if done:
                         entity.set_start_position(rand_pos)
+                        used_explicit = candidate_is_explicit
+                entity.position_from_dict = used_explicit
                 if not done:
                     raise Exception(f"Impossible to place object {entity.entity()} in the arena")
 

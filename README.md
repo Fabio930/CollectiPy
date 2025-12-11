@@ -197,6 +197,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
 
 - Multiple `arena_*` entries generate one experiment per arena.
 - Any list-valued scalar field (except `position`, `orientation`, `strength`, `uncertainty`) under an agent/object group is expanded via Cartesian product. Example: `movable_0.ticks_per_second: [3, 6]` and `movable_0.motion_model: ["unicycle", "random_walk"]` yield four experiments for that arena. `number` can also be a list to sweep population sizes.
+- The `position` and `orientation` lists (if present) are treated as explicit overrides for the first agents/objects in each group; each entry is consumed in sequence and any extra values are ignored, so these lists do not drive the Cartesian expansion mentioned above.
 - The combinations are built per arena, objects, and agent groups, then executed sequentially. `environment.num_runs` repeats each expanded experiment deterministically.
 - Keep the GUI disabled for batch sweeps; when `environment.results` exists (and is non-empty) and `gui` is empty, exports are written for every expanded experiment/run.
 
@@ -211,5 +212,6 @@ Object and agent entries must start with "static_" or "movable_" regardless of a
 - Bounded arenas: if `r` is not provided, it DEFAULTs to the inradius of the arena footprint. The sampled area is clamped to the arena; if the requested circle exceeds the bounds it is truncated to fit. Placement still respects non-overlap with walls, objects, and other agents.
 - Unbounded arenas: if `r` is missing/invalid, a finite radius is inferred from agent count/size so that all requested agents fit in a reasonable square. Sampling uses the chosen distribution around `c` without wrap-around.
 - Multiple groups sharing the same spawn center: the second (and subsequent) groups are nudged away when their spawn disks overlap (iterated up to 16 attempts with a small margin). If overlap remains, the system falls back to per-entity collision checks and logs a warning.
+- Entities also accept optional `position` (`[x, y]` or `[x, y, z]`) and orientation (`[z]` or single float) lists that pin the first few instances to exact poses; agents/objects without an explicit entry fall back to the usual spawn/orientation sampling, and extra list values beyond the configured count are ignored.
 
 For parser notes, data exports, and plugin hooks, see `README_DEVELOPERS.md`.

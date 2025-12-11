@@ -75,6 +75,68 @@ def _clone_config_obj(obj):
     """Deep-clone config data without using copy module."""
     return json.loads(json.dumps(obj))
 
+def _normalize_position_spec(value):
+    """Normalize raw position entries to [x, y, z] triples."""
+    normalized = []
+    if value is None:
+        return normalized
+    entries = value if isinstance(value, (list, tuple)) else [value]
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, (list, tuple)):
+            logger.warning("Entity position entry %s is not a list, ignoring: %r", idx, entry)
+            continue
+        if len(entry) < 2:
+            logger.warning("Entity position entry %s must include at least two values: %r", idx, entry)
+            continue
+        try:
+            x = float(entry[0])
+            y = float(entry[1])
+        except (TypeError, ValueError):
+            logger.warning("Entity position entry %s contains non-numeric coordinates: %r", idx, entry)
+            continue
+        z_val = None
+        if len(entry) >= 3:
+            try:
+                z_val = float(entry[2])
+            except (TypeError, ValueError):
+                z_val = None
+        normalized.append([x, y, z_val])
+    return normalized
+
+
+def _normalize_orientation_spec(value):
+    """Normalize raw orientation entries into flat Z angles."""
+    normalized = []
+    if value is None:
+        return normalized
+    entries = value if isinstance(value, (list, tuple)) else [value]
+    for idx, entry in enumerate(entries):
+        candidate = entry
+        if isinstance(entry, (list, tuple)) and entry:
+            candidate = entry[-1]
+        try:
+            normalized.append(float(candidate))
+        except (TypeError, ValueError):
+            logger.warning("Entity orientation entry %s is invalid: %r", idx, entry)
+    return normalized
+
+
+def _prepare_explicit_pose_fields(entity: dict):
+    """Normalize and store explicit position/orientation fields."""
+    if "position" in entity:
+        positions = _normalize_position_spec(entity.get("position"))
+        if positions:
+            entity["position"] = positions
+        else:
+            entity.pop("position", None)
+    if "orientation" in entity:
+        orientations = _normalize_orientation_spec(entity.get("orientation"))
+        if orientations:
+            entity["orientation"] = orientations
+        else:
+            entity.pop("orientation", None)
+
+
 def _populate_dimensions(entity: dict, shape_key: str | None = None) -> set[str]:
     """Merge a 'dimensions' block into the flat configuration fields."""
     provided = set()
@@ -416,14 +478,7 @@ class Config:
             else:
                 if not isinstance(td, int) or td < 1:
                     raise ValueError("Optional field 'time_delay' must be an integer >= 1 in {}".format(entity.get('_id', 'entity')))
-        if 'position' in entity:
-            raise ValueError(
-                f"The 'position' attribute for {entity.get('_id', 'entity')} is no longer supported; use the 'spawn' configuration instead"
-            )
-        if 'orientation' in entity:
-            raise ValueError(
-                f"The 'orientation' attribute for {entity.get('_id', 'entity')} is no longer supported; rely on spawn/orientation sampling"
-            )
+        _prepare_explicit_pose_fields(entity)
         if 'strength' in entity:
             tmp = entity['strength']
             if not isinstance(tmp, list) and all(isinstance(t, (int,float)) for t in tmp):

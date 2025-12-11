@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.logging_util import get_logger
+from core.util.pose_utils import get_explicit_orientation, get_explicit_position
 
 logger = get_logger("entity_manager")
 
@@ -118,30 +119,68 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
             entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
             entity.spawn_parameters = spawn_params
 
-            spawn_point = manager._sample_spawn_point(entity, Vector3D(cx, cy, 0.0), radius, distribution, manager._placement_bounds(entity, unbounded))
-
-            # Re-roll until we find a non-overlapping placement.
+            shape_ref = entity.get_shape()
+            fallback_z = abs(shape_ref.min_vert().z) if shape_ref is not None else 0.0
+            explicit_position = get_explicit_position(entity, fallback_z)
+            spawn_point = explicit_position
             placed_ok = False
-            for _ in range(manager.PLACEMENT_MAX_ATTEMPTS):
-                overlap = manager._is_overlapping_spawn(placed_shapes, entity, spawn_point)
-                if not overlap:
+            if spawn_point is not None:
+                if not manager._is_overlapping_spawn(placed_shapes, entity, spawn_point):
                     placed_ok = True
-                    break
-                spawn_point = manager._sample_spawn_point(entity, Vector3D(cx, cy, 0.0), radius, distribution, manager._placement_bounds(entity, unbounded))
-
+                else:
+                    logger.warning(
+                        "%s explicit position %s overlaps or exits bounds; using spawn sampling",
+                        entity.get_name(),
+                        (spawn_point.x, spawn_point.y, spawn_point.z),
+                    )
+                    spawn_point = None
             if not placed_ok:
+                spawn_point = manager._sample_spawn_point(
+                    entity,
+                    Vector3D(cx, cy, 0.0),
+                    radius,
+                    distribution,
+                    manager._placement_bounds(entity, unbounded),
+                )
+                for _ in range(manager.PLACEMENT_MAX_ATTEMPTS):
+                    overlap = manager._is_overlapping_spawn(placed_shapes, entity, spawn_point)
+                    if not overlap:
+                        placed_ok = True
+                        break
+                    spawn_point = manager._sample_spawn_point(
+                        entity,
+                        Vector3D(cx, cy, 0.0),
+                        radius,
+                        distribution,
+                        manager._placement_bounds(entity, unbounded),
+                    )
+
+            if not placed_ok and spawn_point is not None:
                 # If we couldn't find a free spot, just place it at the last sampled point.
-                logger.warning("%s could not find non-overlapping spawn after %d attempts", entity.get_name(), manager.PLACEMENT_MAX_ATTEMPTS)
+                logger.warning(
+                    "%s could not find non-overlapping spawn after %d attempts",
+                    entity.get_name(),
+                    manager.PLACEMENT_MAX_ATTEMPTS,
+                )
+
+            entity.position_from_dict = explicit_position is not None
+            explicit_orientation = get_explicit_orientation(entity)
+            entity.orientation_from_dict = explicit_orientation is not None
+            if explicit_orientation is not None:
+                orientation_vec = Vector3D(0.0, 0.0, explicit_orientation)
+            else:
+                orientation_vec = entity.get_start_orientation() or Vector3D()
 
             entity.set_start_position(spawn_point)
-            entity.set_start_orientation(entity.start_orientation)
+            entity.set_start_orientation(orientation_vec)
             entity.set_position(spawn_point)
-            entity.set_orientation(entity.orientation)
+            entity.set_orientation(orientation_vec)
 
             # Keep a copy of the shape for overlap checks.
             shape = entity.get_shape()
-            shape.translate(spawn_point)
-            placed_shapes.append(shape)
+            if shape is not None:
+                shape.translate(spawn_point)
+                placed_shapes.append(shape)
 
         # Clamp group after placement to ensure within arena bounds if bounded.
         for entity in entities:

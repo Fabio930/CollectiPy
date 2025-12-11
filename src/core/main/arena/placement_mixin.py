@@ -228,6 +228,23 @@ class PlacementMixin(_PlacementMixinProps):
             z,
         )
 
+    def _place_entity_at_point(self, entity, position, radius, occupancy):
+        """Place entity at the provided explicit position if it fits."""
+        if position is None:
+            return False
+        entity.to_origin()
+        entity.set_position(position)
+        shape = entity.get_shape()
+        if shape is None:
+            return False
+        if shape.check_overlap(self.shape)[0]:
+            return False
+        if self._shape_overlaps_grid(shape, position, radius, occupancy):
+            return False
+        entity.set_start_position(position)
+        self._register_shape_in_grid(shape, position, radius, occupancy)
+        return True
+
     def _shape_overlaps_grid(self, shape, position, radius, occupancy):
         """Return True if the shape overlaps occupied grid cells."""
         if not occupancy:
