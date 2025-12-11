@@ -15,7 +15,7 @@ import math
 import sys
 import time
 import multiprocessing as mp
-from typing import Any, Optional, cast
+from typing import Optional, cast
 
 from core.main.entity_manager.loop import manager_run
 from core.main.entity_manager.initialize import initialize_entities

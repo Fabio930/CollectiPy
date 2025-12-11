@@ -316,11 +316,11 @@ class MessageServer:
             logger.warning("Invalid manager_id %s for agent %s", target.manager_id, target.name)
             return
 
-        # Copia il payload per non toccare l’originale usato per altri target
+        # Copy payload so the original stays available for other recipients.
         data = dict(payload)
 
         if anonymize:
-            # Elenco dei campi da “spegnere”
+            # Redact identifying fields when anonymizing the packet.
             for key in ("agent_id", "source_agent", "last_forward_by", "from", "_sender_uid"):
                 if key in data:
                     data[key] = None

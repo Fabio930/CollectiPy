@@ -7,7 +7,6 @@ from core.util.logging_util import (
     configure_logging,
     is_file_logging_enabled,
     is_logging_enabled,
-    shutdown_logging,
 )
 from core.util.folder_util import (
     derive_experiment_folder_basename,

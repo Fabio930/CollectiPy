@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from core.entities.base import Entity, logger
+from core.entities.base import Entity
 
 
 class Object(Entity):

@@ -10,8 +10,6 @@
 """Concrete arena implementations with collision shapes."""
 from __future__ import annotations
 
-import math
-
 from core.main.arena.base import Arena, BoundaryGrid
 from core.main.arena.placement_mixin import PlacementMixin
 from core.main.arena.runtime_mixin import RuntimeMixin
