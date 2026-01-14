@@ -83,8 +83,8 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     },
     "gui":{ //DEFAULT:{} empty dict -> no rendering
         "_id": str, //DEFAULT:"2D"
-        "on_click": list(str) "messages"|"detection"|"spins", //DEFAULT:None shows nothing on click
-        "view": list(str) "messages"|"detection", //DEFAULT:None shows nothing in the side column,
+        "on_click": list(str) "messages"|"detection"|"spins", //DEFAULT:None shows nothing on click,
+        "view": list(str) "messages"|"detection", //DEFAULT:None shows nothing in the side column.
     },
     "arenas":{ //REQUIRED can define multiple arena to simulate sequentially
     "arena_0":{
