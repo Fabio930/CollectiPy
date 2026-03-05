@@ -5,6 +5,8 @@
 #  This file is part of CollectyPy, released under the BSD 3-Clause License.
 #  You may use, modify, and redistribute this file according to the terms of the
 #  license. Attribution is required if this code is used in other works.
+#  
+#  Original model: https://doi.org/10.1073/pnas.2102157118
 # ------------------------------------------------------------------------------
 
 """Spin system model used by spin-based movement behaviours."""
