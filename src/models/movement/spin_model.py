@@ -9,26 +9,62 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import numpy as np
+from functools import lru_cache
 from typing import Optional
-from models.spinsystem import SpinModule, PerceptionModule
+from models.spinsystem import PerceptionModule
 from core.configuration.plugin_base import MovementModel
 from core.configuration.plugin_registry import (
     get_detection_model,
     get_movement_model,
-    register_movement_model,
 )
 from models.utility_functions import normalize_angle
 from core.util.logging_util import get_logger
 
 logger = get_logger("movement.spin_model")
 
+
+def _resolve_spin_backend_module_name(moving_behavior: str) -> str:
+    """Map moving behavior name to spin backend module name."""
+    behavior = (moving_behavior or "").strip().lower()
+    if behavior == "spin_model":
+        return "models.spinsystem"
+    if behavior.startswith("spin_model_"):
+        suffix = behavior.removeprefix("spin_model_")
+        if suffix:
+            return f"models.spinsystem_{suffix}"
+    return "models.spinsystem"
+
+
+@lru_cache(maxsize=32)
+def _resolve_spin_module_class(moving_behavior: str):
+    """Return SpinModule class for the configured movement behavior."""
+    module_name = _resolve_spin_backend_module_name(moving_behavior)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to import spin backend module '{module_name}' "
+            f"for moving_behavior='{moving_behavior}'."
+        ) from exc
+    spin_class = getattr(module, "SpinModule", None)
+    if spin_class is None:
+        raise RuntimeError(
+            f"Spin backend module '{module_name}' does not expose a SpinModule class "
+            f"(moving_behavior='{moving_behavior}')."
+        )
+    return spin_class
+
+
 class SpinMovementModel(MovementModel):
     """Spin movement model."""
     def __init__(self, agent):
         """Initialize the instance."""
         self.agent = agent
+        self.moving_behavior = str(agent.config_elem.get("moving_behavior", "spin_model") or "spin_model").lower()
+        self._spin_module_class = _resolve_spin_module_class(self.moving_behavior)
         self.spin_model_params = agent.config_elem.get("spin_model", {})
         self.spin_pre_run_steps = self.spin_model_params.get("spin_pre_run_steps", 0)
         self.spin_per_tick = self.spin_model_params.get("spin_per_tick", 3)
@@ -42,12 +78,12 @@ class SpinMovementModel(MovementModel):
         if agent_task is None and hasattr(agent, "set_task"):
             agent.set_task(self.task)
         self.reference = self.spin_model_params.get("reference", "egocentric")
-        self.fallback_behavior = agent.config_elem.get("fallback_moving_behavior", "none")
+        self.fallback_behavior = str(agent.config_elem.get("fallback_moving_behavior", "none") or "none").lower()
         self.group_angles = np.linspace(0, 2 * math.pi, self.num_groups, endpoint=False)
         self.perception = None
         self._active_perception_channel = "objects"
         self.perception_range = self._resolve_detection_range()
-        self.spin_system: Optional[SpinModule] = None
+        self.spin_system: Optional[object] = None
         self._fallback_model = None
         self.detection_model = self._create_detection_model()
         self.perception_model = PerceptionModule(
@@ -82,7 +118,7 @@ class SpinMovementModel(MovementModel):
     def reset(self) -> None:
         """Reset the component state."""
         self.perception = None
-        self.spin_system = SpinModule(
+        self.spin_system = self._spin_module_class(
             self.agent.random_generator,
             self.num_groups,
             self.num_spins_per_group,
@@ -265,7 +301,7 @@ class SpinMovementModel(MovementModel):
 
     def _run_fallback(self, tick: int, arena_shape, objects: dict, agents: dict) -> None:
         """Run the fallback."""
-        if self.fallback_behavior in ("spin_model","none"):
+        if self.fallback_behavior in (self.moving_behavior, "none"):
             return
         behavior = self.fallback_behavior
         if self._fallback_model is None:
@@ -290,4 +326,6 @@ class SpinMovementModel(MovementModel):
             self.spin_system.get_avg_direction_of_activity(),
         )
 
-register_movement_model("spin_model", lambda agent: SpinMovementModel(agent))
+
+MOVEMENT_MODEL_CLASS = SpinMovementModel
+MOVEMENT_MODEL_ALIASES = ("spin_model_flocking",)
