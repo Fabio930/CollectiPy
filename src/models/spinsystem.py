@@ -67,8 +67,7 @@ class SpinModule:
         state_flat = state.ravel()
         interaction = state_flat[:, None] * state_flat[None, :]
         H_spin_interactions = self._interaction_factor * np.sum(self._J_upper * interaction)
-        external_field_contribution = -np.dot(self.external_field, state_flat)
-        return H_spin_interactions + external_field_contribution
+        return H_spin_interactions
 
     def step(self,timedelay=True, dt=0.1, tau=33):
         """Execute the simulation step."""
