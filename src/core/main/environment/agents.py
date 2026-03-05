@@ -101,7 +101,7 @@ def _estimate_agents_per_process(
 
     for cfg, entities in agents.values():
         behavior = str(cfg.get("moving_behavior", "") or "").lower()
-        if behavior == "spin_model":
+        if behavior.startswith("spin_model"):
             has_spin = True
 
         if cfg.get("messages"):

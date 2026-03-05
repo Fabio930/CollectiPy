@@ -9,7 +9,6 @@
 
 import math
 from core.configuration.plugin_base import MovementModel
-from core.configuration.plugin_registry import register_movement_model
 from models.movement.common import apply_motion_state
 from models.utility_functions import normalize_angle
 from core.util.geometry_utils.vector3D import Vector3D
@@ -234,4 +233,5 @@ class RandomWayPointMovement(MovementModel):
         gy = min(max(goal.y, min_y), max_y)
         return Vector3D(gx, gy, goal.z)
 
-register_movement_model("random_way_point", lambda agent: RandomWayPointMovement(agent))
+
+MOVEMENT_MODEL_CLASS = RandomWayPointMovement
