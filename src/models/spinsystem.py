@@ -21,7 +21,7 @@ _PI = math.pi
 
 class SpinModule:
     """Spin module."""
-    def __init__(self, random_generator:Random, num_groups:int, num_spins_per_group:int, T:float, J:float, nu:float, p_spin_up:float=0.5, time_delay:int=1, dynamics:str='metropolis'):
+    def __init__(self, random_generator:Random, num_groups:int, num_spins_per_group:int, T:float, J:float, nu:float, global_inhibition: float = 0.0, p_spin_up:float=0.5, time_delay:int=1, dynamics:str='metropolis'):
         """Initialize the instance."""
         self.random_generator = random_generator
         self.num_groups = num_groups
@@ -34,6 +34,7 @@ class SpinModule:
         self.spins_history = [self.spins.copy()]
         self.history_length = time_delay
         self.dynamics = dynamics
+        self.global_inhibition = global_inhibition
         group_angles = np.linspace(0, 2 * _PI, num_groups, endpoint=False)
         self.angles = np.repeat(group_angles, self.num_spins_per_group)
         self._unit_angle_vectors = np.exp(1j * self.angles)
@@ -69,7 +70,8 @@ class SpinModule:
         state_flat = state.ravel()
         interaction = state_flat[:, None] * state_flat[None, :]
         H_spin_interactions = self._interaction_factor * np.sum(self._J_upper * interaction)
-        return H_spin_interactions
+        global_inhibition_contribution = self.global_inhibition * np.sum(state_flat)
+        return H_spin_interactions - global_inhibition_contribution
 
     def step(self,timedelay=True, dt=0.1, tau=33):
         """Execute the simulation step."""
@@ -205,7 +207,6 @@ class PerceptionModule:
         perception_width: float,
         group_angles: np.ndarray,
         reference: str = "egocentric",
-        perception_global_inhibition: float = 0.0,
         max_detection_distance: float | None = None,
         agent_strength: float = 5.0,
     ):
@@ -214,7 +215,6 @@ class PerceptionModule:
         self.perception_width = perception_width
         self.group_angles = group_angles
         self.reference = reference
-        self.perception_global_inhibition = perception_global_inhibition
         self.max_detection_distance = (
             float(max_detection_distance) if max_detection_distance is not None else math.inf
         )
@@ -253,8 +253,6 @@ class PerceptionModule:
                 strength = 0.0
             self._accumulate_target(object_channel, dx, dy, dz, width, strength, obs_orient_z)
 
-        self._apply_global_inhibition(agent_channel)
-        self._apply_global_inhibition(object_channel)
         combined_channel = agent_channel + object_channel
         return {
             "objects": object_channel,
@@ -278,8 +276,3 @@ class PerceptionModule:
         weights *= strength
         perception += np.repeat(weights, self.num_spins_per_group)
 
-    def _apply_global_inhibition(self, perception_channel):
-        """Apply a global inhibition value to the provided perception channel."""
-        if self.perception_global_inhibition == 0:
-            return
-        perception_channel -= self.perception_global_inhibition

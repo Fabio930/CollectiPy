@@ -71,7 +71,7 @@ class SpinMovementModel(MovementModel):
         self.perception_width = self.spin_model_params.get("perception_width", 0.3)
         self.num_groups = self.spin_model_params.get("num_groups", 8)
         self.num_spins_per_group = self.spin_model_params.get("num_spins_per_group", 5)
-        self.perception_global_inhibition = self.spin_model_params.get("perception_global_inhibition", 0)
+        self.global_inhibition = self.spin_model_params.get("global_inhibition", 0)
         agent_task = agent.get_task() if hasattr(agent, "get_task") else None
         spin_task = self.spin_model_params.get("task")
         self.task = agent_task or spin_task or "selection"
@@ -92,7 +92,6 @@ class SpinMovementModel(MovementModel):
             self.perception_width,
             self.group_angles,
             self.reference,
-            self.perception_global_inhibition,
             self.perception_range,
             float(self.spin_model_params.get("agent_signal_strength", 5)),
         )
@@ -106,7 +105,8 @@ class SpinMovementModel(MovementModel):
             "perception_width": self.perception_width,
             "group_angles": self.group_angles,
             "reference": self.reference,
-            "perception_global_inhibition": self.perception_global_inhibition,
+            "global_inhibition": self.global_inhibition,
+            "perception_global_inhibition": self.global_inhibition,
             "max_detection_distance": self.perception_range,
             "detection_config": getattr(self.agent, "detection_config", {}),
         }
@@ -125,9 +125,10 @@ class SpinMovementModel(MovementModel):
             float(self.spin_model_params.get("T", 0.5)),
             float(self.spin_model_params.get("J", 1)),
             float(self.spin_model_params.get("nu", 0)),
-            float(self.spin_model_params.get("p_spin_up", 0.5)),
-            int(self.spin_model_params.get("time_delay", 1)),
-            self.spin_model_params.get("dynamics", "metropolis"),
+            global_inhibition=self.global_inhibition,
+            p_spin_up=float(self.spin_model_params.get("p_spin_up", 0.5)),
+            time_delay=int(self.spin_model_params.get("time_delay", 1)),
+            dynamics=self.spin_model_params.get("dynamics", "metropolis"),
         )
 
     def pre_run(self, objects: dict, agents: dict) -> None:

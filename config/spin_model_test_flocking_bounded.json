@@ -14,7 +14,7 @@
                 "_id": "circle",
                 "color": "gray",
                 "dimensions":{
-                    "radius": 1
+                    "radius": 0.6
                 }
             }
         },
@@ -22,7 +22,7 @@
         },
         "agents":{
             "movable_0":{
-                "number": [40],
+                "number": [30],
                 "shape": "cylinder",
                 "max_linear_velocity": 0.01,
                 "max_angular_velocity": 10,
@@ -37,11 +37,11 @@
                 },
                 "moving_behavior":"spin_model",
                 "spin_model":{
-                    "perception_width": 0.2,
-                    "perception_global_inhibition": 0.3,
-                    "T": 0.3,
-                    "J": 30,
-                    "nu": 0.4,
+                    "perception_width": 0.1,
+                    "global_inhibition": 0,
+                    "T": 0.5,
+                    "J": 5,
+                    "nu": 0.2,
                     "p_spin_up": 0.5,
                     "time_delay": 1,
                     "reference": "allocentric",
