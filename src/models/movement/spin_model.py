@@ -2,7 +2,7 @@
 #  CollectiPy
 #  Copyright (c) 2025 Fabio Oddi
 #
-#  This file is part of CollectyPy, released under the BSD 3-Clause License.
+#  This file is part of CollectiPy, released under the BSD 3-Clause License.
 #  You may use, modify, and redistribute this file according to the terms of the
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
@@ -14,7 +14,6 @@ import math
 import numpy as np
 from functools import lru_cache
 from typing import Optional
-from models.spinsystem import PerceptionModule
 from core.configuration.plugin_base import MovementModel
 from core.configuration.plugin_registry import (
     get_detection_model,
@@ -30,12 +29,12 @@ def _resolve_spin_backend_module_name(moving_behavior: str) -> str:
     """Map moving behavior name to spin backend module name."""
     behavior = (moving_behavior or "").strip().lower()
     if behavior == "spin_model":
-        return "models.spinsystem"
+        return "models.spin_models.spin_system"
     if behavior.startswith("spin_model_"):
         suffix = behavior.removeprefix("spin_model_")
         if suffix:
-            return f"models.spinsystem_{suffix}"
-    return "models.spinsystem"
+            return f"models.spin_models.spin_system_{suffix}"
+    return "models.spin_models.spin_system"
 
 
 @lru_cache(maxsize=32)
@@ -56,6 +55,37 @@ def _resolve_spin_module_class(moving_behavior: str):
             f"(moving_behavior='{moving_behavior}')."
         )
     return spin_class
+
+
+def _resolve_perception_backend_module_name(detection_type: str) -> str:
+    """Map detection type to perception backend module name."""
+    det_type = (detection_type or "").strip().upper()
+    if det_type == "GPS":
+        return "models.spin_models.perception_system"
+    if det_type == "VISUAL":
+        return "models.spin_models.perception_system_visual"  # Esempio: modulo separato per VISUAL
+    # Aggiungi altri tipi di detection qui se necessario
+    return "models.spin_models.perception_system"
+
+
+@lru_cache(maxsize=32)
+def _resolve_perception_module_class(detection_type: str):
+    """Return PerceptionModule class for the configured detection type."""
+    module_name = _resolve_perception_backend_module_name(detection_type)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to import perception backend module '{module_name}' "
+            f"for detection_type='{detection_type}'."
+        ) from exc
+    perception_class = getattr(module, "PerceptionModule", None)
+    if perception_class is None:
+        raise RuntimeError(
+            f"Perception backend module '{module_name}' does not expose a PerceptionModule class "
+            f"(detection_type='{detection_type}')."
+        )
+    return perception_class
 
 
 class SpinMovementModel(MovementModel):
@@ -86,7 +116,10 @@ class SpinMovementModel(MovementModel):
         self.spin_system: Optional[object] = None
         self._fallback_model = None
         self.detection_model = self._create_detection_model()
-        self.perception_model = PerceptionModule(
+        # Carica dinamicamente il perception module basato su detection type
+        detection_type = str(agent.config_elem.get("detection", {}).get("type", "GPS") or "GPS").upper()
+        self._perception_module_class = _resolve_perception_module_class(detection_type)
+        self.perception_model = self._perception_module_class(
             self.num_groups,
             self.num_spins_per_group,
             self.perception_width,
