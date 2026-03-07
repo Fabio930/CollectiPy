@@ -97,7 +97,9 @@ The full commented schema lives in `README.md` under "Config.json Example".
   - Messaging rate aliases: `send_message_per_seconds` / `send_message_per_second` and `receive_message_per_seconds` / `receive_message_per_second`.
   - Messaging extras: `rebroadcast_steps` (with legacy alias `rebroadcast_hops`), `delete_trigger` (custom bus-specific hint), `handshake_auto` (default true), `handshake_timeout` (seconds), and `timer.reset_each_cycle` (boolean to drop TTLs every tick). Timer averages can be inferred from `parameters.average|avg|mean|mu|max|lambda|rate|value` if `average` is omitted.
   - Information scope overrides: `information_scope` or `info_restrictions` at the agent level mirror the arena hierarchy rules to gate detection/messages/move by hierarchy nodes (see `_allowed_nodes_for_channel` in `entity.py`).
-  - Behaviour knobs used by built-ins: `crw_exponent`, `levy_exponent`, `max_turning_ticks`, `standard_motion_steps` influence random-walk models; `task` is stored on the agent for plugins to consume.
+  - Behaviour knobs used by built-ins: `crw_exponent`, `levy_exponent`, `max_turning_ticks`, `standard_motion_steps` influence random-walk models; `task` is stored on the agent for plugins to consume (for example, the
+    ``spin_model`` movement plugin uses the task value to pick either the
+    plain or ``_flocking`` spin system backend).
 - **Hierarchy helpers**:
   - Agents accept `hierarchy_node` to attach to the arena overlay; arenas own the `hierarchy`/`information_scope` definition. Flat objects (circle/square/rectangle) can also carry a `hierarchy_node` and optional scope, and are the only objects shown in the hierarchy overlay.
 

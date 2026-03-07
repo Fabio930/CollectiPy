@@ -171,6 +171,11 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
                 "time_delay": int, //DEFAULT:1
                 "reference": str, //DEFAULT:"egocentric"
                 "dynamics": str, //DEFAULT:"metropolis"
+                "task": str, //OPTIONAL - **new** select spin-system variant. Supported values:
+                              //   "selection" (default, loads ``spin_system``) or
+                              //   "flocking" (loads ``spin_system_flocking``).
+                              //   If unset the plugin will fall back to the agent's
+                              //   ``task`` accessor or assume "selection".
             },
             "messages":{  //DEFAULT:{} empty dict -> no messaging
                 "send_message_per_seconds": float, //DEFAULT:1 messages sent per second

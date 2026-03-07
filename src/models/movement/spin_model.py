@@ -25,9 +25,34 @@ from core.util.logging_util import get_logger
 logger = get_logger("movement.spin_model")
 
 
-def _resolve_spin_backend_module_name(moving_behavior: str) -> str:
-    """Map moving behavior name to spin backend module name."""
+def _resolve_spin_backend_module_name(moving_behavior: str, task: str | None = None) -> str:
+    """Map configuration to the spin backend module name.
+
+    Historically the suffix of the module was derived from the
+    ``moving_behavior`` string (e.g. ``"spin_model_flocking"`` ->
+    ``spin_system_flocking``).  In the new design the *task* field of
+    the spin_model configuration takes precedence: ``"selection"``
+    will pick the plain ``spin_system`` backend while ``"flocking"``
+    will load ``spin_system_flocking``.  This allows a single
+    ``moving_behavior`` value (typically ``"spin_model"``) to support
+    multiple use‑cases simply by changing the task in the agent
+    configuration.
+
+    The function still supports the legacy behaviour when ``task`` is
+    missing, and also honours the ``spin_model_<suffix>`` naming used
+    by the :data:`MOVEMENT_MODEL_ALIASES` mechanism.
+    """
     behavior = (moving_behavior or "").strip().lower()
+    task_name = (task or "").strip().lower()
+
+    # task has highest priority; an unknown task falls through to the
+    # legacy behaviour below.
+    if task_name == "flocking":
+        return "models.spin_models.spin_system_flocking"
+    if task_name == "selection":
+        return "models.spin_models.spin_system"
+
+    # legacy mapping using the moving_behavior string
     if behavior == "spin_model":
         return "models.spin_models.spin_system"
     if behavior.startswith("spin_model_"):
@@ -38,21 +63,49 @@ def _resolve_spin_backend_module_name(moving_behavior: str) -> str:
 
 
 @lru_cache(maxsize=32)
-def _resolve_spin_module_class(moving_behavior: str):
-    """Return SpinModule class for the configured movement behavior."""
-    module_name = _resolve_spin_backend_module_name(moving_behavior)
+def _resolve_spin_module_class(moving_behavior: str, task: str | None = None):
+    """Return SpinModule class for the configured movement behavior.
+
+    ``moving_behavior`` is normally the value of the agent's
+    ``moving_behavior`` field; ``task`` is the resolved task (see
+    :class:`SpinMovementModel.__init__`).  Both values are included in
+    the cache key so that different combinations are handled
+    correctly.
+
+    If the resolver selects a task-specific backend (for example,
+    ``spin_system_flocking``) but the corresponding module cannot be
+    imported, the function will fall back to the plain
+    ``models.spin_models.spin_system`` backend rather than raising an
+    error.  This behaviour mirrors the legacy implementation which
+    always returned the base module.
+    """
+    module_name = _resolve_spin_backend_module_name(moving_behavior, task)
     try:
         module = importlib.import_module(module_name)
     except Exception as exc:
-        raise RuntimeError(
-            f"Unable to import spin backend module '{module_name}' "
-            f"for moving_behavior='{moving_behavior}'."
-        ) from exc
+        # if we tried to load a flocking-specific backend and it isn't
+        # present, fall back to the base spin_system rather than failing
+        # hard.  this mirrors the behaviour of the old resolver which
+        # always returned the plain backend.
+        if module_name.endswith("_flocking"):
+            try:
+                module = importlib.import_module("models.spin_models.spin_system")
+            except Exception:
+                raise RuntimeError(
+                    f"Unable to import spin backend module '{module_name}' "
+                    f"for moving_behavior='{moving_behavior}', task='{task}', and "
+                    "fallback to plain spin_system also failed."
+                ) from exc
+        else:
+            raise RuntimeError(
+                f"Unable to import spin backend module '{module_name}' "
+                f"for moving_behavior='{moving_behavior}', task='{task}'."
+            ) from exc
     spin_class = getattr(module, "SpinModule", None)
     if spin_class is None:
         raise RuntimeError(
             f"Spin backend module '{module_name}' does not expose a SpinModule class "
-            f"(moving_behavior='{moving_behavior}')."
+            f"(moving_behavior='{moving_behavior}', task='{task}')."
         )
     return spin_class
 
@@ -94,7 +147,8 @@ class SpinMovementModel(MovementModel):
         """Initialize the instance."""
         self.agent = agent
         self.moving_behavior = str(agent.config_elem.get("moving_behavior", "spin_model") or "spin_model").lower()
-        self._spin_module_class = _resolve_spin_module_class(self.moving_behavior)
+        # read parameters before resolving the task; the task may influence
+        # which backend module to import so it must be available first.
         self.spin_model_params = agent.config_elem.get("spin_model", {})
         self.spin_pre_run_steps = self.spin_model_params.get("spin_pre_run_steps", 0)
         self.spin_per_tick = self.spin_model_params.get("spin_per_tick", 3)
@@ -102,11 +156,16 @@ class SpinMovementModel(MovementModel):
         self.num_groups = self.spin_model_params.get("num_groups", 8)
         self.num_spins_per_group = self.spin_model_params.get("num_spins_per_group", 5)
         self.global_inhibition = self.spin_model_params.get("global_inhibition", 0)
+
         agent_task = agent.get_task() if hasattr(agent, "get_task") else None
         spin_task = self.spin_model_params.get("task")
         self.task = agent_task or spin_task or "selection"
         if agent_task is None and hasattr(agent, "set_task"):
             agent.set_task(self.task)
+
+        # finally resolve the backend class now that the task is known
+        self._spin_module_class = _resolve_spin_module_class(self.moving_behavior, self.task)
+
         self.reference = self.spin_model_params.get("reference", "egocentric")
         self.fallback_behavior = str(agent.config_elem.get("fallback_moving_behavior", "none") or "none").lower()
         self.group_angles = np.linspace(0, 2 * math.pi, self.num_groups, endpoint=False)
@@ -362,4 +421,6 @@ class SpinMovementModel(MovementModel):
 
 
 MOVEMENT_MODEL_CLASS = SpinMovementModel
+# legacy alias kept for compatibility; the preferred way to select the
+# flocking variant is via the ``spin_model.task`` configuration field.
 MOVEMENT_MODEL_ALIASES = ("spin_model_flocking",)
