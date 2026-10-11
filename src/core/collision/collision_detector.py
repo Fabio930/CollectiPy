@@ -10,16 +10,18 @@
 """Collision detection utilities (asynchronous, all-to-all)."""
 from __future__ import annotations
 
-import time
+import math
 from typing import Any, Dict, List, Optional, Tuple
 from core.util.bodies.shapes3D import Shape
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.geometry_utils.spatialgrid import SpatialGrid
+from core.util.ipc_util import wait_readable
 from core.util.logging_util import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("collision")
 
-# Tuple exchanged between EntityManager and CollisionDetector for each group.
+# Per-group data used by the collision computation. Managers send it with one extra item
+# (headings) and, after the first payload of a run, with the shapes replaced by None.
 AgentCollisionPayload = Tuple[
     List[Shape],        # shapes
     List[float],        # speed-like values (e.g., current or max velocities, used for damping)
@@ -72,57 +74,43 @@ class CollisionDetector:
 
         # Objects: {obj_id: (shapes, positions)}
         self.objects: Dict[str, Tuple[List[Shape], List[Vector3D]]] = {}
+        self._object_cache: list = []
+        self._object_cache_source: Any = None
+        # Own copies of the agents' shapes, posed from the managers' payloads.
+        self._agent_shapes: Dict[Tuple[int, str], List[Shape]] = {}
 
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
-    def _poll(self, q: Any, timeout: float = 0.0) -> bool:
-        """Safe poll for Queue/Pipe or lists of queues."""
-        if isinstance(q, (list, tuple)):
-            return any(self._poll(elem, timeout) for elem in q if elem is not None)
-
-        poll_fn = getattr(q, "poll", None)
-        if callable(poll_fn):
-            try:
-                return bool(poll_fn(timeout))
-            except Exception:
-                return False
-
-        get_fn = getattr(q, "get", None)
-        if not callable(get_fn):
-            return False
-
-        # Last resort: try a blocking get with timeout and push back.
-        try:
-            item = q.get(timeout=timeout)
-            q.put(item)
-            return True
-        except Exception:
-            return False
-
     @staticmethod
     def _shape_radius(shape: Shape) -> float:
         """Best-effort radius for broad-phase checks."""
-        getter = getattr(shape, "get_radius", None)
-        if callable(getter):
-            try:
-                candidate = getter()
-                if isinstance(candidate, (int, float)):
-                    r = float(candidate)
-                    if r > 0:
-                        return r
-            except Exception:
-                pass
+        return shape.bounding_radius()
 
-        center = shape.center_of_mass()
-        try:
-            return max(
-                (Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude()
-                 for v in shape.vertices_list),
-                default=0.0
-            )
-        except Exception:
-            return 0.0
+    def _resolve_agent_shapes(self, manager_id: int, groups: dict) -> Dict[str, AgentCollisionPayload]:
+        """Return the manager payload with shapes in place, posing our copies when only poses arrived."""
+        resolved = {}
+        for club, (shapes, vels, fwds, positions, names, headings) in groups.items():
+            if shapes is None:
+                shapes = self._agent_shapes[(manager_id, club)]
+                for shape, position, heading in zip(shapes, positions, headings):
+                    shape.set_pose(position, heading)
+            else:
+                self._agent_shapes[(manager_id, club)] = shapes
+            resolved[club] = (shapes, vels, fwds, positions, names)
+        return resolved
+
+    def _object_entries(self) -> list:
+        """Return (id, shape, x, y, radius) for every object, rebuilt only when the objects change."""
+        if self._object_cache_source is not self.objects:
+            entries = []
+            for obj_id, obj_payload in self.objects.items():
+                shapes, positions = obj_payload[:2]
+                for obj_shape, obj_pos in zip(shapes, positions):
+                    entries.append((obj_id, obj_shape, obj_pos.x, obj_pos.y, self._shape_radius(obj_shape)))
+            self._object_cache = entries
+            self._object_cache_source = self.objects
+        return self._object_cache
 
     def _velocity_damping_factor(self, speed: float) -> float:
         """
@@ -167,7 +155,7 @@ class CollisionDetector:
         dec_agents_in:
             - single queue or list of queues
             - each manager sends:
-              {"manager_id": int, "agents": {club: (shapes, vels, fwd, pos, names)}}
+              {"manager_id": int, "agents": {club: (shapes | None, vels, fwd, pos, names, headings)}}
 
         dec_agents_out:
             - single queue or list of queues
@@ -218,77 +206,51 @@ class CollisionDetector:
             logger.info("Collision detector logging started for run %s", current_run)
             return True
 
+        inputs = [q for q in (*control_inputs, dec_arena_in, *agent_inputs) if q is not None]
+        agent_index = {id(q): idx for idx, q in enumerate(agent_inputs) if q is not None}
+        control_ids = {id(q) for q in control_inputs}
+
         try:
-            while True:
-                idle = True
-
-                # 1) Pull latest objects description from arena.
-                for ctrl in control_inputs:
-                    if ctrl is None:
+            while not shutdown_requested:
+                # Sleep until the arena, a manager or the control channel has something for us.
+                for q in wait_readable(inputs, timeout=1.0):
+                    try:
+                        payload = q.get()
+                    except EOFError:
                         continue
-                    if self._poll(ctrl, 0.0):
-                        try:
-                            control_payload = ctrl.get()
-                        except EOFError:
-                            control_payload = None
-                    else:
-                        control_payload = None
+                    if not isinstance(payload, dict):
+                        continue
 
-                    if isinstance(control_payload, dict):
-                        kind = control_payload.get("kind")
+                    if id(q) in agent_index:
+                        # One snapshot per manager per "round".
+                        idx = agent_index[id(q)]
+                        round_snapshots[idx] = self._resolve_agent_shapes(idx, payload.get("agents", {}) or {})
+                        updated_flags[idx] = True
+                    elif id(q) in control_ids:
+                        kind = payload.get("kind")
                         if kind == "run_start":
-                            if _apply_control_packet(control_payload):
-                                idle = False
+                            _apply_control_packet(payload)
                         elif kind == "shutdown":
                             shutdown_requested = True
-                            idle = False
-
-                if dec_arena_in and self._poll(dec_arena_in, 0.0):
-                    try:
-                        payload = dec_arena_in.get()
-                        if payload:
-                            run_id = payload.get("run")
-                            if run_id is not None and (current_run is None or run_id > current_run):
-                                current_run = run_id
-                                start_run_logging(log_specs, process_name, current_run)
-                                logger.info("Collision detector logging started for run %s", current_run)
-                            # Expected format: {"objects": {id: (shapes, positions)}}
-                            self.objects = payload.get("objects", {}) or {}
-                            logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
-                            idle = False
-                    except EOFError:
-                        pass
-
-                # 2) Non-blocking snapshot collection: one snapshot per manager per "round".
-                for idx, q in enumerate(agent_inputs):
-                    if q is None:
-                        continue
-                    if self._poll(q, 0.0):
-                        try:
-                            snap = q.get()
-                        except EOFError:
-                            snap = None
                     else:
-                        snap = None
+                        # Objects description from the arena: {"objects": {id: (shapes, positions)}}
+                        run_id = payload.get("run")
+                        if run_id is not None and (current_run is None or run_id > current_run):
+                            current_run = run_id
+                            start_run_logging(log_specs, process_name, current_run)
+                            logger.info("Collision detector logging started for run %s", current_run)
+                        self.objects = payload.get("objects", {}) or {}
+                        logger.debug("CollisionDetector: objects updated (%d groups)", len(self.objects))
 
-                    if snap:
-                        # We expect the manager to send:
-                        # {"manager_id": int, "agents": {club: (shapes, vels, fwd, pos, names)}}
-                        agents_payload = snap.get("agents", {}) or {}
-                        round_snapshots[idx] = agents_payload
-                        updated_flags[idx] = True
-                        idle = False
-
-                # A "round" is ready when every manager produced a snapshot.
-                ready_for_round = all(updated_flags[i] for i in range(num_managers))
-
-                # 3) Compute and send corrections ONLY when the round is ready.
-                if ready_for_round and self.collisions:
+                # A "round" is ready when every manager produced a snapshot:
+                # compute and send corrections ONLY then.
+                if self.collisions and all(updated_flags.values()):
                     try:
                         corrections = self._compute_all_corrections(round_snapshots)
                     except Exception as exc:
                         logger.exception("CollisionDetector: error in collision computation: %s", exc)
-                        corrections = {}
+                        # Managers block on the reply: always answer, even without corrections.
+                        corrections = {manager_id: {} for manager_id in round_snapshots}
 
                     # Send per-manager corrections.
                     for manager_id, mgr_corr in corrections.items():
@@ -309,12 +271,6 @@ class CollisionDetector:
                     # Reset round buffers for the next simulation tick.
                     round_snapshots = {}
                     updated_flags = {i: False for i in range(num_managers)}
-
-                # 4) Idle sleep when nothing interesting happened.
-                if idle:
-                    time.sleep(0.00001)
-                if shutdown_requested:
-                    break
         finally:
             shutdown_logging()
 
@@ -376,16 +332,20 @@ class CollisionDetector:
         n = len(flat_records)
         if n == 0:
             return {m_id: {} for m_id in latest_agents.keys()}
+        # Canonical order: corrections must not depend on how agents are split across managers.
+        flat_records.sort(key=lambda rec: rec["name"])
+        radii = [rec["radius"] for rec in flat_records]
 
         # Build spatial grid for broad-phase.
-        avg_radius = sum(radii) / max(1, len(radii))
-        # Use a cell size proportional to typical diameter; keep a small minimum.
-        cell_size = max(0.1, avg_radius * 2.5)
+        max_radius = max(radii)
+        # Neighbour lookup only scans adjacent cells: a cell must span the widest pair of agents.
+        cell_size = max(0.1, max_radius * 2.0)
         grid = SpatialGrid(cell_size)
 
         grid_items: List[_GridItem] = []
         for idx, rec in enumerate(flat_records):
-            item = _GridItem(idx, rec["pos"], rec["radius"])
+            # Broad phase on the floor plane: the narrow phase takes care of heights.
+            item = _GridItem(idx, Vector3D(rec["pos"].x, rec["pos"].y, 0.0), rec["radius"])
             grid_items.append(item)
             grid.insert(item)
 
@@ -403,10 +363,8 @@ class CollisionDetector:
             fwd_i: Vector3D = rec_i["forward"]
             r_i = rec_i["radius"]
 
-            # Search neighbours in nearby cells.
-            # Radius here is a broad-phase search radius; we use a conservative value.
-            search_radius = max(r_i * 2.5, 0.1)
-            neighbours = grid.neighbors(item, search_radius)
+            # Search neighbours in nearby cells: anything closer than r_i + r_j may overlap.
+            neighbours = grid.neighbors(item, r_i + max_radius)
 
             for other in neighbours:
                 j = other.index
@@ -420,12 +378,14 @@ class CollisionDetector:
                 r_j = rec_j["radius"]
 
                 # Broad-phase circle check.
-                delta = Vector3D(pos_i.x - pos_j.x, pos_i.y - pos_j.y, 0)
+                dx = pos_i.x - pos_j.x
+                dy = pos_i.y - pos_j.y
                 sum_r = r_i + r_j
-                dist = delta.magnitude()
+                dist = math.sqrt(dx * dx + dy * dy)
 
                 if dist >= sum_r:
                     continue
+                delta = Vector3D(dx, dy, 0)
 
                 # If positions coincide, pick an arbitrary direction.
                 if dist == 0.0:
@@ -459,6 +419,7 @@ class CollisionDetector:
         # Agent–object collisions (objects do not move, only agents are corrected)
         # ------------------------------------------------------------------
         if self.objects:
+            obstacles = self._object_entries()
             for idx, rec in enumerate(flat_records):
                 pos = rec["pos"]
                 shape = rec["shape"]
@@ -466,48 +427,38 @@ class CollisionDetector:
                 r = rec["radius"]
                 name = rec["name"]
 
-                for obj_id, obj_payload in self.objects.items():
-                    try:
-                        shapes, positions = obj_payload[:2]
-                    except Exception:
-                        # Accept legacy payloads with extra metadata.
-                        try:
-                            shapes, positions = obj_payload
-                        except Exception:
-                            continue
-                    for s_idx, obj_shape in enumerate(shapes):
-                        obj_pos = positions[s_idx]
+                for obj_id, obj_shape, obj_x, obj_y, r_obj in obstacles:
+                    dx = pos.x - obj_x
+                    dy = pos.y - obj_y
+                    sum_r = r + r_obj
+                    dist = math.sqrt(dx * dx + dy * dy)
 
-                        delta = Vector3D(pos.x - obj_pos.x, pos.y - obj_pos.y, 0)
-                        r_obj = self._shape_radius(obj_shape)
-                        sum_r = r + r_obj
-                        dist = delta.magnitude()
+                    if dist >= sum_r:
+                        continue
+                    delta = Vector3D(dx, dy, 0)
 
-                        if dist >= sum_r:
-                            continue
+                    if dist == 0.0:
+                        if fwd.magnitude() > 0:
+                            delta = fwd
+                        else:
+                            delta = Vector3D(1, 0, 0)
+                        dist = 0.0
 
-                        if dist == 0.0:
-                            if fwd.magnitude() > 0:
-                                delta = fwd
-                            else:
-                                delta = Vector3D(1, 0, 0)
-                            dist = 0.0
+                    overlap = shape.check_overlap(obj_shape)
+                    if not overlap[0]:
+                        continue
 
-                        overlap = shape.check_overlap(obj_shape)
-                        if not overlap[0]:
-                            continue
+                    normal = delta.normalize()
+                    penetration = sum_r - dist + 1e-3
+                    resp = normal * penetration
+                    resp_len = resp.magnitude()
 
-                        normal = delta.normalize()
-                        penetration = sum_r - dist + 1e-3
-                        resp = normal * penetration
-                        resp_len = resp.magnitude()
+                    all_responses[idx].append((resp, resp_len))
 
-                        all_responses[idx].append((resp, resp_len))
-
-                        logger.debug(
-                            "Collision agent-object: %s -> %s depth=%.4f",
-                            name, obj_id, penetration
-                        )
+                    logger.debug(
+                        "Collision agent-object: %s -> %s depth=%.4f",
+                        name, obj_id, penetration
+                    )
 
         # ------------------------------------------------------------------
         # Build per-manager output.

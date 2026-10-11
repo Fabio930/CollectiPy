@@ -5,10 +5,10 @@ plugin system** focused on agent movement models.
 
 ## Directory layout (main additions)
 
-- `src/plugin_base.py`:
+- `src/core/configuration/plugin_base.py`:
   defines the `MovementModel`, `MotionModel`, `LogicModel`, and `DetectionModel`
   protocols plus a simple `PluginBase`.
-- `src/plugin_registry.py`:
+- `src/core/configuration/plugin_registry.py`:
   central registry for movement, motion, logic, and detection models, plus a
   helper to load plugin modules from the JSON configuration.
 - `src/models/movement/`:
@@ -41,7 +41,7 @@ Random walk, random way-point, and spin behaviours all live in
 Detection/perception is also handled through plugins. The spin model,
 for instance, requests a detection plugin (`detection` config field)
 from `src/models/detection/` (GPS by default). Additional detection
-strategies can be implemented without touching `entity.py`.
+strategies can be implemented without touching the core entities.
 
 ## External plugins
 
@@ -49,7 +49,7 @@ An external plugin can register a new movement model as follows:
 
 ```python
 # plugins/my_movement.py
-from plugin_registry import register_movement_model
+from core.configuration.plugin_registry import register_movement_model
 
 class MyMovement:
     def __init__(self, agent):
@@ -99,7 +99,7 @@ integrator (e.g., a bicycle model), implement `plugin_base.MotionModel` and
 register it:
 
 ```python
-from plugin_registry import register_motion_model
+from core.configuration.plugin_registry import register_motion_model
 
 class BicycleMotion:
     def __init__(self, agent):
@@ -117,6 +117,10 @@ default `unicycle` behaviour.
 
 ## Message buses
 
+> Not wired yet: buses can be registered, but the core always uses its built-in
+> message server (range-limited by `comm_range`) and ignores the `bus` field.
+> The section below describes the intended extension point.
+
 Communication semantics can be extended through plugins as well. The
 `messages` section of each agent group accepts a `bus` field; it is set
 to `"auto"` by default, which resolves to the built-in spatial bus when
@@ -130,8 +134,8 @@ agents, the message configuration, and an optional context dictionary
 to `plugin_base.MessageBusModel`.
 
 ```python
-from plugin_registry import register_message_bus
-from plugin_base import MessageBusModel
+from core.configuration.plugin_registry import register_message_bus
+from core.configuration.plugin_base import MessageBusModel
 
 class FullyConnectedBus(MessageBusModel):
     ...
@@ -148,9 +152,8 @@ Agents can opt in via:
 }
 ```
 
-Bus implementations can inspect the configured rate limits (`tx_per_second` /
-`rx_per_second`, with `messages_per_seconds` / `receive_per_seconds` still
-handled for backwards compatibility), channel mode, or the `rebroadcast_steps` hint inside the
+Bus implementations can inspect the configured rate limits (`send_message_per_seconds` /
+`receive_message_per_seconds`), channel mode, or the `rebroadcast_steps` hint inside the
 `config` dictionary if they need to adjust their behaviour. `MessageBusModel`
 now exposes `receive_messages(self, receiver, limit=None)` so that the simulator
 can enforce per-node receive quotas. Agents expose a

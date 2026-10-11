@@ -18,9 +18,10 @@ import multiprocessing as mp
 from typing import Optional, cast
 
 from core.main.entity_manager.loop import manager_run
-from core.main.entity_manager.initialize import initialize_entities
+from core.main.entity_manager.initialize import compute_spawn_poses, initialize_entities
 from core.messaging.message_proxy import MessageProxy
 from core.detection.detection_proxy import DetectionProxy
+from core.util.bodies.shapes3D import ShapeState
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.hierarchy_overlay import HierarchyOverlay
 from core.util.logging_util import get_logger
@@ -28,6 +29,8 @@ from core.util.logging_util import get_logger
 logger = get_logger("entity_manager")
 FLOAT_MAX = sys.float_info.max
 FLOAT_MIN = -FLOAT_MAX
+# Seconds a manager waits for the detection server to merge the current tick.
+DETECTION_SYNC_TIMEOUT = 2.0
 
 
 class _DetectionStub:
@@ -106,8 +109,15 @@ class EntityManager:
         message_rx=None,
         detection_tx=None,
         detection_rx=None,
+        snapshot_shapes: bool = True,
+        snapshot_spins: bool = True,
     ):
-        """Initialize the instance."""
+        """
+        Initialize the instance.
+
+        `snapshot_shapes` / `snapshot_spins` tell whether the per-tick snapshots must
+        carry full shapes (needed by the GUI) and spin data (GUI or spin exports).
+        """
         self.agents = agents
         self.arena_shape = arena_shape
         self.wrap_config = wrap_config
@@ -119,6 +129,8 @@ class EntityManager:
         self.message_rx = message_rx
         self.detection_tx = detection_tx
         self.detection_rx = detection_rx
+        self.snapshot_shapes = snapshot_shapes
+        self.snapshot_spins = snapshot_spins
 
         # Single message proxy shared by all messaging-enabled entities
         # in this manager. When None, messaging is effectively disabled.
@@ -179,7 +191,7 @@ class EntityManager:
     # ----------------------------------------------------------------------
     def _resolve_cross_detection_rate(self) -> float:
         """Return how often (Hz) to pull cross-process detection snapshots."""
-        rate = 3.0
+        rate = None
         for cfg, _ in self.agents.values():
             det_cfg = cfg.get("detection", {}) if isinstance(cfg, dict) else {}
             candidate = det_cfg.get("snapshot_per_second") or det_cfg.get("rx_per_second")
@@ -189,11 +201,12 @@ class EntityManager:
                 val = float(candidate)
             except (TypeError, ValueError):
                 continue
-            if val > rate:
+            if rate is None or val > rate:
                 rate = val
-        if rate <= 0:
-            return 0.0
-        return rate
+        if rate is None:
+            # Not throttled: refresh every tick, like a single manager seeing live shapes.
+            return math.inf
+        return max(rate, 0.0)
 
     def _initialize_hierarchy_markers(self):
         """Initialize hierarchy markers on entities."""
@@ -207,9 +220,13 @@ class EntityManager:
                 if hasattr(entity, "enable_hierarchy_marker"):
                     entity.enable_hierarchy_marker(level_colors)
 
-    def initialize(self, random_seed: int, objects: dict):
-        """Initialize entities at the beginning of a run."""
-        return initialize_entities(self, random_seed, objects)
+    def initialize(self, random_seed: int, spawn: dict):
+        """Initialize entities at the beginning of a run with the poses computed by the arena."""
+        return initialize_entities(self, random_seed, spawn)
+
+    def compute_spawn_poses(self, random_seed: int, objects: dict) -> dict:
+        """Place all the agents owned by this manager (used by the arena on the full population)."""
+        return compute_spawn_poses(self, random_seed, objects)
 
     def close(self):
         """Close resources."""
@@ -264,40 +281,34 @@ class EntityManager:
         """Estimate a placement radius for the given shape."""
         if not shape:
             return 0.0
-        getter = getattr(shape, "get_radius", None)
-        if callable(getter):
-            try:
-                candidate = getter()
-                if isinstance(candidate, (int, float)):
-                    r = float(candidate)
-                    if r > 0:
-                        return r
-            except Exception:
-                pass
-        center = shape.center_of_mass()
-        try:
-            return max(
-                (Vector3D(v.x - center.x, v.y - center.y, v.z - center.z).magnitude()
-                 for v in shape.vertices_list),
-                default=0.05,
-            )
-        except Exception:
-            return 0.05
+        return shape.bounding_radius()
 
     @staticmethod
-    def _sample_spawn_point(entity, center: Vector3D, radius: float, distribution: str, bounds):
-        """Sample a spawn position inside a disk and clamp it to the given bounds."""
-        rng = entity.get_random_generator()
-        dist = str(distribution).lower() if distribution is not None else "uniform"
+    def _sample_spawn_point(rng, center: Vector3D, radius: float, distribution: str, bounds, z: float, params: dict | None = None):
+        """Sample a spawn position inside a disk (at height z) and clamp it to the given bounds."""
+        dist = str(distribution).strip().lower() if distribution is not None else "uniform"
+        params = params or {}
 
         if radius <= 0.0:
             x = center.x
             y = center.y
         else:
-            if dist == "gaussian":
-                std = radius / 3.0
+            if dist in ("gaussian", "normal"):
+                try:
+                    std = float(params.get("std") or params.get("sigma") or radius / 3.0)
+                except (TypeError, ValueError):
+                    std = radius / 3.0
                 x = rng.gauss(center.x, std)
                 y = rng.gauss(center.y, std)
+            elif dist in ("exp", "exponential"):
+                try:
+                    scale = float(params.get("scale") or params.get("lambda") or radius / 2.0)
+                except (TypeError, ValueError):
+                    scale = radius / 2.0
+                r = -math.log(max(1e-9, 1.0 - rng.random())) * max(scale, 1e-6)
+                theta = rng.uniform(0.0, 2.0 * math.pi)
+                x = center.x + r * math.cos(theta)
+                y = center.y + r * math.sin(theta)
             elif dist == "ring":
                 r = rng.uniform(radius * 0.5, radius)
                 theta = rng.uniform(0.0, 2.0 * math.pi)
@@ -318,51 +329,31 @@ class EntityManager:
         x = min(max(x, min_x), max_x)
         y = min(max(y, min_y), max_y)
 
-        z = abs(entity.get_shape().min_vert().z)
         return Vector3D(x, y, z)
 
-    def _placement_bounds(self, entity, unbounded: bool):
+    def _placement_bounds(self, entity):
         """Return padded XY bounds for spawn placement."""
         radius = self._estimate_entity_radius(entity.get_shape())
         pad = radius * self.PLACEMENT_MARGIN_FACTOR + self.PLACEMENT_MARGIN_EPS
-        bounds = self._get_entity_xy_bounds(entity, pad=pad)
-        if unbounded:
-            return bounds
-        return bounds
+        return self._get_entity_xy_bounds(entity, pad=pad)
 
-    def _is_overlapping_spawn(self, placed_shapes: list, entity, position: Vector3D) -> bool:
-        """Return True if placing entity at position would overlap placed shapes or arena walls."""
-        try:
-            orig_pos = entity.get_position()
-        except Exception:
-            orig_pos = None
+    def _is_overlapping_spawn(self, placed: list, entity, entity_radius: float, position: Vector3D) -> bool:
+        """Return True if placing entity at position would overlap placed shapes or arena walls.
+
+        `placed` holds (shape, radius) pairs; the entity shape is left at `position`.
+        """
         shape = entity.get_shape()
-        try:
-            shape.translate(position)
-        except Exception:
-            return False
-
-        try:
-            arena_overlap = shape.check_overlap(self.arena_shape)[0]
-        except Exception:
-            arena_overlap = False
-
-        overlapping = arena_overlap
-        if not overlapping:
-            for other in placed_shapes:
-                try:
-                    if shape.check_overlap(other)[0]:
-                        overlapping = True
-                        break
-                except Exception:
-                    continue
-
-        if orig_pos is not None:
-            try:
-                shape.translate(orig_pos)
-            except Exception:
-                pass
-        return overlapping
+        shape.translate(position)
+        if shape.check_overlap(self.arena_shape)[0]:
+            return True
+        for other, other_radius in placed:
+            other_center = other.center_of_mass()
+            # Footprints too far apart cannot overlap: skip the vertex-level test.
+            if math.hypot(position.x - other_center.x, position.y - other_center.y) >= entity_radius + other_radius:
+                continue
+            if shape.check_overlap(other)[0]:
+                return True
+        return False
 
     def _clamp_vector_to_entity_bounds(self, entity, vector: Vector3D):
         """Clamp the vector to the hierarchy bounds (if any)."""
@@ -428,33 +419,6 @@ class EntityManager:
         max_y -= pad
 
         return min_x, min_y, max_x, max_y
-
-    def _apply_wrap(self, entity):
-        """Apply toroidal wrap, if configured."""
-        if not self.wrap_config or self.wrap_config.get("unbounded"):
-            return
-        origin = self.wrap_config["origin"]
-        width = self.wrap_config["width"]
-        height = self.wrap_config["height"]
-        min_x = origin.x
-        min_y = origin.y
-        max_x = min_x + width
-        max_y = min_y + height
-        pos = entity.get_position()
-        new_x = ((pos.x - min_x) % width) + min_x
-        new_y = ((pos.y - min_y) % height) + min_y
-        if min_x <= pos.x <= max_x and min_y <= pos.y <= max_y:
-            if new_x == pos.x and new_y == pos.y:
-                return
-        wrapped = Vector3D(new_x, new_y, pos.z)
-        entity.set_position(wrapped)
-        try:
-            shape = entity.get_shape()
-            shape.translate(wrapped)
-            shape.translate_attachments(entity.get_orientation().z)
-        except Exception:
-            pass
-        logger.debug("%s wrapped to %s", entity.get_name(), (wrapped.x, wrapped.y, wrapped.z))
 
     def _clamp_to_arena(self, entity):
         """
@@ -564,26 +528,6 @@ class EntityManager:
     # ----------------------------------------------------------------------
     # Snapshots/helpers used by loop
     # ----------------------------------------------------------------------
-    def _build_entity_detection_stub(self, entity):
-        """Return a detection stub wrapping the entity's shape/metadata."""
-        try:
-            shape = entity.get_shape()
-            pos = shape.center_of_mass()
-            meta = getattr(shape, "metadata", {}) if hasattr(shape, "metadata") else {}
-            return _DetectionStub(pos, meta)
-        except Exception:
-            return _DetectionStub(Vector3D())
-
-    def _cached_detection_entities(self):
-        """Return cached detection entities (shape stubs) for this manager."""
-        if self._cached_detection_agents is not None:
-            return self._cached_detection_agents
-        cache = {}
-        for group_name, (_, entities) in self.agents.items():
-            cache[group_name] = [_build if (_build := self._build_entity_detection_stub(e)) else None for e in entities]
-        self._cached_detection_agents = cache
-        return cache
-
     def _build_detection_agents_from_snapshot(self, snapshot) -> dict | None:
         """Convert a lightweight detection snapshot into shape-like objects."""
         if not isinstance(snapshot, list):
@@ -613,50 +557,74 @@ class EntityManager:
             grouped.setdefault(group, []).append(_DetectionStub(Vector3D(x, y, z), meta))
         return grouped if grouped else None
 
+    def _local_detection_snapshot(self) -> list:
+        """
+        Snapshot of the local agents in the detection server's format and order.
+
+        Used when this manager owns the whole population: agents perceive the
+        positions frozen at the start of the tick, exactly as with several managers.
+        """
+        rows = []
+        for _, entities in self.agents.values():
+            for entity in entities:
+                pos = entity.get_position()
+                rows.append(
+                    {
+                        "uid": entity.get_name(),
+                        "entity": entity.entity(),
+                        "x": pos.x,
+                        "y": pos.y,
+                        "z": pos.z,
+                        "hierarchy_node": getattr(entity, "hierarchy_node", None),
+                    }
+                )
+        rows.sort(key=lambda row: row["uid"])
+        return rows
+
     def _gather_detection_agents(self, tick: int | None = None) -> dict:
         """
         Return agents grouped for perception.
 
-        Prefer the lightweight global snapshot from the detection server (fast,
-        cross-process) and fall back to local shapes when unavailable. Snapshot
-        pulls are throttled by _cross_detection_rate.
+        The view is a snapshot of the positions at the start of the tick: the global
+        one from the detection server with several managers, a local one otherwise.
+        Refreshes are throttled by _cross_detection_rate.
         """
         if self._should_refresh_cross_detection(tick):
             snapshot = None
             if self._detection_proxy is not None:
                 try:
-                    snapshot = self._detection_proxy.get_snapshot()
+                    snapshot = self._detection_proxy.get_snapshot(wait_timeout=DETECTION_SYNC_TIMEOUT)
                 except Exception:
                     snapshot = None
-            elif self._message_proxy is not None:
-                try:
-                    snapshot = self._message_proxy.get_detection_snapshot()
-                except Exception:
-                    snapshot = None
-            built = self._build_detection_agents_from_snapshot(snapshot) if snapshot is not None else None
-            if built:
-                self._cached_detection_agents = built
-        if self._cached_detection_agents:
-            return self._cached_detection_agents
-        return self.get_agent_shapes()
+            else:
+                snapshot = self._local_detection_snapshot()
+            if snapshot is not None:
+                # An empty snapshot means nobody is in range: never keep showing older positions.
+                self._cached_detection_agents = self._build_detection_agents_from_snapshot(snapshot)
+        return self._cached_detection_agents or {}
 
-    def pack_detector_data(self) -> dict:
+    def pack_detector_data(self, with_shapes: bool = True) -> dict:
         """
         Build the payload for the asynchronous CollisionDetector.
 
         Returns:
-            {club: (shapes, velocities, forward_vectors, positions, names)}
+            {club: (shapes, velocities, forward_vectors, positions, names, headings)}
+
+        Shapes are rigid, so the detector keeps the copies received with the first
+        payload of a run and afterwards only needs the poses: `shapes` is None
+        when `with_shapes` is False.
         """
         out = {}
         for _, entities in self.agents.values():
             if not entities:
                 continue
-            shapes = [entity.get_shape() for entity in entities]
+            shapes = [entity.get_shape() for entity in entities] if with_shapes else None
             velocities = [entity.get_max_absolute_velocity() for entity in entities]
             vectors = [entity.get_forward_vector() for entity in entities]
             positions = [entity.get_position() for entity in entities]
             names = [entity.get_name() for entity in entities]
-            out[entities[0].entity()] = (shapes, velocities, vectors, positions, names)
+            headings = [entity.get_orientation().z for entity in entities]
+            out[entities[0].entity()] = (shapes, velocities, vectors, positions, names, headings)
         logger.debug("Pack detector data prepared for %d groups", len(out))
         return out
 
@@ -728,7 +696,7 @@ class EntityManager:
             for index, meta in enumerate(entries):
                 if not meta.get("handshake_partner"):
                     continue
-                logger.info(
+                logger.debug(
                     "metadata handshake link %s[%s] -> %s (%s)",
                     group_key,
                     index,
@@ -750,13 +718,16 @@ class EntityManager:
                 if hasattr(shape, "metadata"):
                     shape.metadata["entity_name"] = entity.get_name()
                     shape.metadata["hierarchy_node"] = getattr(entity, "hierarchy_node", None)
-                group_shapes.append(shape)
+                # Nobody draws the agents in headless runs: the pose is all the arena needs.
+                group_shapes.append(shape if self.snapshot_shapes else ShapeState(shape))
             shapes[group_key] = group_shapes
         return shapes
 
     def get_agent_spins(self) -> dict:
-        """Return spin data grouped by entity type."""
+        """Return spin data grouped by entity type (empty when nobody consumes it)."""
         spins = {}
+        if not self.snapshot_spins:
+            return spins
         for _, entities in self.agents.values():
             if not entities:
                 continue

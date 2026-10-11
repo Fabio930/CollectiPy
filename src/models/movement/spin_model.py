@@ -88,6 +88,11 @@ def _resolve_spin_module_class(moving_behavior: str, task: str | None = None):
         # hard.  this mirrors the behaviour of the old resolver which
         # always returned the plain backend.
         if module_name.endswith("_flocking"):
+            logger.warning(
+                "Spin backend '%s' is not available (%s); using the plain spin_system backend",
+                module_name,
+                exc,
+            )
             try:
                 module = importlib.import_module("models.spin_models.spin_system")
             except Exception:
@@ -150,12 +155,14 @@ class SpinMovementModel(MovementModel):
         # read parameters before resolving the task; the task may influence
         # which backend module to import so it must be available first.
         self.spin_model_params = agent.config_elem.get("spin_model", {})
-        self.spin_pre_run_steps = self.spin_model_params.get("spin_pre_run_steps", 0)
         self.spin_per_tick = self.spin_model_params.get("spin_per_tick", 3)
         self.perception_width = self.spin_model_params.get("perception_width", 0.3)
         self.num_groups = self.spin_model_params.get("num_groups", 8)
         self.num_spins_per_group = self.spin_model_params.get("num_spins_per_group", 5)
-        self.global_inhibition = self.spin_model_params.get("global_inhibition", 0)
+        self.global_inhibition = self.spin_model_params.get(
+            "perception_global_inhibition",
+            self.spin_model_params.get("global_inhibition", 0),
+        )
 
         agent_task = agent.get_task() if hasattr(agent, "get_task") else None
         spin_task = self.spin_model_params.get("task")
@@ -223,23 +230,6 @@ class SpinMovementModel(MovementModel):
             dynamics=self.spin_model_params.get("dynamics", "metropolis"),
         )
 
-    def pre_run(self, objects: dict, agents: dict) -> None:
-        """Pre run."""
-        if self.spin_pre_run_steps <= 0:
-            return
-        self._update_perception(objects, agents, None, None)
-        if self.perception is None:
-            return
-        if self.spin_system is None:
-            self.reset()
-            if self.spin_system is None:
-                return
-        for _ in range(self.spin_pre_run_steps):
-            self.spin_system.step(timedelay=False)
-        self.spin_system.set_p_spin_up(float(np.mean(self.spin_system.get_states())))
-        self.spin_system.reset_spins()
-        logger.debug("%s spin pre-run completed (%d steps)", self.agent.get_name(), self.spin_pre_run_steps)
-
     def step(self, agent, tick: int, arena_shape, objects: dict, agents: dict) -> None:
         """Execute the simulation step."""
         if self.spin_system is None:
@@ -277,9 +267,8 @@ class SpinMovementModel(MovementModel):
         if self.detection_model is None:
             self.perception = None
             return
-        if tick is not None and hasattr(self.agent, "should_sample_detection"):
-            if not self.agent.should_sample_detection(tick):
-                return
+        if tick is not None and not self.agent.should_detect(tick):
+            return
         raw_snapshot = self.detection_model.sense(self.agent, objects, agents, arena_shape)
         if raw_snapshot is None:
             self.perception = None
@@ -396,16 +385,13 @@ class SpinMovementModel(MovementModel):
         """Run the fallback."""
         if self.fallback_behavior in (self.moving_behavior, "none"):
             return
-        behavior = self.fallback_behavior
         if self._fallback_model is None:
             self._fallback_model = get_movement_model(self.fallback_behavior, self.agent)
-            if self._fallback_model is None and self.fallback_behavior != "random_walk":
-                self._fallback_model = get_movement_model("random_walk", self.agent)
-                behavior = "random_walk"
         if self._fallback_model is None:
-            logger.warning("%s has no fallback movement model configured", self.agent.get_name())
-            return
-        logger.debug("%s fallback to %s", self.agent.get_name(), behavior)
+            raise ValueError(
+                f"{self.agent.get_name()}: unknown fallback_moving_behavior '{self.fallback_behavior}'"
+            )
+        logger.debug("%s fallback to %s", self.agent.get_name(), self.fallback_behavior)
         self._fallback_model.step(self.agent, tick, arena_shape, objects, agents)
 
     def get_spin_system_data(self):

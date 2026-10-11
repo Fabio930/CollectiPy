@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
-import queue, time
+import math, queue
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.geometry_utils.spatialgrid import SpatialGrid
+from core.util.ipc_util import wait_readable
 from core.util.logging_util import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("message_server")
@@ -101,6 +102,9 @@ class MessageServer:
 
         self._agents: Dict[str, _AgentInfo] = {}
         self._grid = SpatialGrid(cell_size)
+        # Packets waiting for their round: {seq: {manager_id: packet}}. Every manager sends
+        # exactly one packet per tick, so seq identifies the tick.
+        self._pending: Dict[int, Dict[int, Dict[str, Any]]] = {}
 
         self._running = True
 
@@ -118,16 +122,12 @@ class MessageServer:
             len(self.channels),
             self.fully_connected
         )
+        uplinks = {id(uplink): manager_id for manager_id, (uplink, _) in enumerate(self.channels)}
         try:
             while self._running:
-                any_packet = False
-                for manager_id, (uplink, _) in enumerate(self.channels):
-                    processed = self._process_uplink(manager_id, uplink)
-                    any_packet = any_packet or processed
-
-                if not any_packet:
-                    # Avoid busy waiting but keep throughput high.
-                    time.sleep(0.00005)
+                # Sleep until some manager has written to its uplink.
+                for uplink in wait_readable([uplink for uplink, _ in self.channels], timeout=1.0):
+                    self._process_uplink(uplinks[id(uplink)], uplink)
         finally:
             logger.info("Message server shutting down")
             self._grid.close()
@@ -155,16 +155,47 @@ class MessageServer:
                 self.stop()
                 processed_any = True
                 continue
-            if kind == "agents_snapshot":
-                self._handle_agents_snapshot(packet)
+            if kind == "round":
+                self._handle_round(packet, manager_id)
                 processed_any = True
             elif kind == "run_start":
                 self._handle_run_start(packet)
                 processed_any = True
-            elif kind == "tx":
-                self._handle_tx(packet)
-                processed_any = True
         return processed_any
+
+    def _handle_round(self, packet: Dict[str, Any], manager_id: int) -> None:
+        """Store a manager's tick packet; route the tick once every manager delivered it."""
+        try:
+            manager_id = int(packet.get("manager_id", manager_id))
+        except (TypeError, ValueError):
+            pass
+        self._pending.setdefault(int(packet.get("seq", 0)), {})[manager_id] = packet
+        # Uplinks are drained one manager at a time, so rounds may complete out of arrival order.
+        while self._pending:
+            seq = min(self._pending)
+            if len(self._pending[seq]) < len(self.channels):
+                break
+            self._route_round(seq, self._pending.pop(seq))
+
+    def _route_round(self, seq: int, packets: Dict[int, Dict[str, Any]]) -> None:
+        """Route one tick: first everybody's position, then every transmission."""
+        for manager_id in sorted(packets):
+            self._handle_agents_snapshot(packets[manager_id])
+        if not self.fully_connected:
+            self._rebuild_grid()
+
+        transmissions = [tx for manager_id in sorted(packets) for tx in packets[manager_id].get("tx", ())]
+        # Canonical order: what a receiver hears must not depend on how agents are split in processes.
+        transmissions.sort(key=lambda tx: str(tx.get("sender_uid")))
+        outgoing: list[list] = [[] for _ in self.channels]
+        for tx in transmissions:
+            self._handle_tx(tx, outgoing)
+
+        for manager_id, (_, downlink) in enumerate(self.channels):
+            try:
+                downlink.put({"kind": "rx_round", "ack": seq, "rx": outgoing[manager_id]})
+            except Exception as exc:
+                logger.warning("Failed to deliver round %d to manager %d: %s", seq, manager_id, exc)
 
     def _handle_run_start(self, packet: Dict[str, Any]) -> None:
         """Rotate message server logging when a new run starts."""
@@ -236,18 +267,18 @@ class MessageServer:
         for uid in stale:
             del self._agents[uid]
 
-        # Rebuild spatial index if we are not fully connected.
-        if not self.fully_connected:
-            self._rebuild_grid()
-
     def _rebuild_grid(self) -> None:
         """Populate the SpatialGrid with the current agents."""
-        self._grid.clear()
+        # Neighbour lookup only scans adjacent cells, so a cell must span the widest finite range.
+        finite_ranges = [
+            info.comm_range for info in self._agents.values() if 0 < info.comm_range < math.inf
+        ]
+        self._grid = SpatialGrid(max(finite_ranges, default=1.0))
         for info in self._agents.values():
             self._grid.insert(_GridAgent(info.name, info.pos))
 
-    def _handle_tx(self, packet: dict[str, Any]) -> None:
-        """Route a TX packet to all compatible receivers."""
+    def _handle_tx(self, packet: dict[str, Any], outgoing: list[list]) -> None:
+        """Route a transmission to all compatible receivers (appending to the per-manager lists)."""
         sender_uid = str(packet.get("sender_uid"))
         payload = packet.get("payload")
         msg_type = packet.get("msg_type")
@@ -261,7 +292,7 @@ class MessageServer:
             logger.debug("[MS] TX from %s ignored: sender not in registry", sender_uid)
             return
 
-        if self.fully_connected:
+        if self.fully_connected or math.isinf(sender_info.comm_range):
             candidates = [
                 info
                 for name, info in self._agents.items()
@@ -299,20 +330,17 @@ class MessageServer:
                 target.name,
                 target.manager_id,
             )
-            self._deliver_to_target(target, payload, is_anonymous)
-
-
+            self._deliver_to_target(target, payload, is_anonymous, outgoing)
 
     def _deliver_to_target(
         self,
         target: _AgentInfo,
         payload: Dict[str, Any],
-        anonymize: bool = False,
+        anonymize: bool,
+        outgoing: list[list],
     ) -> None:
-        """Send a message to a single target agent."""
-        try:
-            _, downlink = self.channels[target.manager_id]
-        except IndexError:
+        """Queue a message for a single target agent in its manager's list."""
+        if not 0 <= target.manager_id < len(outgoing):
             logger.warning("Invalid manager_id %s for agent %s", target.manager_id, target.name)
             return
 
@@ -325,17 +353,7 @@ class MessageServer:
                 if key in data:
                     data[key] = None
 
-        packet = {
-            "kind": "rx",
-            "receiver_uid": target.name,
-            "payload": data,
-        }
-        try:
-            logger.debug("[MS] RX packet enqueued for %s -> mgr %d", target.name, target.manager_id)
-            downlink.put(packet)
-        except Exception as exc:
-            logger.warning("Failed to deliver message to target %s: %s", target.name, exc)
-
+        outgoing[target.manager_id].append((target.name, data))
 
     @staticmethod
     def _protocols_compatible(

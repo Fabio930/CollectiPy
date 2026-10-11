@@ -232,28 +232,26 @@ class SpaceDataHandling(DataHandling):
                         if os.path.exists(file_path):
                             raise Exception(f"Error: file {file_path} already exists")
                         file_handle = open(file_path, "wb")
-                        pickler = pickle.Pickler(file_handle, protocol=pickle.HIGHEST_PROTOCOL)
                         header = ["tick", "pos x", "pos y", "pos z"]
                         if self.hierarchy_enabled:
                             header.append("hierarchy_node")
                         # Add orientation column to base agent dump when requested
                         header.append("orientation_z")
-                        pickler.dump({"type": "header", "value": header, "columns": header})
-                        self.agents_files[(key, idx)] = {"handle": file_handle, "pickler": pickler, "columns": header}
+                        self._dump_record(file_handle, {"type": "header", "value": header, "columns": header})
+                        self.agents_files[(key, idx)] = {"handle": file_handle, "columns": header}
                     if self.spin_dump_enabled:
                         spin_path = os.path.join(self.run_folder, f"{agent_id}_spins.pkl")
                         if os.path.exists(spin_path):
                             raise Exception(f"Error: file {spin_path} already exists")
                         spin_handle = open(spin_path, "wb")
-                        spin_pickler = pickle.Pickler(spin_handle, protocol=pickle.HIGHEST_PROTOCOL)
                         spin_payload = self._resolve_spin_entry((spins or {}).get(key), idx)
                         spin_columns = ["tick"]
                         if isinstance(spin_payload, dict):
                             spin_columns.extend(list(spin_payload.keys()))
                         else:
                             spin_columns.extend(self.SPIN_FIELD_ORDER)
-                        spin_pickler.dump({"type": "header", "value": spin_columns, "columns": spin_columns})
-                        self.agent_spin_files[(key, idx)] = {"handle": spin_handle, "pickler": spin_pickler, "columns": spin_columns}
+                        self._dump_record(spin_handle, {"type": "header", "value": spin_columns, "columns": spin_columns})
+                        self.agent_spin_files[(key, idx)] = {"handle": spin_handle, "columns": spin_columns}
         self.agents_metadata = metadata or {}
         # Capture the bootstrap snapshot (tick 0) right away.
         if self.base_dump_enabled or self.spin_dump_enabled or self.graph_messages_enabled or self.graph_detection_enabled:
@@ -320,7 +318,7 @@ class SpaceDataHandling(DataHandling):
                             row["heading_last_deg"] = float(heading_last_deg)
                         except (TypeError, ValueError):
                             pass
-                    entry["pickler"].dump({"type": "row", "value": row})
+                    self._dump_record(entry["handle"], {"type": "row", "value": row})
         # Write group-level heading aggregates when requested
         if "heading" in self.group_specs and self._group_heading_file:
             try:
@@ -343,7 +341,11 @@ class SpaceDataHandling(DataHandling):
                             except Exception:
                                 pass
                     if vals:
-                        mean_val = sum(vals) / len(vals)
+                        # Headings are angles: average them on the circle, not on the line.
+                        mean_val = math.degrees(math.atan2(
+                            sum(math.sin(math.radians(v)) for v in vals),
+                            sum(math.cos(math.radians(v)) for v in vals),
+                        ))
                         self._group_heading_file.write(f"{tick},{key},{mean_val:.6f}\n")
                     else:
                         # write empty or NaN
@@ -357,7 +359,7 @@ class SpaceDataHandling(DataHandling):
                 row: dict[str, object] = {"tick": tick}
                 if isinstance(spin_values, dict):
                     row.update(spin_values)
-                spin_entry["pickler"].dump({"type": "row", "value": row})
+                self._dump_record(spin_entry["handle"], {"type": "row", "value": row})
         self._write_graph_snapshot(shapes, tick)
         self._last_snapshot_tick = tick
 
@@ -405,6 +407,11 @@ class SpaceDataHandling(DataHandling):
         except Exception:
             pass
         super().close(shapes)
+
+    @staticmethod
+    def _dump_record(handle, record) -> None:
+        """Append one self-contained pickle record (readable with repeated pickle.load calls)."""
+        pickle.dump(record, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _agent_identifier(self, key, idx, shape_obj):
         """Return a stable agent identifier for file names."""

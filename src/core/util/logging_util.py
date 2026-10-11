@@ -360,7 +360,7 @@ def start_run_logging(
 
     if not logging_enabled:
         shutdown_logging()
-        configure_logging(None, config_path, project_root)
+        configure_logging(settings, config_path, project_root)
         return
 
     base_path = None

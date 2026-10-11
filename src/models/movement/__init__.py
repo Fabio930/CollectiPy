@@ -20,6 +20,9 @@ import inspect
 import pkgutil
 
 from core.configuration.plugin_registry import register_movement_model
+from core.util.logging_util import get_logger
+
+logger = get_logger("movement")
 
 
 def _resolve_movement_class(module):
@@ -50,9 +53,10 @@ def _autoregister_builtin_movement_models() -> None:
 
         try:
             module = importlib.import_module(f"{package_name}.{module_name}")
-        except Exception:
+        except Exception as exc:
             # Keep startup resilient: a broken optional plugin should not prevent
             # the rest of the built-in movement models from being available.
+            logger.warning("Movement model '%s' could not be imported and is unavailable: %s", module_name, exc)
             continue
         movement_cls = _resolve_movement_class(module)
         if movement_cls is None:

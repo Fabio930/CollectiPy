@@ -82,10 +82,6 @@ class Entity:
     # ------------------------------------------------------------------
     # Position/orientation defaults (overridden by subclasses)
     # ------------------------------------------------------------------
-    def get_position_from_dict(self):
-        """Return the position-from-config flag."""
-        return self.position_from_dict
-
     def get_orientation_from_dict(self):
         """Return the orientation-from-config flag."""
         return self.orientation_from_dict
@@ -149,10 +145,9 @@ class Entity:
         """Resolve and reserve the (x, y) pair for a class, enforcing uniqueness."""
         label = cls._sanitize_token(class_label, "class")
         origin = cls._sanitize_token(origin_kind or "entity", "entity")
-        existing = cls._class_registry.get(label)
+        registry_key = f"{origin}:{label}"
+        existing = cls._class_registry.get(registry_key)
         if existing:
-            if existing["origin"] != origin:
-                raise ValueError(f"Duplicate class name '{label}' used for both {existing['origin']} and {origin}")
             return existing["x"], existing["y"]
         base_x = cls._sanitize_token(label, "class")
         base_y = cls._primary_char(label)
@@ -166,7 +161,7 @@ class Entity:
                 while (chosen_x, chosen_y) in cls._used_prefixes:
                     suffix += 1
                     chosen_x = f"{base_x}{suffix}"
-        cls._class_registry[label] = {"x": chosen_x, "y": chosen_y, "origin": origin}
+        cls._class_registry[registry_key] = {"x": chosen_x, "y": chosen_y, "origin": origin}
         cls._used_prefixes.add((chosen_x, chosen_y))
         return chosen_x, chosen_y
 

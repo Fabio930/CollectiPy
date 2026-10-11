@@ -39,27 +39,7 @@ class PlacementMixin(_PlacementMixinProps):
         """Estimate a conservative radius for a shape."""
         if shape is None:
             return 0.0
-        getter = getattr(shape, "get_radius", None)
-        if callable(getter):
-            try:
-                candidate = getter()
-                if isinstance(candidate, (int, float)):
-                    r = float(candidate)
-                    if r > 0:
-                        return r
-            except Exception:
-                pass
-        center = getattr(shape, "center", None)
-        vertices = getattr(shape, "vertices_list", None)
-        if center is not None and vertices:
-            try:
-                return max(
-                    math.sqrt((v.x - center.x) ** 2 + (v.y - center.y) ** 2 + (v.z - center.z) ** 2)
-                    for v in vertices
-                )
-            except Exception:
-                pass
-        return 0.05
+        return shape.bounding_radius()
 
     def _margin_to_float_limits(self, center: Vector3D) -> float:
         """Return the smallest remaining distance from center to float limits."""
@@ -153,7 +133,7 @@ class PlacementMixin(_PlacementMixinProps):
         """Place entity random (optionally honoring spawn configuration)."""
         attempts = 0
         shape_n = entity.get_shape()
-        min_vert_z = abs(shape_n.min_vert().z)
+        min_vert_z = shape_n.center_of_mass().z - shape_n.min_vert().z
         effective_radius = radius * PLACEMENT_MARGIN_FACTOR + PLACEMENT_MARGIN_EPS
         min_x = min_v.x + effective_radius
         max_x = max_v.x - effective_radius

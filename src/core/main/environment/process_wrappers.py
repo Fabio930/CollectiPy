@@ -23,6 +23,7 @@ def _run_arena_process(
     render_enabled,
     log_specs,
     dec_control_queue,
+    agent_placer,
 ):
     from core.util.logging_util import initialize_process_console_logging
 
@@ -44,6 +45,7 @@ def _run_arena_process(
             "process_name": "arena",
         },
         dec_control_queue=dec_control_queue,
+        agent_placer=agent_placer,
     )
 
 
@@ -67,6 +69,8 @@ def _run_manager_process(
     dec_agents_in,
     dec_agents_out,
     agent_barrier,
+    snapshot_shapes,
+    snapshot_spins,
 ):
     from core.util.logging_util import initialize_process_console_logging
 
@@ -89,6 +93,8 @@ def _run_manager_process(
         message_rx=message_rx,
         detection_tx=detection_tx,
         detection_rx=detection_rx,
+        snapshot_shapes=snapshot_shapes,
+        snapshot_spins=snapshot_spins,
     )
     mgr.run(
         num_runs,

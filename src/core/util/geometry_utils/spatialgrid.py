@@ -25,22 +25,23 @@ class SpatialGrid:
         self.grid.clear()
 
     def insert(self, agent):
-        """Insert the provided entry."""
-        cell = self._cell_coords(agent.get_position())
-        self.grid[cell].append(agent)
+        """Insert the provided entry (its position is read once, here)."""
+        pos = agent.get_position()
+        self.grid[self._cell_coords(pos)].append((pos.x, pos.y, pos.z, agent))
 
     def neighbors(self, agent, radius):
-        """Return the operation."""
+        """Return the entries of the adjacent cells within `radius` of `agent`."""
         pos = agent.get_position()
+        px, py, pz = pos.x, pos.y, pos.z
         cell_x, cell_y = self._cell_coords(pos)
+        radius_sq = radius * radius
+        grid = self.grid
         neighbors = []
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                cell = (cell_x + dx, cell_y + dy)
-                for other in self.grid.get(cell, []):
-                    if other is not agent:
-                        if (other.get_position() - pos).magnitude() <= radius:
-                            neighbors.append(other)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for x, y, z, other in grid.get((cell_x + dx, cell_y + dy), ()):
+                    if other is not agent and (x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2 <= radius_sq:
+                        neighbors.append(other)
         return neighbors
     
     def close(self):

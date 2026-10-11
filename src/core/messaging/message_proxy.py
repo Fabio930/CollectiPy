@@ -11,11 +11,14 @@
 
 from __future__ import annotations
 
-import queue
+import queue, time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from core.util.logging_util import get_logger
 
 logger = get_logger("message_proxy")
+
+# Seconds a manager waits for the message server to route the current tick.
+ROUND_TIMEOUT = 2.0
 
 
 def _safe_entity_uid(entity: Any) -> str:
@@ -47,6 +50,10 @@ class NullMessageProxy:
         """Deliver a message produced by `sender` (no-op)."""
         return
 
+    def exchange(self) -> None:
+        """Publish/collect the transmissions of the current tick (no-op)."""
+        return
+
     def receive_messages(self, receiver: Any, limit: Optional[int] = None) -> Sequence[Dict[str, Any]]:
         """Return messages queued for `receiver` (always empty)."""
         return ()
@@ -55,9 +62,6 @@ class NullMessageProxy:
         """Release any resources retained by the proxy."""
         return
 
-    def get_detection_snapshot(self) -> None:
-        """Return None to satisfy detection-aware callers when the server is unavailable."""
-        return None
 
 
 class MessageProxy:
@@ -70,19 +74,28 @@ class MessageProxy:
         - message_tx: queue-like object used to send packets to the server;
         - message_rx: queue-like object used to receive packets from the server.
 
-    The proxy maintains per-entity inboxes in this process. Higher-level
-    protocol logic and message lifetime are handled by the Entity itself.
+    The medium is transient: every tick the proxy publishes the positions and the
+    transmissions of its agents in one packet (`exchange`), and gets back what each
+    local agent can hear during that tick. Whatever is not picked up before the
+    next exchange is lost. What an agent keeps of a received message, and for how
+    long, is handled by the Entity itself.
     """
 
     def __init__(self, agents: Iterable[Any], message_tx: Any, message_rx: Any, manager_id: int = 0):
         """Initialize the instance."""
         self._agents: List[Any] = list(agents)
-        self._uid_to_agent: Dict[str, Any] = {}
         self._inboxes: Dict[str, List[Dict[str, Any]]] = {}
+        # Per-agent fields of the position snapshot that never change during a run.
+        self._static_rows: List[Dict[str, Any]] = []
 
         self._tx = message_tx
         self._rx = message_rx
         self._manager_id = int(manager_id)
+        # Staged for the next exchange: positions of the local agents and their transmissions.
+        self._snapshot: List[Dict[str, Any]] = []
+        self._outbox: List[Dict[str, Any]] = []
+        self._seq = 0
+        self._sync_warned = False
 
         if self._tx is None or self._rx is None:
             logger.warning(
@@ -102,95 +115,139 @@ class MessageProxy:
 
     def sync_agents(self, agents: Iterable[Any]) -> None:
         """
-        Refresh internal agent registry and send a snapshot to the server.
+        Refresh internal agent registry and stage the positions for the next exchange.
         """
-        self._agents = list(agents)
-        self._update_agent_index()
-        self._drain_from_server()
-        self._send_agents_snapshot()
+        agents = list(agents)
+        if len(agents) != len(self._agents) or any(a is not b for a, b in zip(agents, self._agents)):
+            self._agents = agents
+            self._update_agent_index()
+        self._snapshot = self._build_agents_snapshot()
 
     def send_message(self, sender: Any, msg: Dict[str, Any]) -> None:
-        """Forward a message from *sender* to the message server."""
+        """Stage a message from *sender*; it goes on air at the next exchange."""
         if self._tx is None:
             return
 
         sender_uid = _safe_entity_uid(sender)
         payload = dict(msg or {})
         payload.setdefault("_sender_uid", sender_uid)
+        self._outbox.append(
+            {
+                "sender_uid": sender_uid,
+                "msg_type": getattr(sender, "msg_type", None),
+                "msg_kind": getattr(sender, "msg_kind", None),
+                "payload": payload,
+            }
+        )
 
-        msg_type = getattr(sender, "msg_type", None)
-        msg_kind = getattr(sender, "msg_kind", None)
-
-        packet = {
-            "kind": "tx",
-            "manager_id": self._manager_id,
-            "sender_uid": sender_uid,
-            "msg_type": msg_type,
-            "msg_kind": msg_kind,
-            "payload": payload
-        }
+    def exchange(self, wait_timeout: float = ROUND_TIMEOUT) -> None:
+        """
+        Put this tick's positions and transmissions on air and collect what the
+        local agents can hear. Messages of the previous tick are gone by now.
+        """
+        self.reset_mailboxes()
+        outbox, self._outbox = self._outbox, []
+        if self._tx is None or self._rx is None:
+            return
+        self._seq += 1
         try:
-            logger.debug("[MP %d] TX from %s to server: %s", self._manager_id, sender_uid, payload)
-            self._tx.put(packet)
+            self._tx.put(
+                {
+                    "kind": "round",
+                    "manager_id": self._manager_id,
+                    "seq": self._seq,
+                    "agents": self._snapshot,
+                    "tx": outbox,
+                }
+            )
         except Exception as exc:
-            logger.warning("Failed to send message to server: %s", exc)
+            logger.warning("Failed to reach the message server: %s", exc)
+            return
+
+        deadline = time.monotonic() + wait_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if not self._sync_warned:
+                    self._sync_warned = True
+                    logger.warning(
+                        "[MP %d] message server did not answer within %.1fs; this tick's messages are lost",
+                        self._manager_id,
+                        wait_timeout,
+                    )
+                return
+            try:
+                packet = self._rx.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            except Exception as exc:
+                logger.warning("Error while reading from message server: %s", exc)
+                return
+            if not isinstance(packet, dict) or packet.get("kind") != "rx_round":
+                continue
+            if int(packet.get("ack", 0)) < self._seq:
+                # Late answer to a round we stopped waiting for.
+                continue
+            for receiver_uid, payload in packet.get("rx", ()):
+                inbox = self._inboxes.get(receiver_uid)
+                if inbox is not None:
+                    inbox.append(payload)
+            return
 
     def receive_messages(self, receiver: Any, limit: Optional[int] = None) -> Sequence[Dict[str, Any]]:
         """
-        Pull all pending packets from the server into local inboxes,
-        then return messages for *receiver*.
+        Return the messages currently on air for *receiver* (at most `limit`).
+        They are removed from the medium either way.
         """
-        self._drain_from_server()
-        uid = _safe_entity_uid(receiver)
-        inbox = self._inboxes.get(uid)
+        inbox = self._inboxes.get(_safe_entity_uid(receiver))
         if not inbox:
             return ()
-        if limit is not None and limit >= 0:
-            selected = inbox[:limit]
-            del inbox[:limit]
-        else:
-            selected = list(inbox)
-            inbox.clear()
+        selected = list(inbox) if limit is None or limit < 0 else inbox[:limit]
+        inbox.clear()
         return selected
 
     def close(self) -> None:
         """Release any resources retained by the proxy."""
         return
 
-    def get_detection_snapshot(self) -> None:
-        """Return None when the message proxy cannot supply detection snapshots."""
-        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _update_agent_index(self) -> None:
-        """Rebuild internal UID→agent and inbox mappings."""
-        self._uid_to_agent.clear()
+        """Rebuild the inboxes and the constant part of each agent's snapshot row."""
         old_inboxes = self._inboxes
         self._inboxes = {}
+        self._static_rows = []
         for agent in self._agents:
             uid = _safe_entity_uid(agent)
-            self._uid_to_agent[uid] = agent
             self._inboxes[uid] = old_inboxes.get(uid, [])
 
-    def _get_inbox(self, uid: str) -> List[Dict[str, Any]]:
-        """Return the inbox list associated with *uid*, creating it if needed."""
-        inbox = self._inboxes.get(uid)
-        if inbox is None:
-            inbox = []
-            self._inboxes[uid] = inbox
-        return inbox
+            # Hierarchy / overlay-related fields, optional.
+            allowed_nodes = getattr(agent, "allowed_nodes", None)
+            entity_val = getattr(agent, "entity", None)
+            if callable(entity_val):
+                try:
+                    entity_val = entity_val()
+                except Exception:
+                    entity_val = None
+            self._static_rows.append(
+                {
+                    "uid": uid,
+                    "manager_id": self._manager_id,
+                    "range": float(getattr(agent, "msg_comm_range", 0.1)),
+                    "node": getattr(agent, "hierarchy_node", None),
+                    "allowed_nodes": list(allowed_nodes) if isinstance(allowed_nodes, (set, list, tuple)) else None,
+                    "msg_type": getattr(agent, "msg_type", None),
+                    "msg_kind": getattr(agent, "msg_kind", None),
+                    "entity": entity_val,
+                }
+            )
 
-    def _send_agents_snapshot(self) -> None:
-        """Send a lightweight snapshot of all local agents to the server."""
-        if self._tx is None:
-            return
-
+    def _build_agents_snapshot(self) -> List[Dict[str, Any]]:
+        """Return a lightweight snapshot of all local agents for the server."""
         snapshot: List[Dict[str, Any]] = []
-        for agent in self._agents:
-            uid = _safe_entity_uid(agent)
-
+        for agent, static_row in zip(self._agents, self._static_rows):
             # Position: expected get_position().x / .y; fall back to (0,0).
             try:
                 pos = agent.get_position()
@@ -201,86 +258,5 @@ class MessageProxy:
                 x = 0.0
                 y = 0.0
                 z = 0.0
-
-            # Communication range: optional attribute.
-            comm_range = float(getattr(agent, "msg_comm_range", 0.1))
-
-            # Hierarchy / overlay-related fields, optional.
-            node = getattr(agent, "hierarchy_node", None)
-            allowed_nodes = getattr(agent, "allowed_nodes", None)
-            msg_type = getattr(agent, "msg_type", None)
-            msg_kind = getattr(agent, "msg_kind", None)
-            entity_val = None
-            ent_attr = getattr(agent, "entity", None)
-            if callable(ent_attr):
-                try:
-                    entity_val = ent_attr()
-                except Exception:
-                    entity_val = None
-            elif ent_attr is not None:
-                entity_val = ent_attr
-
-            snapshot.append(
-                {
-                    "uid": uid,
-                    "manager_id": self._manager_id,
-                    "x": x,
-                    "y": y,
-                    "z": z,
-                    "range": comm_range,
-                    "node": node,
-                    "allowed_nodes": list(allowed_nodes) if isinstance(allowed_nodes, (set, list, tuple)) else None,
-                    "msg_type": msg_type,
-                    "msg_kind": msg_kind,
-                    "entity": entity_val,
-                }
-            )
-
-        packet = {
-            "kind": "agents_snapshot",
-            "manager_id": self._manager_id,
-            "agents": snapshot
-        }
-        try:
-            logger.debug(
-                "[MP %d] sending snapshot with %d agents: %s",
-                self._manager_id,
-                len(snapshot),
-                [a["uid"] for a in snapshot],
-            )
-            self._tx.put(packet)
-        except Exception as exc:
-            logger.warning("Failed to send agents snapshot to server: %s", exc)
-
-    def _drain_from_server(self) -> None:
-        """Move all pending packets from the server into local inboxes."""
-        if self._rx is None:
-            return
-
-        while True:
-            try:
-                packet = self._rx.get_nowait()
-            except queue.Empty:
-                break
-            except Exception as exc:
-                logger.warning("Error while reading from message server: %s", exc)
-                break
-
-            if not isinstance(packet, dict):
-                continue
-            if packet.get("kind") != "rx":
-                continue
-
-            receiver_uid = packet.get("receiver_uid")
-            payload = packet.get("payload")
-            if receiver_uid is None or payload is None:
-                continue
-            
-            logger.debug(
-                "[MP %d] RX for %s: %s",
-                self._manager_id,
-                receiver_uid,
-                payload,
-            )
-            inbox = self._get_inbox(str(receiver_uid))
-            inbox.append(dict(payload))
+            snapshot.append({**static_row, "x": x, "y": y, "z": z})
+        return snapshot

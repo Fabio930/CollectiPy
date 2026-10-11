@@ -171,6 +171,14 @@ class DataMixin(_DataMixinProps):
         if tick_value is not None:
             self._last_tick = tick_value
 
+    @staticmethod
+    def _is_initial_payload(data: Any) -> bool:
+        """Return True for the tick-0 snapshot that opens a run."""
+        if not isinstance(data, dict):
+            return False
+        status = data.get("status")
+        return isinstance(status, (list, tuple)) and len(status) > 0 and status[0] == 0
+
     def update_data(self):
         """Update data."""
         data = self._pull_latest_gui_payload()
@@ -178,50 +186,51 @@ class DataMixin(_DataMixinProps):
             self.stop_gracefully()
             return
 
-        if self.running or self.step_requested:
-            if not data:
-                # Preserve step intent until we actually consume a payload.
-                if self.step_requested and not self.running:
-                    return
+        if self.reset and self._is_initial_payload(data):
+            self.reset = False
+        if self.reset:
+            # Waiting for the first frame of the new run: clear the stale scene once.
+            if self.agents_shapes or self.objects_shapes:
+                self.objects_shapes = {}
+                self.agents_shapes = {}
+                self.agents_spins = {}
+                self.agents_metadata = {}
+                self._agent_centers = {}
+                self._view_initialized = False
+                self._clear_connection_caches()
+                self._update_graph_views()
+                self._clear_selection(update_view=False)
+                self.update_scene()
+                self.update()
+            return
+        if not data:
+            # Nothing new to draw (camera and selection changes redraw on their own);
+            # a pending step stays pending until its frame arrives.
+            return
+
+        self._maybe_rotate_logs(data)
+        self.time = data["status"][0]
+        o_shapes = {}
+        for key, item in data["objects"].items():
+            o_shapes[key] = item[0]
+        self.objects_shapes = o_shapes
+        self.agents_shapes = data["agents_shapes"]
+        self.agents_spins = data["agents_spins"]
+        self._refresh_agent_centers()
+        if self.connection_features_enabled:
+            self.agents_metadata = data.get("agents_metadata", {})
+            if self._connection_features_active():
+                self._rebuild_connection_graphs()
+                self._update_graph_views()
             else:
-                self._maybe_rotate_logs(data)
-                self.time = data["status"][0]
-                o_shapes = {}
-                for key, item in data["objects"].items():
-                    o_shapes[key] = item[0]
-                self.objects_shapes = o_shapes
-                self.agents_shapes = data["agents_shapes"]
-                self.agents_spins = data["agents_spins"]
-                self._refresh_agent_centers()
-                if self.connection_features_enabled:
-                    self.agents_metadata = data.get("agents_metadata", {})
-                    if self._connection_features_active():
-                        self._rebuild_connection_graphs()
-                        self._update_graph_views()
-                    else:
-                        self._clear_connection_caches()
-                        self._update_graph_views()
-                else:
-                    self.agents_metadata = {}
-            self.update_scene()
-            if self.spin_panel_visible:
-                self.update_spins_plot()
-            if self.clicked_spin:
-                self._update_connection_legend()
-            self.update()
-            if data:
-                self.step_requested = False
-        elif self.reset:
-            while self.gui_in_queue.qsize() > 0:
-                _ = self.gui_in_queue.get()
-            self.objects_shapes = {}
-            self.agents_shapes = {}
-            self.agents_spins = {}
+                self._clear_connection_caches()
+                self._update_graph_views()
+        else:
             self.agents_metadata = {}
-            self._agent_centers = {}
-            self._view_initialized = False
-            self._clear_connection_caches()
-            self._update_graph_views()
-            self._clear_selection(update_view=False)
-            self.update_scene()
-            self.update()
+        self.update_scene()
+        if self.spin_panel_visible:
+            self.update_spins_plot()
+        if self.clicked_spin:
+            self._update_connection_legend()
+        self.update()
+        self.step_requested = False
