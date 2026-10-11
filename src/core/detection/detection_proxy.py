@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-import queue
+import queue, time
 from typing import Any, Dict, Iterable, List, Optional
 from core.util.logging_util import get_logger
 from core.messaging.message_proxy import _safe_entity_uid
@@ -34,6 +34,10 @@ class DetectionProxy:
         self._rx = detection_rx
         self._manager_id = int(manager_id)
         self._snapshot: Optional[List[Dict[str, Any]]] = None
+        # Uploads sent so far / latest upload already merged in the snapshot we hold.
+        self._seq = 0
+        self._acked_seq = 0
+        self._sync_warned = False
 
     def sync_agents(self, agents: Iterable[Any]) -> None:
         """
@@ -43,9 +47,27 @@ class DetectionProxy:
         self._send_agents_snapshot()
         self._drain_from_server()
 
-    def get_snapshot(self) -> Optional[List[Dict[str, Any]]]:
-        """Return the latest merged detection snapshot, if available."""
+    def get_snapshot(self, wait_timeout: float = 0.0) -> Optional[List[Dict[str, Any]]]:
+        """
+        Return the latest merged detection snapshot, if available.
+
+        With `wait_timeout` > 0 the call waits until the server has merged our
+        last upload, so every manager perceives the same, current world state.
+        """
         self._drain_from_server()
+        deadline = time.monotonic() + wait_timeout
+        while self._acked_seq < self._seq:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if wait_timeout > 0 and not self._sync_warned:
+                    self._sync_warned = True
+                    logger.warning(
+                        "[DP %d] detection server did not answer within %.1fs; using the last snapshot",
+                        self._manager_id,
+                        wait_timeout,
+                    )
+                break
+            self._drain_from_server(wait=remaining)
         return self._snapshot
 
     # ------------------------------------------------------------------
@@ -95,6 +117,7 @@ class DetectionProxy:
         packet = {
             "kind": "agents_snapshot",
             "manager_id": self._manager_id,
+            "seq": self._seq + 1,
             "agents": snapshot
         }
         try:
@@ -105,17 +128,19 @@ class DetectionProxy:
                 [a["uid"] for a in snapshot],
             )
             self._tx.put(packet)
+            self._seq += 1
         except Exception as exc:
             logger.warning("Failed to send detection snapshot to server: %s", exc)
 
-    def _drain_from_server(self) -> None:
-        """Pull pending snapshots from the detection server."""
+    def _drain_from_server(self, wait: float = 0.0) -> None:
+        """Pull pending snapshots from the detection server (blocking up to `wait` for the first)."""
         if self._rx is None:
             return
 
         while True:
             try:
-                packet = self._rx.get_nowait()
+                packet = self._rx.get(timeout=wait) if wait > 0 else self._rx.get_nowait()
+                wait = 0.0
             except queue.Empty:
                 break
             except Exception as exc:
@@ -129,3 +154,4 @@ class DetectionProxy:
             agents = packet.get("agents")
             if isinstance(agents, list):
                 self._snapshot = agents
+                self._acked_seq = max(self._acked_seq, int(packet.get("ack", 0)))

@@ -62,24 +62,27 @@ class GPSDetectionModel(DetectionModel):
     def _collect_agent_targets(self, agents, hierarchy):
         """Return neighbor agents within range with their metadata."""
         reachable = []
+        own_name = self.agent.get_name()
+        own_pos = self.agent.position
+        max_distance = self.max_detection_distance
+        check_hierarchy = callable(getattr(self.agent, "allows_hierarchical_link", None))
         for club, agent_shapes in agents.items():
             for n, shape in enumerate(agent_shapes):
-                meta = getattr(shape, "metadata", {}) if hasattr(shape, "metadata") else {}
+                meta = getattr(shape, "metadata", None) or {}
                 target_name = meta.get("entity_name")
                 if target_name:
-                    if target_name == self.agent.get_name():
+                    if target_name == own_name:
                         continue
-                elif f"{club}_{n}" == self.agent.get_name():
+                elif f"{club}_{n}" == own_name:
                     continue
-                target_node = meta.get("hierarchy_node")
-                if not self._hierarchy_allows_agent(target_node, hierarchy):
+                if check_hierarchy and not self._hierarchy_allows_agent(meta.get("hierarchy_node"), hierarchy):
                     continue
                 agent_pos = shape.center_of_mass()
-                dx = agent_pos.x - self.agent.position.x
-                dy = agent_pos.y - self.agent.position.y
-                dz = agent_pos.z - self.agent.position.z
-                distance = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
-                if distance > self.max_detection_distance:
+                dx = agent_pos.x - own_pos.x
+                dy = agent_pos.y - own_pos.y
+                dz = agent_pos.z - own_pos.z
+                distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if distance > max_distance:
                     continue
                 reachable.append(
                     {

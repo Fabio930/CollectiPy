@@ -24,9 +24,4 @@ class EnvironmentFactory:
         """Create environment."""
         if config_elem.environment:
             return Environment(config_elem, config_path, log_root=log_root)
-        msg = (
-            f"Invalid environment configuration: "
-            f"{config_elem.environment['parallel_experiments']} "
-            f"{config_elem.environment['render']}"
-        )
-        raise ValueError(msg)
+        raise ValueError("Invalid environment configuration: the 'environment' block is missing or empty")

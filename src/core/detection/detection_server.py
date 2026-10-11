@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
-import math, queue, time
+import math, queue
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Set
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.geometry_utils.spatialgrid import SpatialGrid
+from core.util.ipc_util import wait_readable
 from core.util.logging_util import get_logger, start_run_logging, shutdown_logging
 
 logger = get_logger("detection_server")
@@ -81,6 +82,9 @@ class DetectionServer:
         self._current_run = 0
         self._running = True
         self._agents: Dict[str, _AgentInfo] = {}
+        # Uploads waiting for their round: {seq: {manager_id: agents}}. Every manager numbers
+        # its uploads the same way (one at run start, one per tick), so seq identifies the tick.
+        self._pending: Dict[int, Dict[int, list]] = {}
 
     def stop(self) -> None:
         """Request a graceful shutdown."""
@@ -89,14 +93,12 @@ class DetectionServer:
     def run(self) -> None:
         """Main server loop."""
         logger.info("Detection server started with %d manager channels", len(self.channels))
+        uplinks = {id(uplink): manager_id for manager_id, (uplink, _) in enumerate(self.channels)}
         try:
             while self._running:
-                any_packet = False
-                for manager_id, (uplink, _) in enumerate(self.channels):
-                    processed = self._process_uplink(manager_id, uplink)
-                    any_packet = any_packet or processed
-                if not any_packet:
-                    time.sleep(0.00005)
+                # Sleep until some manager has written to its uplink.
+                for uplink in wait_readable([uplink for uplink, _ in self.channels], timeout=1.0):
+                    self._process_uplink(uplinks[id(uplink)], uplink)
         finally:
             logger.info("Detection server shutting down")
             shutdown_logging()
@@ -151,13 +153,24 @@ class DetectionServer:
         logger.info("Detection server logging started for run %d", run_num)
 
     def _handle_agents_snapshot(self, packet: Dict[str, Any], manager_id: int) -> None:
-        """Update agent registry from a snapshot packet and broadcast the merged list."""
+        """Store a manager upload; merge and broadcast a round once every manager delivered it."""
         agents = packet.get("agents") or []
         try:
             manager_id = int(packet.get("manager_id", manager_id))
         except (TypeError, ValueError):
             manager_id = int(manager_id)
+        self._pending.setdefault(int(packet.get("seq", 0)), {})[manager_id] = agents
+        # Uplinks are drained one manager at a time, so rounds may complete out of arrival order.
+        while self._pending:
+            seq = min(self._pending)
+            if len(self._pending[seq]) < len(self.channels):
+                break
+            for sender_id, sender_agents in self._pending.pop(seq).items():
+                self._merge_agents(sender_id, sender_agents)
+            self._broadcast_detection_snapshot(seq)
 
+    def _merge_agents(self, manager_id: int, agents: list) -> None:
+        """Update the agent registry with one manager's upload."""
         logger.debug(
             "[DS] snapshot from manager %d: %d agents: %s",
             manager_id,
@@ -188,24 +201,35 @@ class DetectionServer:
                 det_range,
             )
 
-        self._broadcast_detection_snapshot()
-
-    def _broadcast_detection_snapshot(self) -> None:
-        """Send the latest global agent positions to all managers."""
+    def _broadcast_detection_snapshot(self, seq: int) -> None:
+        """Send the global agent positions of round `seq` to all managers."""
         if not self.channels:
             return
         grid, cell_size = self._build_grid()
         if grid is None:
             return
 
+        # One row per agent, shared by every manager's packet, sorted by name.
+        rows = {
+            name: {
+                "uid": info.name,
+                "entity": info.entity,
+                "x": info.pos.x,
+                "y": info.pos.y,
+                "z": info.pos.z,
+                "hierarchy_node": info.hierarchy_node,
+            }
+            for name, info in sorted(self._agents.items())
+        }
         for manager_idx, (_, downlink) in enumerate(self.channels):
             if downlink is None:
                 continue
-            visible = self._agents_visible_to_manager(manager_idx, grid)
+            visible = self._agents_visible_to_manager(manager_idx, grid, rows)
             packet = {
                 "kind": "detection_snapshot",
                 "agents": visible,
                 "cell_size": cell_size,
+                "ack": seq,
             }
             try:
                 downlink.put(packet)
@@ -220,48 +244,32 @@ class DetectionServer:
             if info.detection_range is not None and math.isfinite(info.detection_range) and info.detection_range > 0
         ]
         max_range = max(finite_ranges) if finite_ranges else 1.0
-        cell_size = max(0.05, min(max_range, 2.0))
+        # Neighbour lookup only scans adjacent cells, so a cell must span the widest finite range.
+        cell_size = max(0.05, max_range)
         grid = SpatialGrid(cell_size)
         for info in self._agents.values():
             grid.insert(_GridAgent(info.name, info.pos))
         return grid, cell_size
 
-    def _agents_visible_to_manager(self, manager_id: int, grid: SpatialGrid) -> List[Dict[str, Any]]:
-        """Return agent rows visible to the given manager based on detection ranges."""
-        if not self._agents:
-            return []
+    def _agents_visible_to_manager(self, manager_id: int, grid: SpatialGrid, rows: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return the rows of the agents visible to the given manager based on detection ranges."""
+        total = len(self._agents)
         visible_names: Set[str] = set()
-        own_agents = [info for info in self._agents.values() if info.manager_id == manager_id]
-        if not own_agents:
-            return []
-        for observer in own_agents:
+        for observer in self._agents.values():
+            if observer.manager_id != manager_id:
+                continue
             rng = observer.detection_range
             if rng is None or rng <= 0:
                 continue
             if math.isinf(rng):
-                visible_names.update(self._agents.keys())
-                break
-            neighbors = grid.neighbors(_GridAgent(observer.name, observer.pos), rng)
-            for neigh in neighbors:
-                if neigh.name == observer.name:
-                    continue
+                return list(rows.values())
+            for neigh in grid.neighbors(_GridAgent(observer.name, observer.pos), rng):
                 visible_names.add(neigh.name)
-        snapshot: List[Dict[str, Any]] = []
-        for name in visible_names:
-            info = self._agents.get(name)
-            if info is None:
-                continue
-            snapshot.append(
-                {
-                    "uid": info.name,
-                    "entity": info.entity,
-                    "x": info.pos.x,
-                    "y": info.pos.y,
-                    "z": info.pos.z,
-                    "hierarchy_node": info.hierarchy_node,
-                }
-            )
-        return snapshot
+            if len(visible_names) >= total:
+                # Everybody is already in view: no need to scan the remaining observers.
+                return list(rows.values())
+        # `rows` is in canonical order: perception sums must not depend on set iteration order.
+        return [row for name, row in rows.items() if name in visible_names]
 
 
 def run_detection_server(

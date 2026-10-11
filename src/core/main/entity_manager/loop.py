@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Optional
 import multiprocessing as mp
 from core.util.logging_util import start_run_logging, shutdown_logging
@@ -69,6 +68,9 @@ def manager_run(
             return True
         return False
 
+    all_entities = [entity for _, entities in manager.agents.values() for entity in entities]
+    messaging_entities = [entity for entity in all_entities if getattr(entity, "msg_enable", False)]
+
     while run < num_runs + 1:
         start_run_logging(log_specs, process_name, run)
         manager._configure_cross_detection_scheduler()
@@ -84,7 +86,6 @@ def manager_run(
             except Exception as exc:
                 logger.warning("Failed to notify detection server about run %s: %s", run, exc)
         try:
-            metadata_cache = manager.get_agent_metadata(tick=0)
             reset = False
 
             data_in = manager._blocking_get(arena_queue)
@@ -99,36 +100,24 @@ def manager_run(
             if data_in is None or shutdown_requested:
                 break
 
-            # Initialisation at start of run.
-            if _is_shutdown_status(data_in):
-                shutdown_requested = True
-                break
-            if "objects" not in data_in:
-                shutdown_requested = True
-                break
-            if data_in["status"][0] == 0:
-                manager.initialize(data_in["random_seed"], data_in["objects"])
-
+            # Initialisation at start of run. Objects are only re-sent when they change.
+            objects = data_in["objects"]
+            manager.initialize(data_in["random_seed"], data_in["agents_spawn"])
             if manager._message_proxy is not None:
-                all_entities = []
-                for _, (_, entities) in manager.agents.items():
-                    all_entities.extend(entities)
                 manager._message_proxy.reset_mailboxes()
-                manager._message_proxy.sync_agents(all_entities)
-            if manager._detection_proxy is not None:
-                all_entities = []
-                for _, (_, entities) in manager.agents.items():
-                    all_entities.extend(entities)
-                manager._detection_proxy.sync_agents(all_entities)
+            # The collision detector gets the shapes once per run, then only poses.
+            detector_synced = False
 
-            # First snapshot for GUI (before t=1).
-            initial_snapshot = {
-                "status": [0, ticks_per_second],
-                "agents_shapes": manager.get_agent_shapes(),
-                "agents_spins": manager.get_agent_spins(),
-                "agents_metadata": metadata_cache,
-            }
-            agents_queue.put(initial_snapshot)
+            # First snapshot (before t=1).
+            metadata_cache = manager.get_agent_metadata(tick=0)
+            agents_queue.put(
+                {
+                    "status": [0, ticks_per_second],
+                    "agents_shapes": manager.get_agent_shapes(),
+                    "agents_spins": manager.get_agent_spins(),
+                    "agents_metadata": metadata_cache,
+                }
+            )
 
             t = 1
             while True:
@@ -141,104 +130,66 @@ def manager_run(
                     shutdown_requested = True
                     break
 
-                # Keep arena and agents roughly in sync in simulated time.
-                while data_in["status"][0] / data_in["status"][1] < t / ticks_per_second:
-                    new_msg = manager._maybe_get(arena_queue, timeout=0.01)
-                    if new_msg is not None:
-                        data_in = new_msg
-                        if data_in["status"] == "reset":
-                            reset = True
-                            break
-                        if _is_shutdown_status(data_in):
-                            shutdown_requested = True
-                            break
-                        if "objects" not in data_in:
-                            shutdown_requested = True
-                            break
-                    else:
-                        time.sleep(0.00005)
-                    debug_wait_cycles += 1
-                    if debug_wait_cycles % 500 == 0:
-                        try:
-                            backlog = arena_queue.qsize()
-                        except Exception:
-                            backlog = "n/a"
-                        logger.debug(
-                            "[MGR WAIT] mgr=%s run=%s t=%s arena_status=%s backlog=%s shutdown=%s",
-                            manager.manager_id,
-                            run,
-                            t,
-                            data_in.get("status"),
-                            backlog,
-                            shutdown_requested,
-                        )
-
-                    # Optional GUI update while waiting (only if queue is empty).
-                    metadata_cache = manager.get_agent_metadata(tick=t)
-                    sync_payload = {
-                        "status": [t, ticks_per_second],
-                        "agents_shapes": manager.get_agent_shapes(),
-                        "agents_spins": manager.get_agent_spins(),
-                        "agents_metadata": metadata_cache,
-                    }
-                    if agents_queue.qsize() == 0:
-                        agents_queue.put(sync_payload)
+                # Tick t brings the agents to time t / ticks_per_second: wait until the arena
+                # has published a tick at or beyond that time (exact integer comparison).
+                while data_in["status"][0] * ticks_per_second < t * data_in["status"][1]:
+                    new_msg = manager._maybe_get(arena_queue, timeout=0.05)
+                    if new_msg is None:
+                        debug_wait_cycles += 1
+                        if debug_wait_cycles % 100 == 0:
+                            logger.debug(
+                                "[MGR WAIT] mgr=%s run=%s t=%s arena_status=%s",
+                                manager.manager_id,
+                                run,
+                                t,
+                                data_in.get("status"),
+                            )
+                        continue
+                    data_in = new_msg
+                    if data_in["status"] == "reset":
+                        reset = True
+                        break
+                    if _is_shutdown_status(data_in):
+                        shutdown_requested = True
+                        break
+                    if "objects" in data_in:
+                        objects = data_in["objects"]
                 if reset:
                     break
                 if shutdown_requested:
                     break
 
-                latest = manager._maybe_get(arena_queue, timeout=0.0)
-                if latest is not None:
-                    data_in = latest
-                    if _is_shutdown_status(data_in):
-                        shutdown_requested = True
-                        break
-                    if "objects" not in data_in:
-                        shutdown_requested = True
-                        break
-                if shutdown_requested:
-                    break
-
+                # Upload current positions first, so the snapshot gathered below covers this tick.
+                if manager._detection_proxy is not None:
+                    manager._detection_proxy.sync_agents(all_entities)
                 agents_snapshot = manager._gather_detection_agents(t)
 
-                # Synchronize message proxy with updated agent positions.
+                # Messaging: everything sent this tick goes on air now, for this tick only.
                 if manager._message_proxy is not None:
-                    all_entities = []
-                    for _, (_, entities) in manager.agents.items():
-                        all_entities.extend(entities)
                     manager._message_proxy.sync_agents(all_entities)
-                if manager._detection_proxy is not None:
-                    all_entities = []
-                    for _, (_, entities) in manager.agents.items():
-                        all_entities.extend(entities)
-                    manager._detection_proxy.sync_agents(all_entities)
-
-                # Messaging: send then receive, then main agent step.
-                for _, entities in manager.agents.values():
-                    for entity in entities:
-                        if getattr(entity, "msg_enable", False) and entity.message_bus:
+                    for entity in messaging_entities:
+                        if entity.message_bus:
                             entity.send_message(t)
-
-                for _, entities in manager.agents.values():
-                    for entity in entities:
-                        if getattr(entity, "msg_enable", False) and entity.message_bus:
+                    manager._message_proxy.exchange()
+                    for entity in messaging_entities:
+                        if entity.message_bus:
                             entity.receive_messages(t)
-                        if shutdown_requested:
-                            break
-                        if "objects" not in data_in:
-                            shutdown_requested = True
-                            break
-                        entity.run(t, manager.arena_shape, data_in["objects"], agents_snapshot)
-                    if agent_barrier is not None:
-                        agent_barrier.wait()
+
+                for entity in all_entities:
+                    entity.run(t, manager.arena_shape, objects, agents_snapshot)
+                if agent_barrier is not None:
+                    agent_barrier.wait()
 
                 # Collision detector snapshot and corrections.
                 dec_data_in: dict[str, Any] = {}
 
                 if manager.collisions and dec_agents_in is not None and dec_agents_out is not None:
                     if t % manager.snapshot_stride == 0:
-                        detector_data = {"manager_id": manager.manager_id, "agents": manager.pack_detector_data()}
+                        detector_data = {
+                            "manager_id": manager.manager_id,
+                            "agents": manager.pack_detector_data(with_shapes=not detector_synced),
+                        }
+                        detector_synced = True
                         try:
                             dec_agents_in.put(detector_data)
                         except Exception:
@@ -258,20 +209,16 @@ def manager_run(
                         for idx, entity in enumerate(entities):
                             corr_vec = group_corr[idx] if idx < len(group_corr) else None
                             entity.post_step(corr_vec)
-                            manager._apply_wrap(entity)
                             manager._clamp_to_arena(entity)
                     else:
                         for entity in entities:
                             entity.post_step(None)
-                            manager._apply_wrap(entity)
                             manager._clamp_to_arena(entity)
-                    if agent_barrier is not None:
-                        agent_barrier.wait()
+                if agent_barrier is not None:
+                    agent_barrier.wait()
 
-                # GUI snapshot AFTER collision corrections.
-                if shutdown_requested:
-                    break
-
+                # Snapshot AFTER collision corrections: the state at the end of tick t. The arena
+                # advances on these snapshots only, so exactly one is sent per tick.
                 agents_data = {
                     "status": [t, ticks_per_second],
                     "agents_shapes": manager.get_agent_shapes(),
@@ -295,18 +242,11 @@ def manager_run(
             if shutdown_requested:
                 break
 
-            if run < num_runs:
-                drained = manager._maybe_get(arena_queue, timeout=0.01)
-                while drained is not None:
-                    data_in = drained
-                    drained = manager._maybe_get(arena_queue, timeout=0.0)
-            elif not reset:
+            if run >= num_runs and not reset:
                 manager.close()
 
             if not reset:
                 run += 1
-            if shutdown_requested:
-                break
 
         finally:
             shutdown_logging()

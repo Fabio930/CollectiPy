@@ -10,14 +10,16 @@
 """Environment: process-level orchestration of the simulation."""
 from __future__ import annotations
 
-import gc, json, psutil, time
+import gc, json, psutil, queue, time
 import multiprocessing as mp
+import multiprocessing.connection
 from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import Any, Dict
 
 from core.configuration.config import Config
 from core.main.arena import ArenaFactory
+from core.main.entity_manager import EntityManager
 from core.main.environment.affinity import (
     pick_least_used_free_cores,
     set_affinity_safely,
@@ -86,7 +88,8 @@ def _kill_child_processes(note: str = ""):
                 proc.terminate()
             except Exception:
                 pass
-        time.sleep(0.1)
+        if children:
+            time.sleep(0.1)
         for proc in children:
             if proc.is_running():
                 try:
@@ -353,8 +356,17 @@ class _PipeQueue:
     def put(self, item):
         self._send.send(item)
 
-    def get(self):
+    def get(self, timeout: float | None = None):
+        if timeout is not None and not self._recv.poll(timeout):
+            raise queue.Empty
         return self._recv.recv()
+
+    def get_nowait(self):
+        return self.get(timeout=0.0)
+
+    def fileno(self):
+        """Expose the read end so multiprocessing.connection.wait() can watch several queues."""
+        return self._recv.fileno()
 
     def poll(self, timeout: float = 0.0):
         return self._recv.poll(timeout)
@@ -379,7 +391,8 @@ class Environment:
         self.quiet = bool(config_elem.environment.get("quiet", False))
         default_stride = 1
         self.snapshot_stride = max(1, int(config_elem.environment.get("snapshot_stride", default_stride)))
-        self.auto_agents_per_proc_target = max(1, int(config_elem.environment.get("auto_agents_per_proc_target", 5)))
+        raw_target = config_elem.environment.get("auto_agents_per_proc_target")
+        self.auto_agents_per_proc_target = None if raw_target is None else max(1, int(raw_target))
         base_gui_cfg = dict(config_elem.gui) if len(config_elem.gui) > 0 else {}
         if gui_id in ("none", "off", None) or not base_gui_cfg:
             self.render = [False, {}]
@@ -416,7 +429,7 @@ class Environment:
     def _compute_agent_processes(self, agents: Dict[str, tuple[Dict[str, Any], list]]) -> int:
         """Compute number of agent manager processes with internal heuristics."""
         render_enabled = self.render[0]
-        return compute_agent_processes(agents, render_enabled)
+        return compute_agent_processes(agents, render_enabled, self.auto_agents_per_proc_target)
 
     def start(self):
         """Start the process."""
@@ -541,6 +554,9 @@ class Environment:
             wrap_config = arena.get_wrap_config()
             arena_hierarchy = arena.get_hierarchy()
             collision_detector = CollisionDetector(arena_shape, self.collisions, wrap_config=wrap_config) if self.collisions else None
+            # Queue-less manager owning every agent: the arena uses it to place the whole
+            # population in one pass, whatever the split across manager processes.
+            agent_placer = EntityManager(agents, arena_shape, wrap_config=wrap_config, hierarchy=arena_hierarchy)
             arena_log_specs = {
                 **exp_log_specs,
                 "process_folder": "",
@@ -568,7 +584,7 @@ class Environment:
                 "process_folder": "",
                 "log_file_prefix": "gui",
             }
-            arena_process = mp.Process(
+            arena_process = ctx.Process(
                 target=_run_arena_process,
                 args=(
                     arena,
@@ -582,6 +598,7 @@ class Environment:
                     render_enabled,
                     arena_log_specs,
                     dec_control_queue,
+                    agent_placer,
                 ),
             )
             manager_processes = []
@@ -606,7 +623,7 @@ class Environment:
                     detection_channels.append((detection_tx, detection_rx))
                 for idx_block, block in enumerate(agent_blocks):
                     block_filtered = {k: v for k, v in block.items() if len(v[1]) > 0}
-                    proc = mp.Process(
+                    proc = ctx.Process(
                         target=_run_manager_process,
                         args=(
                             block_filtered,
@@ -628,20 +645,22 @@ class Environment:
                             dec_agents_in_list[idx_block],
                             dec_agents_out_list[idx_block],
                             agent_barrier,
+                            render_enabled,
+                            render_enabled or "spin_model" in agent_specs,
                         ),
                     )
                     manager_processes.append(proc)
                     _register_process(f"manager_{idx_block}", proc, process_names)
-                fully_connected = True
+                fully_connected = False
                 message_server_process = None
                 detection_server_process = None
                 if any_messages:
-                    message_server_process = mp.Process(
+                    message_server_process = ctx.Process(
                         target=_run_message_server,
                         args=(message_channels, message_server_log_specs, fully_connected),
                     )
                 if detection_server_needed:
-                    detection_server_process = mp.Process(
+                    detection_server_process = ctx.Process(
                         target=_run_detection_server,
                         args=(detection_channels, detection_server_log_specs),
                     )
@@ -663,7 +682,7 @@ class Environment:
 
             collision_detector_process = None
             if collision_detector:
-                collision_detector_process = mp.Process(
+                collision_detector_process = ctx.Process(
                     target=_run_collision_detector_process,
                     args=(collision_detector, det_in_arg, det_out_arg, dec_arena_in, collision_log_specs, dec_control_queue),
                 )
@@ -687,7 +706,7 @@ class Environment:
                     render_config = dict(self.render[1])
                     render_config["_id"] = "abstract" if arena_id in (None, "none") else self.gui_id
                     hierarchy_overlay = arena_hierarchy.to_rectangles() if arena_hierarchy else None
-                    gui_process = mp.Process(
+                    gui_process = ctx.Process(
                         target=_run_gui_process,
                         args=(
                             render_config,
@@ -857,7 +876,11 @@ class Environment:
                             _stop_message_server_gracefully(message_server_process,message_channels)
                             _stop_detection_server_gracefully(detection_server_process,detection_channels)
                             break
-                        time.sleep(0.5)
+                        # Sleep until one of the processes still running exits.
+                        mp.connection.wait(
+                            [p.sentinel for p in processes_to_watch if p is not None and p.is_alive()],
+                            timeout=0.5,
+                        )
                     _stop_detector_gracefully(collision_detector_process,dec_control_queue)
                     _stop_message_server_gracefully(message_server_process,message_channels)
                     _stop_detection_server_gracefully(detection_server_process,detection_channels)
@@ -905,8 +928,7 @@ class Environment:
                         _log_process_status("post_join", label, proc)
                     for idx, proc in enumerate(manager_processes):
                         _log_process_status("post_join", f"manager_{idx}", proc)
-            logger.info("Environment final cleanup: invoking shutdown_logging()")
-            shutdown_logging()
             gc.collect()
             used_cores.difference_update(assigned_worker_cores)
         logger.info("All experiments completed successfully")
+        shutdown_logging()

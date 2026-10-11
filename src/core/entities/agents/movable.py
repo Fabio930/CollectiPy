@@ -13,12 +13,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.configuration.plugin_registry import get_logic_model, get_movement_model
+from core.configuration.plugin_registry import (
+    available_logic_models,
+    available_movement_models,
+    get_logic_model,
+    get_movement_model,
+)
 from core.entities.agents.base import logger as _base_logger
 from core.entities.agents.static import StaticAgent
 from core.util.bodies.shapes3D import Shape3DFactory
 from core.util.geometry_utils.vector3D import Vector3D
-from models.utility_functions import normalize_angle
 
 
 logger = _base_logger
@@ -37,7 +41,7 @@ class MovableAgent(StaticAgent):
         super().__init__(entity_type, config_elem, _id)
         self.config_elem = config_elem
         self.max_absolute_velocity = float(config_elem.get("max_linear_velocity", 0.01)) / self.ticks_per_second
-        self.max_angular_velocity = int(config_elem.get("max_angular_velocity", 10)) / self.ticks_per_second
+        self.max_angular_velocity = float(config_elem.get("max_angular_velocity", 10)) / self.ticks_per_second
         self.forward_vector = Vector3D()
         self.delta_orientation = Vector3D()
         self.goal_position = None
@@ -46,7 +50,6 @@ class MovableAgent(StaticAgent):
         self.prev_position = Vector3D()
         self.prev_goal_distance = 0
         self.moving_behavior = config_elem.get("moving_behavior", "random_walk")
-        self.fallback_moving_behavior = config_elem.get("fallback_moving_behavior", "none")
         self.logic_behavior = config_elem.get("logic_behavior")
         self.spin_model_params = config_elem.get("spin_model", {})
         # Resolve detection range before movement plugin creation so it propagates into detection models.
@@ -67,13 +70,22 @@ class MovableAgent(StaticAgent):
     def _init_movement_model(self):
         """Init movement model."""
         model = get_movement_model(self.moving_behavior, self)
-        if model is None and self.moving_behavior != "random_walk":
-            model = get_movement_model("random_walk", self)
+        if model is None:
+            raise ValueError(
+                f"{self.get_name()}: unknown moving_behavior '{self.moving_behavior}', "
+                f"available: {sorted(available_movement_models())}"
+            )
         return model
 
     def _init_logic_model(self):
         """Init logic model."""
-        return get_logic_model(self.logic_behavior, self)
+        model = get_logic_model(self.logic_behavior, self)
+        if model is None and self.logic_behavior:
+            raise ValueError(
+                f"{self.get_name()}: unknown logic_behavior '{self.logic_behavior}', "
+                f"available: {sorted(available_logic_models())}"
+            )
+        return model
 
     def reset(self):
         """Reset the component state."""
@@ -96,15 +108,6 @@ class MovableAgent(StaticAgent):
     def get_detection_range(self) -> float:
         """Return the configured detection range."""
         return float(self.detection_range)
-
-    def prepare_for_run(self, objects: dict, agents: dict):
-        """Prepare for run."""
-        if self._movement_plugin and hasattr(self._movement_plugin, "pre_run"):
-            self._movement_plugin.pre_run(objects, agents)
-            logger.debug("%s performed pre-run hook via %s", self.get_name(), type(self._movement_plugin).__name__)
-        if self._logic_plugin and hasattr(self._logic_plugin, "pre_run"):
-            self._logic_plugin.pre_run(objects, agents)
-            logger.debug("%s performed logic pre-run hook via %s", self.get_name(), type(self._logic_plugin).__name__)
 
     def get_spin_system_data(self):
         """Return the spin-system payload delegating to the movement plugin when available.
@@ -142,7 +145,6 @@ class MovableAgent(StaticAgent):
         """Run the simulation routine."""
         self.prev_position = self.position
         self.prev_orientation = self.orientation
-        self._refresh_message_timers()
         self.linear_velocity_cmd = 0.0
         self.angular_velocity_cmd = 0.0
         if hasattr(self, "forward_vector"):
@@ -158,21 +160,13 @@ class MovableAgent(StaticAgent):
         if self._logic_plugin and hasattr(self._logic_plugin, "after_movement"):
             self._logic_plugin.after_movement(self, tick, arena_shape, objects, agents)
         self._apply_motion(tick)
-        shape = self.get_shape()
-        if shape:
-            shape.translate(self.position)
-            shape.translate_attachments(self.orientation.z)
 
     def _apply_motion(self, tick: int):
         """Apply the motion using the configured kinematic model."""
-        if self._motion_model is not None:
-            self._motion_model.step(self, tick)
-        else:
-            self._legacy_motion_step()
+        self._motion_model.step(self, tick)
         shape = self.get_shape()
         if shape:
-            shape.rotate(self.delta_orientation.z)
-            shape.translate(self.position)
+            shape.set_pose(self.position, self.orientation.z)
             shape.translate_attachments(self.orientation.z)
         logger.debug(
             "%s applied motion -> position=%s orientation=%s delta=%s",
@@ -181,12 +175,6 @@ class MovableAgent(StaticAgent):
             self.orientation.z,
             (self.delta_orientation.x, self.delta_orientation.y, self.delta_orientation.z),
         )
-
-    def _legacy_motion_step(self):
-        """Fallback kinematic update preserving legacy behaviour."""
-        self.position = self.position + getattr(self, "forward_vector", Vector3D())
-        self.orientation = self.orientation + getattr(self, "delta_orientation", Vector3D())
-        self.orientation.z = normalize_angle(self.orientation.z)
 
     def close(self):
         """Close the component resources."""

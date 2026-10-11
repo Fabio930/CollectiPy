@@ -11,6 +11,8 @@ import math
 
 class Vector3D:
     """Vector 3 d."""
+    __slots__ = ("x", "y", "z")
+
     def __init__(self, x:float=0, y:float=0, z:float=0):
         """Initialize the instance."""
         self.x = x
@@ -53,16 +55,6 @@ class Vector3D:
         if mag == 0:
             return Vector3D()
         return self / mag
-
-    def v_rotate_z(self, point, angle:float):
-        """Rotate the vector around ``point`` on the Z axis."""
-        translated = self - point
-        cos_theta = math.cos(angle)
-        sin_theta = math.sin(angle)
-        x = translated.x * cos_theta - translated.y * sin_theta
-        y = translated.x * sin_theta + translated.y * cos_theta
-        rotated = Vector3D(x, y, translated.z)
-        return rotated + point
 
     def __repr__(self) -> str:
         """Return the string representation."""

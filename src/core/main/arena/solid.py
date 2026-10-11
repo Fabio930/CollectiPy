@@ -57,6 +57,10 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
     def initialize(self):
         """Initialize the component state."""
         super().initialize()
+        self._place_objects()
+
+    def _place_objects(self):
+        """Place every object honouring explicit poses, spawn settings and overlaps."""
         min_v = self.shape.min_vert()
         max_v = self.shape.max_vert()
         rng = self.random_generator
@@ -121,75 +125,9 @@ class SolidArena(RuntimeMixin, PlacementMixin, Arena):
     def reset(self):
         """Reset the component state."""
         super().reset()
-        min_vert = self.shape.min_vert() if self.shape is not None else None
-        max_vert = self.shape.max_vert() if self.shape is not None else None
-        min_v = self._clamp_vector_to_float_limits(min_vert) if min_vert is not None else None
-        max_v = self._clamp_vector_to_float_limits(max_vert) if max_vert is not None else None
-        if min_v is None or max_v is None:
-            raise ValueError("Arena shape bounds unavailable")
-        rng = self.random_generator
         if self.data_handling is not None:
             self.data_handling.close(self.agents_shapes)
-        for (config, entities) in self.objects.values():
-            n_entities = len(entities)
-            for entity in entities:
-                entity.set_position(Vector3D(999, 0, 0), False)
-            for n in range(n_entities):
-                entity = entities[n]
-                explicit_orientation = get_explicit_orientation(entity)
-                if explicit_orientation is not None:
-                    entity.orientation_from_dict = True
-                    entity.set_start_orientation(Vector3D(0, 0, explicit_orientation))
-                else:
-                    entity.set_start_orientation(entity.get_start_orientation())
-                    if not entity.get_orientation_from_dict():
-                        rand_angle = rng.uniform(0.0, 360.0)
-                        entity.set_start_orientation(Vector3D(0, 0, rand_angle))
-                position = entity.get_start_position()
-                position_z = position.z if position is not None else 0.0
-
-                explicit_position = get_explicit_position(entity, position_z)
-                count = 0
-                done = False
-                shape_n = entity.get_shape()
-                shape_type_n = entity.get_shape_type()
-                explicit_candidate = explicit_position
-                used_explicit = False
-                while not done and count < 500:
-                    done = True
-                    if explicit_candidate is not None:
-                        rand_pos = explicit_candidate
-                        explicit_candidate = None
-                        candidate_is_explicit = True
-                    else:
-                        rand_pos = Vector3D(
-                            rng.uniform(min_v.x, max_v.x),
-                            rng.uniform(min_v.y, max_v.y),
-                            position_z,
-                        )
-                        candidate_is_explicit = False
-                    entity.to_origin()
-                    entity.set_position(rand_pos)
-                    shape_n = entity.get_shape()
-                    if shape_n.check_overlap(self.shape)[0]:
-                        done = False
-                    if done:
-                        for m in range(n_entities):
-                            if m == n:
-                                continue
-                            other_entity = entities[m]
-                            other_shape = other_entity.get_shape()
-                            other_shape_type = other_entity.get_shape_type()
-                            if shape_type_n == other_shape_type and shape_n.check_overlap(other_shape)[0]:
-                                done = False
-                                break
-                    count += 1
-                    if done:
-                        entity.set_start_position(rand_pos)
-                        used_explicit = candidate_is_explicit
-                entity.position_from_dict = used_explicit
-                if not done:
-                    raise Exception(f"Impossible to place object {entity.entity()} in the arena")
+        self._place_objects()
 
     def _update_hierarchy_from_shape(self):
         """Update hierarchy from shape."""

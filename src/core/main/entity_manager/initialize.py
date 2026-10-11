@@ -7,11 +7,14 @@
 #  license. Attribution is required if this code is used in other works.
 # ------------------------------------------------------------------------------
 
-"""EntityManager initialisation helpers (placement, seeding)."""
+"""EntityManager initialisation helpers (central placement, per-manager seeding)."""
 
 from __future__ import annotations
 
 import math
+from random import Random
+
+from core.entities.agents import make_agent_seed
 from core.util.geometry_utils.vector3D import Vector3D
 from core.util.logging_util import get_logger
 from core.util.pose_utils import get_explicit_orientation, get_explicit_position
@@ -19,26 +22,41 @@ from core.util.pose_utils import get_explicit_orientation, get_explicit_position
 logger = get_logger("entity_manager")
 
 
-def initialize_entities(manager, random_seed: int, objects: dict) -> None:
-    """Initialize entities at the beginning of a run."""
-    logger.info("Initializing agents with random seed %s", random_seed)
-    seed_counter = 0
-    placed_shapes = []
+def _base_seed(config, random_seed: int):
+    """Return the seed agents of a group derive from: the group's own seed, or the run seed."""
+    configured = config.get("random_seed") if isinstance(config, dict) else None
+    return random_seed if configured is None else configured
+
+
+def compute_spawn_poses(manager, random_seed: int, objects: dict) -> dict:
+    """
+    Place every agent of the simulation in a single pass.
+
+    `manager` owns all the agents (not just one block), so overlaps are checked
+    against objects and every other agent, and the result does not depend on how
+    agents are later split across manager processes.
+
+    Returns {"groups": {group: (cx, cy, radius, distribution, parameters)},
+             "poses": {agent_name: (x, y, z, position_from_config,
+                                    orientation_z, orientation_from_config)}}.
+    """
+    logger.info("Placing agents with random seed %s", random_seed)
+    # Shapes already in the arena: objects first, then agents as they are placed.
+    placed = [
+        (shape, manager._estimate_entity_radius(shape))
+        for payload in objects.values()
+        for shape in payload[0]
+    ]
 
     # Track group-level spawn disks (center, radius) to reduce overlap.
     group_spawn_specs = []
-
-    # Move everything far away before placement.
-    for (_, entities) in manager.agents.values():
-        for entity in entities:
-            entity.set_position(Vector3D(999, 0, 0), False)
 
     # Global arena metrics used for spawn defaults.
     width = manager._global_max.x - manager._global_min.x
     height = manager._global_max.y - manager._global_min.y
     unbounded = bool(manager.wrap_config and manager.wrap_config.get("unbounded"))
 
-    def _estimate_spawn_radius(entity) -> float:
+    def _estimate_spawn_radius() -> float:
         """Return a default spawn radius from arena size or shape radius."""
         getter = getattr(manager.arena_shape, "get_radius", None)
         if callable(getter):
@@ -48,13 +66,15 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
                     return float(r)
             except Exception:
                 pass
-        if manager.wrap_config and manager.wrap_config.get("unbounded"):
+        if unbounded:
             radius = max(width, height)
         else:
             radius = min(width, height) / 2
         return max(0.1, radius)
 
-    for (_, (config, entities)) in manager.agents.items():
+    groups = {}
+    poses = {}
+    for group_key, (config, entities) in manager.agents.items():
         # Group-level spawn configuration: center, radius, distribution.
         spawn_cfg = config.get("spawn", {}) if isinstance(config, dict) else {}
         center_spec = spawn_cfg.get("center", [0.0, 0.0])
@@ -69,12 +89,12 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
             cx = cy = 0.0
 
         if radius is None:
-            radius = _estimate_spawn_radius(entities[0] if entities else None)
+            radius = _estimate_spawn_radius()
         else:
             try:
                 radius = float(radius)
             except Exception:
-                radius = _estimate_spawn_radius(entities[0] if entities else None)
+                radius = _estimate_spawn_radius()
 
         # Try to separate spawn disks of different groups if they overlap.
         for (pcx, pcy, pr) in group_spawn_specs:
@@ -88,74 +108,44 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
                 cx += dx * scale
                 cy += dy * scale
         group_spawn_specs.append((cx, cy, radius))
+        groups[group_key] = (cx, cy, radius, distribution, spawn_params)
 
-        # Per-entity initialisation (random generator, reset, spawn params).
+        center = Vector3D(cx, cy, 0.0)
+        base_seed = _base_seed(config, random_seed)
         for entity in entities:
-            # Deterministic per-agent seed that depends on the run seed.
-            seed_counter += 1
-            if hasattr(entity, "random_generator"):
-                try:
-                    seed = entity._configured_seed if getattr(entity, "_configured_seed", None) is not None else None
-                except Exception:
-                    seed = None
-                if seed is None:
-                    try:
-                        seed = entity.config_elem.get("random_seed")
-                    except Exception:
-                        seed = None
-                if seed is None:
-                    try:
-                        seed = entity.make_agent_seed(random_seed, entity.entity_type, int(entity._id))  # type: ignore[attr-defined]
-                    except Exception:
-                        seed = random_seed + seed_counter
-                try:
-                    entity.random_generator.seed(seed)
-                except Exception:
-                    pass
+            # Dedicated stream: placement never consumes the agent's behaviour randomness.
+            rng = Random(make_agent_seed(base_seed, f"{entity.entity_type}|spawn", int(entity._id)))
+            orientation_z = get_explicit_orientation(entity)
+            orientation_from_config = orientation_z is not None
+            if orientation_z is None:
+                orientation_z = rng.uniform(-180.0, 180.0)
+            shape = entity.get_shape()
+            entity_radius = manager._estimate_entity_radius(shape)
+            bounds = manager._placement_bounds(entity)
+            # Height of the center above the floor, wherever the shape currently is.
+            rest_z = shape.center_of_mass().z - shape.min_vert().z
 
-            entity.reset()
-
-            # Per-entity spawn params used by movement models (e.g. random_way_point).
-            entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
-            entity.spawn_parameters = spawn_params
-
-            shape_ref = entity.get_shape()
-            fallback_z = abs(shape_ref.min_vert().z) if shape_ref is not None else 0.0
-            explicit_position = get_explicit_position(entity, fallback_z)
+            explicit_position = get_explicit_position(entity, rest_z)
             spawn_point = explicit_position
             placed_ok = False
             if spawn_point is not None:
-                if not manager._is_overlapping_spawn(placed_shapes, entity, spawn_point):
-                    placed_ok = True
-                else:
+                placed_ok = not manager._is_overlapping_spawn(placed, entity, entity_radius, spawn_point)
+                if not placed_ok:
                     logger.warning(
                         "%s explicit position %s overlaps or exits bounds; using spawn sampling",
                         entity.get_name(),
                         (spawn_point.x, spawn_point.y, spawn_point.z),
                     )
-                    spawn_point = None
+            from_config = placed_ok
             if not placed_ok:
-                spawn_point = manager._sample_spawn_point(
-                    entity,
-                    Vector3D(cx, cy, 0.0),
-                    radius,
-                    distribution,
-                    manager._placement_bounds(entity, unbounded),
-                )
                 for _ in range(manager.PLACEMENT_MAX_ATTEMPTS):
-                    overlap = manager._is_overlapping_spawn(placed_shapes, entity, spawn_point)
-                    if not overlap:
+                    spawn_point = manager._sample_spawn_point(
+                        rng, center, radius, distribution, bounds, rest_z, spawn_params
+                    )
+                    if not manager._is_overlapping_spawn(placed, entity, entity_radius, spawn_point):
                         placed_ok = True
                         break
-                    spawn_point = manager._sample_spawn_point(
-                        entity,
-                        Vector3D(cx, cy, 0.0),
-                        radius,
-                        distribution,
-                        manager._placement_bounds(entity, unbounded),
-                    )
-
-            if not placed_ok and spawn_point is not None:
+            if not placed_ok:
                 # If we couldn't find a free spot, just place it at the last sampled point.
                 logger.warning(
                     "%s could not find non-overlapping spawn after %d attempts",
@@ -163,50 +153,53 @@ def initialize_entities(manager, random_seed: int, objects: dict) -> None:
                     manager.PLACEMENT_MAX_ATTEMPTS,
                 )
 
-            entity.position_from_dict = explicit_position is not None
-            explicit_orientation = get_explicit_orientation(entity)
-            entity.orientation_from_dict = explicit_orientation is not None
-            if explicit_orientation is not None:
-                orientation_vec = Vector3D(0.0, 0.0, explicit_orientation)
-            else:
-                orientation_vec = entity.get_start_orientation() or Vector3D()
-
-            entity.set_start_position(spawn_point)
-            entity.set_start_orientation(orientation_vec)
             entity.set_position(spawn_point)
-            entity.set_orientation(orientation_vec)
-
-            # Keep a copy of the shape for overlap checks.
-            shape = entity.get_shape()
-            if shape is not None:
-                shape.translate(spawn_point)
-                placed_shapes.append(shape)
-
-        # Clamp group after placement to ensure within arena bounds if bounded.
-        for entity in entities:
             if not unbounded:
                 manager._clamp_to_arena(entity)
-                manager._apply_wrap(entity)
+            position = entity.get_position()
+            poses[entity.get_name()] = (
+                position.x,
+                position.y,
+                position.z,
+                from_config,
+                orientation_z,
+                orientation_from_config,
+            )
+            placed.append((shape, entity_radius))
 
-    # Update object positions with arena broadcast.
-    for object_type, objects_tuple in objects.items():
-        try:
-            obj_config, obj_list = objects_tuple
-        except Exception:
-            continue
-        if obj_list is None:
-            continue
-        for idx, obj in enumerate(obj_list):
-            try:
-                obj_config_for_idx = obj_config if isinstance(obj_config, dict) else {}
-                orient = obj_config_for_idx.get("orientation")
-                if orient:
-                    try:
-                        vec = Vector3D(orient[idx][0], orient[idx][1], orient[idx][2])
-                    except Exception:
-                        vec = Vector3D(orient[-1][0], orient[-1][1], orient[-1][2])
-                    obj.set_orientation(vec)
-            except Exception:
-                continue
+    logger.info("Agents placed: %d", len(poses))
+    return {"groups": groups, "poses": poses}
 
-    logger.info("Entities initialized (seed_counter=%s)", seed_counter)
+
+def initialize_entities(manager, random_seed: int, spawn: dict) -> None:
+    """Initialize this manager's entities at the beginning of a run with the centrally computed poses."""
+    logger.info("Initializing agents with random seed %s", random_seed)
+    groups = spawn["groups"]
+    poses = spawn["poses"]
+
+    for group_key, (config, entities) in manager.agents.items():
+        cx, cy, radius, distribution, spawn_params = groups[group_key]
+        base_seed = _base_seed(config, random_seed)
+
+        for entity in entities:
+            # Deterministic per-agent seed that depends on the run seed.
+            entity.random_generator.seed(make_agent_seed(base_seed, entity.entity_type, int(entity._id)))
+            entity.reset()
+
+            # Per-entity spawn params used by movement models (e.g. random_way_point).
+            entity.spawn_params = (Vector3D(cx, cy, 0.0), radius, distribution)
+            entity.spawn_parameters = spawn_params
+
+            x, y, z, from_config, orientation_z, orientation_from_config = poses[entity.get_name()]
+            entity.position_from_dict = from_config
+            entity.orientation_from_dict = orientation_from_config
+            orientation_vec = Vector3D(0.0, 0.0, orientation_z)
+
+            entity.set_start_position(Vector3D(x, y, z))
+            entity.set_start_orientation(orientation_vec)
+            shape = entity.get_shape()
+            if shape is not None:
+                # Attachments only follow the body when explicitly moved.
+                shape.translate_attachments(orientation_vec.z)
+
+    logger.info("Entities initialized")

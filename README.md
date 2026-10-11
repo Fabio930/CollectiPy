@@ -89,10 +89,10 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     "arenas":{ //REQUIRED can define multiple arena to simulate sequentially
     "arena_0":{
         "random_seed": int, //DEFAULT:random
-        "_id": str, //REQUIRED - SUPPORTED:"rectangle","square","circle","abstract","unbounded". Abstract arena is a special class where ranges and velocities do not apply.
+        "_id": str, //REQUIRED - SUPPORTED:"rectangle","square","circle","unbounded". "abstract" is reserved but NOT IMPLEMENTED YET (the run stops with an explicit error).
         "dimensions": dict, //DEFAULT: standard dict with height width radius and diameter assigned to 1 if present depending on "_id". For "_id":"unbounded" apply diameter and radius
         "color": "gray", //DEFAULT:gray
-        "hierarchy": { //OPTIONAL - define the reversed-tree partition applied to this arena
+        "hierarchy": { //OPTIONAL - NOT IMPLEMENTED YET (an arena hierarchy is ignored with a warning). Planned: reversed-tree partition applied to this arena
             "depth": int, //DEFAULT:0 - number of additional levels (root is level 0)
             "branches": int, //DEFAULT:1 - 1 disables the partitioning, 2 splits each cell in half along the widest axis, 4 creates a 2x2 grid per node,
             "information_scope": { //OPTIONAL - hierarchy-aware visibility rules
@@ -118,8 +118,8 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
             "color": str, //DEFAULT:"black"
             "strength": list(float), //DEFAULT:[10] one entry -> assign to all the objects the same value. Fewer entries than objects -> missing values reuse the last one
             "uncertainty": list(float), //DEFAULT:[0] one entry -> assign to all the objects the same value. Fewer entries than objects -> missing values reuse the last one
-            "hierarchy_node": str, //OPTIONAL - bind the object to a specific arena hierarchy node (e.g. "0.1.0")
-            "hierarchy": { //OPTIONAL - define the reversed-tree partition applied to this arena
+            "hierarchy_node": str, //OPTIONAL - NOT IMPLEMENTED YET - bind the object to a specific arena hierarchy node (e.g. "0.1.0")
+            "hierarchy": { //OPTIONAL - NOT IMPLEMENTED YET (an arena hierarchy is ignored with a warning). Planned: reversed-tree partition applied to this arena
                 "depth": int, //DEFAULT:0 - number of additional levels (root is level 0)
                 "branches": int, //DEFAULT:1 - 1 disables the partitioning, 2 splits each cell in half along the widest axis, 4 creates a 2x2 grid per node,
                 "information_scope": { //OPTIONAL - hierarchy-aware visibility rules
@@ -133,7 +133,7 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
     },
     "agents":{ //REQUIRED can define multiple agents to simulate in the same arena
         "movable_0":{
-            "ticks_per_second": int, //DEFAULT:5
+            "ticks_per_second": int, //DEFAULT:5 - must be the same for every agent group of an experiment (it may differ from the environment one)
             "number": list(int), //DEFAULT:[1] each list entry can drive batch expansion (see Batch runs)
             "spawn":{ //OPTIONAL - set spawning distribution used at init
                 "center":list(float), //DEFAULT [0,0]
@@ -152,14 +152,14 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
                 "type": str, //DEFAULT:"GPS" - Range-filtered positional detector; resolved via `models/detection` (custom modules supported).
                 "range": float|"inf", //DEFAULT:0.1 - Limit how far perception gathers targets (alias: "distance").
                 "acquisition_per_second": float, //DEFAULT:1 (= once per second) - Sampling frequency expressed as Hz; determines how often detection snapshots run relative to the agent tick rate. "inf" is used for max (once per tick)
+                "snapshot_per_second": float, //OPTIONAL - how often the view of the other agents is refreshed. DEFAULT: every tick (agents always perceive the positions frozen at the start of the tick)
             },
             "moving_behavior":str, //DEFAULT:"random_walk" - Any movement plugin registered in the system (`random_walk`, `random_way_point`, `spin_model`, or a custom module).
             "fallback_moving_behavior": str, //DEFAULT:"none" - Movement model used when the main plugin cannot produce an action (e.g., spin model without perception).
             "logic_behavior": str, //DEFAULT:None
-            "hierarchy_node": str, //OPTIONAL - desired hierarchy node for the agent (defaults to the root "0" when hierarchy overlays are used).
+            "hierarchy_node": str, //OPTIONAL - NOT IMPLEMENTED YET - desired hierarchy node for the agent (defaults to the root "0" when hierarchy overlays are used).
             "spin_model":{ //DEFAULT:{} empty dict -> //DEFAULT configuration
                 "spin_per_tick": int, //DEFAULT:3
-                "spin_pre_run_steps": int, //DEFAULT:0 //DEFAULT value avoid pre run steps
                 "perception_width": float, //DEFAULT:0.3
                 "num_groups": int, //DEFAULT:8
                 "num_spins_per_group": int, //DEFAULT:5
@@ -178,17 +178,17 @@ These packages are the minimum native graphics/audio/windowing libs needed for t
                               //   ``task`` accessor or assume "selection".
             },
             "messages":{  //DEFAULT:{} empty dict -> no messaging
-                "send_message_per_seconds": float, //DEFAULT:1 messages sent per second
-                "receive_message_per_seconds": float, //DEFAULT:4 messages pulled per second
-                "comm_range": float|"inf", //DEFAULT:0.1
+                "send_message_per_seconds": float, //DEFAULT:1 messages sent per second. A message is on air only during the tick it is sent in
+                "receive_message_per_seconds": float, //DEFAULT:4 listening slots per second. In a slot the agent decodes ONE of the messages on air from senders in range; simultaneous ones collide and are lost (random pick)
+                "comm_range": float|"inf", //DEFAULT:0.1 - a message reaches the agents within this distance from the sender at the tick it is sent
                 "type": str "broadcast"|"rebroadcast"|"hand_shake", //DEFAULT:"broadcast"
                 "kind": str "anonymous"|"id-aware", //DEFAULT:"anonymous"
                 "channels": str "single"|"dual", //DEFAULT:"dual"
-                "bus": str, //DEFAULT:"auto" (spatial for geometric arenas, global all-to-all for abstract; pluggable via register_message_bus)
+                "bus": str, //NOT IMPLEMENTED YET - the built-in range-limited message server is always used. Planned: pluggable buses via register_message_bus
                 "rebroadcast_steps": int|"inf", //DEFAULT:"inf". ONLY IF type is "rebroadcast" (agent-side limit on how many times a packet can be forwarded from the local buffer)
                 "handshake_auto": bool, //DEFAULT:true. ONLY IF type is "hand_shake". Broadcast discovery invitations whenever idle.
                 "handshake_timeout": float, //DEFAULT:5 seconds before a silent partner is dropped.
-                "timer": { //OPTIONAL - configure automatic message expiration inside each agent buffer - DEFAULT:{} messages do not expire
+                "timer": { //OPTIONAL - lifetime (in seconds) of the messages an agent has received and stored locally - DEFAULT:{} stored messages do not expire
                     "distribution": str "fixed"|"uniform"|"gaussian"|"exp"|"exponential", //DEFAULT:"fixed"
                     "parameters": dict {"name":float,...} //DEFAULT {} e.g. {"average":1} or {"max":1} (uniform) or {"lambda":2} (exp)
                 }
@@ -214,9 +214,10 @@ Object and agent entries must start with "static_" or "movable_" regardless of a
 ### Agent spawning
 
 - DEFAULT spawn center `c = [0, 0]` and radius `r` can be overridden per agent group via `spawn.center` / `spawn.radius` / `spawn.distribution` (`uniform` | `gaussian` | `exp`, DEFAULT `uniform`). Agents/sample logic can also mutate these at runtime.
-- Bounded arenas: if `r` is not provided, it DEFAULTs to the inradius of the arena footprint. The sampled area is clamped to the arena; if the requested circle exceeds the bounds it is truncated to fit. Placement still respects non-overlap with walls, objects, and other agents.
-- Unbounded arenas: if `r` is missing/invalid, a finite radius is inferred from agent count/size so that all requested agents fit in a reasonable square. Sampling uses the chosen distribution around `c` without wrap-around.
-- Multiple groups sharing the same spawn center: the second (and subsequent) groups are nudged away when their spawn disks overlap (iterated up to 16 attempts with a small margin). If overlap remains, the system falls back to per-entity collision checks and logs a warning.
+- Bounded arenas: if `r` is not provided, it DEFAULTs to the inradius of the arena footprint. The sampled area is clamped to the arena; if the requested circle exceeds the bounds it is truncated to fit. Placement respects non-overlap with walls, objects, and other agents, and is computed once for the whole population, so the initial poses do not depend on the number of processes.
+- Unbounded arenas: if `r` is missing/invalid it DEFAULTs to half of the arena `diameter` (DEFAULT 1). Sampling uses the chosen distribution around `c` without wrap-around.
+- Multiple groups: groups that share the same spawn center (including the DEFAULT `[0, 0]`) share the same spawn area; agents are kept apart by per-entity overlap checks. When two groups have different centers but their spawn disks overlap heavily (center distance below 70% of the sum of the radii), the later group's center is shifted away once, along the line joining the two centers. If an agent cannot find a free spot after 200 attempts it is placed at the last sampled point and a warning is logged.
+- Agents start with a random heading (objects with a random orientation) unless `orientation` is given.
 - Entities also accept optional `position` (`[x, y]` or `[x, y, z]`) and orientation (`[z]` or single float) lists that pin the first few instances to exact poses; agents/objects without an explicit entry fall back to the usual spawn/orientation sampling, and extra list values beyond the configured count are ignored.
 
 For parser notes, data exports, and plugin hooks, see `README_DEVELOPERS.md`.

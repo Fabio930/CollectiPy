@@ -51,7 +51,6 @@ class ConnectionsMixin:
     offset_y: float
     is_abstract: bool
     HANDSHAKE_PENDING_COLOR = QColor(255, 215, 0)
-    HANDSHAKE_CONNECTED_COLOR = QColor(0, 255, 0)
     HANDSHAKE_COMMUNICATION_COLOR = QColor(255, 0, 0)
     HANDSHAKE_PENDING_WINDOW = 2
     HANDSHAKE_COMMUNICATION_WINDOW = 3

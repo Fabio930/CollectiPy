@@ -69,7 +69,7 @@ class StaticAgent(Agent):
         self.orientation = new_orientation
         shape = self.shape
         if shape:
-            shape.rotate(self.start_orientation.z)
+            shape.rotate(new_orientation.z)
 
     def get_start_position(self):
         """Return the start position."""

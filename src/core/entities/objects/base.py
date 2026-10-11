@@ -20,5 +20,6 @@ class Object(Entity):
     def __init__(self, entity_type: str, config_elem: dict, _id: int = 0):
         """Initialize the instance."""
         super().__init__(entity_type, config_elem, _id)
+        self.config_elem = config_elem
         if config_elem.get("_id") not in ("idle", "interactive"):
             raise ValueError(f"Invalid object type: {self.entity_type}")

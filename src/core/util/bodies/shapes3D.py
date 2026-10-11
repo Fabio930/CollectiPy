@@ -14,6 +14,8 @@ from core.util.geometry_utils.vector3D import Vector3D
 from core.util.logging_util import get_logger
 
 _PI = math.pi
+# Tolerance for shapes that merely touch (e.g. a body resting on the floor plane).
+_CONTACT_EPS = 1e-9
 logger = get_logger("shapes3D")
 
 
@@ -116,9 +118,9 @@ class Shape3DFactory:
 
 class Shape:
     """Shape."""
-    dense_shapes = ["sphere", "cube", "cuboid", "cylinder"]
     flat_shapes = ["circle", "square", "rectangle"]
-    no_shapes = ["point", "none"]
+    # Round footprints look the same at any heading: their vertices are never rotated.
+    _round = False
 
     def __init__(self, config_elem:dict, center: Vector3D | None = None):
         """Initialize the instance."""
@@ -130,6 +132,11 @@ class Shape:
         self.vertices_list = []
         self.attachments = []
         self.metadata: dict = {}
+        self.rotation_z = 0.0
+        # Geometry caches: where the vertices were generated, their bounding box and radius.
+        self._built_center: tuple | None = None
+        self._bounds: tuple | None = None
+        self._bounding_radius: float | None = None
 
     def add_attachment(self, attachment):
         """Add attachment."""
@@ -179,7 +186,38 @@ class Shape:
         return self.vertices_list
 
     def translate(self, new_center: Vector3D):
-        """Translate the shape in space."""
+        """Translate the shape in space (the existing vertices are shifted, not regenerated)."""
+        built = self._built_center
+        self.center = new_center
+        if built is None:
+            self.set_vertices()
+            return
+        if self._is_flat():
+            new_center.z = 0
+        dx = new_center.x - built[0]
+        dy = new_center.y - built[1]
+        dz = new_center.z - built[2]
+        if not (dx or dy or dz):
+            return
+        for vertex in self.vertices_list:
+            vertex.x += dx
+            vertex.y += dy
+            vertex.z += dz
+        self._built_center = (new_center.x, new_center.y, new_center.z)
+        bounds = self._bounds
+        if bounds is not None:
+            self._bounds = (
+                bounds[0] + dx, bounds[1] + dy, bounds[2] + dz,
+                bounds[3] + dx, bounds[4] + dy, bounds[5] + dz,
+            )
+
+    def set_pose(self, new_center: Vector3D, angle_z: float):
+        """Move and orient the shape in one pass."""
+        if self._round or angle_z == self.rotation_z:
+            self.rotation_z = float(angle_z)
+            self.translate(new_center)
+            return
+        self.rotation_z = float(angle_z)
         self.center = new_center
         self.set_vertices()
 
@@ -187,8 +225,35 @@ class Shape:
         """Return the radius."""
         return 0
 
+    def bounding_radius(self) -> float:
+        """Radius of the sphere around the center that contains the shape (0.05 for point shapes)."""
+        radius = self._bounding_radius
+        if radius is None:
+            radius = float(self.get_radius() or 0.0)
+            if radius <= 0:
+                center = self.center
+                radius = max(
+                    (math.sqrt((v.x - center.x) ** 2 + (v.y - center.y) ** 2 + (v.z - center.z) ** 2)
+                     for v in self.vertices_list),
+                    default=0.05,
+                )
+            self._bounding_radius = radius
+        return radius
+
+    def _is_flat(self) -> bool:
+        """Flat shapes lie on the floor plane (z = 0)."""
+        return False
+
     def set_vertices(self):
-        """Set the vertices."""
+        """(Re)generate the vertices around the current center, with the current heading."""
+        self._build_vertices()
+        center = self.center
+        self._built_center = (center.x, center.y, center.z)
+        self._bounds = None
+        self._apply_rotation()
+
+    def _build_vertices(self):
+        """Fill `vertices_list` for the current center (implemented by concrete shapes)."""
         pass
 
     def check_overlap(self, _shape):
@@ -205,85 +270,92 @@ class Shape:
                 return True, vertex
         return False, Vector3D()
 
-    def _get_random_point_inside_shape(self, random_generator, arena_shape):
-        """Return the random point inside shape."""
-        if isinstance(arena_shape, (Cylinder, Sphere)):
-            angle = random_generator.uniform(0, 2 * _PI)
-            r = arena_shape.radius * math.sqrt(random_generator.uniform(0, 1))
-            x = arena_shape.center.x + r * math.cos(angle)
-            y = arena_shape.center.y + r * math.sin(angle)
-            z = arena_shape.center.z
-            return Vector3D(x, y, z)
-        else:
-            min_v = arena_shape.min_vert()
-            max_v = arena_shape.max_vert()
-            if isinstance(self, (Cylinder, Sphere)):
-                tmp = self.get_radius()
-                min_v += Vector3D(tmp, tmp, tmp)
-                max_v -= Vector3D(tmp, tmp, tmp)
-            else:
-                tmp = self.center - self.max_vert()
-                min_v += tmp
-                max_v -= tmp
-            return Vector3D(
-                random_generator.uniform(min_v.x, max_v.x),
-                random_generator.uniform(min_v.y, max_v.y),
-                random_generator.uniform(min_v.z, max_v.z)
-            )
-
     def _is_point_inside_shape(self, point, shape):
         """Is point inside shape."""
-        if isinstance(shape, Cylinder):
-            dx = point.x - shape.center.x
-            dy = point.y - shape.center.y
+        dx = point.x - shape.center.x
+        dy = point.y - shape.center.y
+        if isinstance(shape, Sphere):
             dz = point.z - shape.center.z
-            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
-            return distance <= shape.radius
+            return dx * dx + dy * dy + dz * dz <= shape.radius ** 2 + _CONTACT_EPS
+        if isinstance(shape, Cylinder):
+            z_min, z_max = shape.z_bounds()
+            return (math.hypot(dx, dy) <= shape.radius and
+                    z_min - _CONTACT_EPS <= point.z <= z_max + _CONTACT_EPS)
         else:
-            min_v = shape.min_vert()
-            max_v = shape.max_vert()
-            return (min_v.x <= point.x <= max_v.x and
-                    min_v.y <= point.y <= max_v.y and
-                    min_v.z <= point.z <= max_v.z)
+            bounds = shape._get_bounds()
+            return (bounds[0] <= point.x <= bounds[3] and
+                    bounds[1] <= point.y <= bounds[4] and
+                    bounds[2] <= point.z <= bounds[5])
 
     def rotate(self, angle_z: float):
-        """Rotate the shape."""
-        angle_rad_z = math.radians(angle_z)
-        if angle_rad_z > 0:
-            cos_z = math.cos(angle_rad_z)
-            sin_z = math.sin(angle_rad_z)
-            cx, cy = self.center.x, self.center.y
-            for vertex in self.vertices_list:
-                # Ottimizza la rotazione solo sul piano XY
-                x_shift = vertex.x - cx
-                y_shift = vertex.y - cy
-                x_new = cx + x_shift * cos_z - y_shift * sin_z
-                y_new = cy + x_shift * sin_z + y_shift * cos_z
-                vertex.x, vertex.y = x_new, y_new
+        """Set the heading of the shape (degrees, same convention as the agents' orientation)."""
+        if self._round or angle_z == self.rotation_z:
+            self.rotation_z = float(angle_z)
+            return
+        self.rotation_z = float(angle_z)
+        self.set_vertices()
+
+    def _apply_rotation(self):
+        """Rotate the freshly built vertices around the center on the XY plane."""
+        if self._round or not self.rotation_z:
+            return
+        # Headings grow clockwise in arena coordinates (see the unicycle model).
+        angle_rad = -math.radians(self.rotation_z)
+        cos_z = math.cos(angle_rad)
+        sin_z = math.sin(angle_rad)
+        cx, cy = self.center.x, self.center.y
+        for vertex in self.vertices_list:
+            x_shift = vertex.x - cx
+            y_shift = vertex.y - cy
+            vertex.x = cx + x_shift * cos_z - y_shift * sin_z
+            vertex.y = cy + x_shift * sin_z + y_shift * cos_z
+
+    def _get_bounds(self) -> tuple:
+        """Return (min_x, min_y, min_z, max_x, max_y, max_z) of the vertices, cached until they change."""
+        bounds = self._bounds
+        if bounds is None:
+            vertices = self.vertices_list
+            if not vertices:
+                return (0, 0, 0, 0, 0, 0)
+            xs = [v.x for v in vertices]
+            ys = [v.y for v in vertices]
+            zs = [v.z for v in vertices]
+            bounds = self._bounds = (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+        return bounds
 
     def min_vert(self):
-        # Usa min/max con generator expression per efficienza
         """Min vert."""
-        if not self.vertices_list:
-            return Vector3D()
-        return Vector3D(
-            min(v.x for v in self.vertices_list),
-            min(v.y for v in self.vertices_list),
-            min(v.z for v in self.vertices_list)
-        )
+        bounds = self._get_bounds()
+        return Vector3D(bounds[0], bounds[1], bounds[2])
 
     def max_vert(self):
         """Max vert."""
-        if not self.vertices_list:
-            return Vector3D()
-        return Vector3D(
-            max(v.x for v in self.vertices_list),
-            max(v.y for v in self.vertices_list),
-            max(v.z for v in self.vertices_list)
-        )
+        bounds = self._get_bounds()
+        return Vector3D(bounds[3], bounds[4], bounds[5])
+
+class ShapeState:
+    """Pose-only stand-in for a shape (center, metadata, radius) for consumers that do not draw it."""
+
+    __slots__ = ("center", "metadata", "_radius")
+
+    def __init__(self, shape: Shape):
+        self.center = shape.center
+        self.metadata = shape.metadata
+        self._radius = shape.bounding_radius()
+
+    def center_of_mass(self) -> Vector3D:
+        """Center of mass."""
+        return self.center
+
+    def bounding_radius(self) -> float:
+        """Radius of the sphere around the center that contains the shape."""
+        return self._radius
+
 
 class Sphere(Shape):
     """Sphere."""
+    _round = True
+
     def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         """Initialize the instance."""
         super().__init__(config_elem=config_elem, center=center)
@@ -292,35 +364,29 @@ class Sphere(Shape):
         self.radius = _resolve_dimension(config_elem, "radius", fallback="diameter", fallback_scale=0.5, default=1.0)
         self.set_vertices()
 
-    def volume(self):
-        """Compute the enclosed volume."""
-        return (4 / 3) * _PI * self.radius ** 3
-
     def get_radius(self) -> float:
         """Return the radius."""
         return self.radius
 
-    def surface_area(self):
-        """Surface area."""
-        return 4 * _PI * self.radius ** 2
-
-    def set_vertices(self):
-        """Set the vertices."""
-        self.vertices_list = []
-        num_vertices = 32
+    def _build_vertices(self):
+        """Set the vertices: both poles plus rings of points along the meridians."""
+        num_meridians = 16
+        num_parallels = 7
         cx, cy, cz = self.center.x, self.center.y, self.center.z
         r = self.radius
-        for i in range(num_vertices):
-            theta = 2 * _PI * (i / num_vertices)
+        self.vertices_list = [Vector3D(cx, cy, cz + r)]
+        for i in range(num_meridians):
+            theta = 2 * _PI * (i / num_meridians)
             cos_theta = math.cos(theta)
             sin_theta = math.sin(theta)
-            for j in range(num_vertices):
-                phi = _PI * j / num_vertices
+            for j in range(1, num_parallels + 1):
+                phi = _PI * j / (num_parallels + 1)
                 sin_phi = math.sin(phi)
                 x = cx + r * sin_phi * cos_theta
                 y = cy + r * sin_phi * sin_theta
                 z = cz + r * math.cos(phi)
                 self.vertices_list.append(Vector3D(x, y, z))
+        self.vertices_list.append(Vector3D(cx, cy, cz - r))
 
 class Cuboid(Shape):
     """Cuboid."""
@@ -334,21 +400,10 @@ class Cuboid(Shape):
         self.depth = config_elem.get("depth", 1.0)
         self.set_vertices()
 
-    def volume(self):
-        """Compute the enclosed volume."""
-        if self._id in Shape.flat_shapes:
-            return self.width * self.depth
-        else:
-            return self.width * self.height * self.depth
+    def _is_flat(self) -> bool:
+        return self._object != "arena" and self._id in Shape.flat_shapes
 
-    def surface_area(self):
-        """Surface area."""
-        if self._id in Shape.flat_shapes:
-            return self.width * self.depth
-        else:
-            return 2 * (self.width * self.height + self.height * self.depth + self.depth * self.width)
-
-    def set_vertices(self):
+    def _build_vertices(self):
         """Set the vertices."""
         half_width = self.width * 0.5
         half_height = self.height * 0.5
@@ -388,6 +443,8 @@ class Cuboid(Shape):
 
 class Cylinder(Shape):
     """Cylinder."""
+    _round = True
+
     def __init__(self, _object: str, shape_type: str, config_elem: dict, center: Vector3D | None = None):
         """Initialize the instance."""
         super().__init__(config_elem=config_elem, center=center)
@@ -397,19 +454,23 @@ class Cylinder(Shape):
         self.height = _resolve_dimension(config_elem, "height", default=1.0)
         self.set_vertices()
 
-    def volume(self):
-        """Compute the enclosed volume."""
-        return _PI * self.radius ** 2 * self.height
+    def z_bounds(self) -> tuple[float, float]:
+        """Return the vertical extent of the cylinder."""
+        if self._object == "arena":
+            return 0.0, self.height
+        if self._id in Shape.flat_shapes:
+            return 0.0, 0.0
+        half_height = self.height * 0.5
+        return self.center.z - half_height, self.center.z + half_height
 
     def get_radius(self) -> float:
         """Return the radius."""
         return self.radius
 
-    def surface_area(self):
-        """Surface area."""
-        return 2 * _PI * self.radius * (self.radius + self.height)
+    def _is_flat(self) -> bool:
+        return self._object != "arena" and self._id in Shape.flat_shapes
 
-    def set_vertices(self):
+    def _build_vertices(self):
         """Set the vertices."""
         self.vertices_list = []
         if self._object == "arena":
@@ -466,7 +527,7 @@ class UnboundedShape(Shape):
         self.side = float(config_elem.get("side", self.BOUND * 2.0))
         self.set_vertices()
 
-    def set_vertices(self):
+    def _build_vertices(self):
         """Set four extreme vertices to approximate infinity."""
         half = min(self.BOUND, self.side * 0.5)
         b = half

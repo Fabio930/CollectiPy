@@ -49,7 +49,6 @@ class StaticObject(Object):
     def to_origin(self):
         """Translate object to origin."""
         self.position = Vector3D()
-        self.orientation = Vector3D()
         self.shape.center = self.position
         self.shape.set_vertices()
 
@@ -72,7 +71,7 @@ class StaticObject(Object):
     def set_orientation(self, new_orientation: Vector3D):
         """Set the orientation."""
         self.orientation = new_orientation
-        self.shape.rotate(self.start_orientation.z)
+        self.shape.rotate(new_orientation.z)
 
     def get_start_position(self):
         """Return the start position."""

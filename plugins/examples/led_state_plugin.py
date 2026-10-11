@@ -27,11 +27,6 @@ class LedStateLogic:
         self._last_received_letter: str | None = None
         self._processed_messages: set[int] = set()
 
-    def pre_run(self, objects: dict, agents: dict) -> None:
-        """Ensure the LED starts from the default shade."""
-        self.agent.reset_led_color()
-        self._reset_conversation_state()
-
     def step(self, agent: Any, tick: int, arena_shape, objects: dict, agents: dict) -> None:
         """Update the LED color each tick based on the current messaging state."""
         self._process_handshake_conversation()

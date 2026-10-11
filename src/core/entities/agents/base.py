@@ -26,7 +26,6 @@ logger = _base_logger
 
 VALID_MESSAGE_CHANNELS = {"single", "dual"}
 DEFAULT_MESSAGE_TYPE = "broadcast"
-CHANNEL_TYPE_MATRIX = {mode: CONFIG_MESSAGE_TYPES for mode in VALID_MESSAGE_CHANNELS}
 DEFAULT_RX_RATE = 4.0
 
 
@@ -101,7 +100,9 @@ class Agent(Entity):
             raise ValueError(f"{self.entity()} cannot use kind='anonymous' with message type '{self.msg_type}'.")
         self.message_bus = None
         self.own_message = {}
+        # Messages this agent keeps locally after receiving them, with their expiry tick.
         self.messages: list[dict] = []
+        self._message_expiry: list[float] = []
         self._messages_by_sender: dict[str, list[dict]] | None = None
         self._messages_by_entity: dict[str, list[dict]] | None = None
         self._message_custom_fields = {}
@@ -149,8 +150,6 @@ class Agent(Entity):
         self.information_restrictions = self._parse_information_restrictions(scope_config)
         self._info_scope_cache = {}
         self.hierarchy_context = None
-        # Legacy helpers expected by managers.
-        self.make_agent_seed = make_agent_seed
 
     # Messaging/detection/hierarchy wiring
     def set_message_bus(self, backend):
@@ -182,15 +181,6 @@ class Agent(Entity):
             return int(self.ticks_per_second)
         except Exception:
             return 1
-
-    def set_random_generator(self, seed: int | None):
-        """Seed the internal random generator."""
-        if seed is None:
-            return
-        try:
-            self.random_generator.seed(seed)
-        except Exception:
-            pass
 
     def get_random_generator(self):
         """Return the internal random generator."""
@@ -314,27 +304,27 @@ class Agent(Entity):
         """Receive messages."""
         if not self.msg_enable or not self.message_bus or self._msg_receive_quanta <= 0:
             return []
+        self._refresh_message_timers(tick)
         if self.msg_channel_mode == "single" and self._last_tx_tick == tick:
             return []
         self._msg_receive_budget = min(self._msg_receive_budget + self._msg_receive_quanta, self._msg_receive_budget_cap)
-        allowed = int(self._msg_receive_budget)
-        allowed = min(allowed, 1)
-        if allowed <= 0:
+        if self._msg_receive_budget < 1.0:
             return []
-        raw_messages = self.message_bus.receive_messages(self, limit=allowed)
-        messages = []
-        for msg in raw_messages:
+        on_air = []
+        for msg in self.message_bus.receive_messages(self):
             if not isinstance(msg, dict):
                 logger.warning("%s received malformed message '%s'; skipping", self.get_name(), msg)
                 continue
-            messages.append(msg)
-        if not messages:
+            on_air.append(msg)
+        if not on_air:
             return []
-        self._apply_message_timers(messages)
+        # A receiver decodes one transmission at a time: simultaneous ones collide and are lost.
+        messages = [on_air[0] if len(on_air) == 1 else self.random_generator.choice(on_air)]
         if self.msg_type == "hand_shake":
             self._handle_handshake_messages(messages, tick)
         self._msg_receive_budget = max(0.0, self._msg_receive_budget - len(messages))
         self.messages.extend(messages)
+        self._apply_message_timers(messages, tick)
         self._invalidate_message_indexes()
         logger.debug("%s received %d messages", self.get_name(), len(messages))
         if messages:
@@ -344,6 +334,7 @@ class Agent(Entity):
     def clear_message_buffers(self) -> None:
         """Drop buffered messages and archives for this agent."""
         self.messages = []
+        self._message_expiry = []
         self._invalidate_message_indexes()
 
     def set_outgoing_message_fields(self, fields: Optional[dict]) -> None:
@@ -358,8 +349,8 @@ class Agent(Entity):
         return float(self.detection_range)
 
     def _reset_detection_scheduler(self):
-        """Reset detection scheduler state."""
-        self._detection_budget = 0.0
+        """Reset detection scheduler state (primed so the first tick samples)."""
+        self._detection_budget = max(0.0, 1.0 - (self._detection_quanta or 0.0))
         self._last_detection_tick = -1
 
     def _configure_detection_scheduler(self):
@@ -372,7 +363,7 @@ class Agent(Entity):
             return
         self._detection_quanta = rate / float(self.ticks_per_second or 1)
         self._detection_budget_cap = max(1.0, rate * 2.0)
-        self._detection_budget = 0.0
+        self._detection_budget = max(0.0, 1.0 - self._detection_quanta)
 
     def should_detect(self, tick: int) -> bool:
         """Return True when the detection subsystem should sample this tick."""
@@ -711,21 +702,63 @@ class Agent(Entity):
             params = {}
         return {"distribution": distribution, "parameters": params}
 
-    def _refresh_message_timers(self):
-        """Prune expired messages based on timer configuration."""
-        if not self.messages or not self.msg_enable:
-            return
-        dist = (self.msg_timer_config or {}).get("distribution", "fixed")
-        params = (self.msg_timer_config or {}).get("parameters", {})
-        if dist not in {"fixed", "uniform", "gaussian", "exp", "exponential"}:
-            return
-        # Current behaviour: no-op unless a timer model is implemented elsewhere.
-        return
+    def _message_lifetime_ticks(self) -> float:
+        """Sample how long (in ticks) a received message stays in the local buffer."""
+        params = self.msg_timer_config["parameters"]
 
-    def _apply_message_timers(self, messages: list[dict]) -> None:
-        """Placeholder for per-message expiration logic."""
-        _ = messages
-        return
+        def _param(*names):
+            for name in names:
+                try:
+                    return float(params[name])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            return None
+
+        distribution = self.msg_timer_config["distribution"]
+        rng = self.random_generator
+        mean = _param("average", "avg", "mean", "mu", "value")
+        seconds = None
+        if distribution == "fixed":
+            seconds = mean if mean is not None else _param("max")
+        elif distribution == "uniform":
+            high = _param("max")
+            if high is None and mean is not None:
+                high = 2.0 * mean
+            if high is not None:
+                seconds = rng.uniform(_param("min") or 0.0, high)
+        elif distribution == "gaussian":
+            if mean is not None:
+                std = _param("std", "sigma")
+                seconds = rng.gauss(mean, mean / 3.0 if std is None else std)
+        elif distribution in ("exp", "exponential"):
+            rate = _param("lambda", "rate")
+            if rate is None and mean:
+                rate = 1.0 / mean
+            if rate is not None and rate > 0:
+                seconds = rng.expovariate(rate)
+        # Any other distribution comes from a plugin, which manages expiry on its own.
+        if seconds is None:
+            return math.inf
+        return max(0.0, seconds) * self.ticks_per_second
+
+    def _apply_message_timers(self, messages: list[dict], tick: int) -> None:
+        """Give each newly stored message its expiry tick (never, without a timer)."""
+        self._message_expiry.extend(tick + self._message_lifetime_ticks() for _ in messages)
+
+    def _refresh_message_timers(self, tick: int) -> None:
+        """Drop the locally stored messages whose timer ran out."""
+        if not self.messages:
+            return
+        if len(self._message_expiry) != len(self.messages):
+            # The buffer was edited from outside (e.g. a logic plugin): realign, keeping unknowns.
+            missing = len(self.messages) - len(self._message_expiry)
+            self._message_expiry = (self._message_expiry + [math.inf] * max(0, missing))[: len(self.messages)]
+        if min(self._message_expiry) > tick:
+            return
+        kept = [(msg, expiry) for msg, expiry in zip(self.messages, self._message_expiry) if expiry > tick]
+        self.messages = [msg for msg, _ in kept]
+        self._message_expiry = [expiry for _, expiry in kept]
+        self._invalidate_message_indexes()
 
     def _resolve_channel_mode(self, channels: str) -> str:
         """Return a valid channel mode."""
@@ -765,7 +798,7 @@ class Agent(Entity):
         cfg = self.detection_config
         if not cfg:
             return 1.0
-        keys = ("acquisition_per_second", "acquisition_frequency", "frequency", "rate", "per_second")
+        keys = ("acquisition_per_second", "acquisition_frequency", "acquisition_rate", "frequency", "rate", "per_second")
         for key in keys:
             if key in cfg:
                 try:
@@ -854,6 +887,6 @@ class Agent(Entity):
         """Run the simulation routine (implemented by MovableAgent)."""
         pass
 
-    def prepare_for_run(self, objects: dict, agents: dict):
-        """Hook called before the simulation starts."""
+    def post_step(self, position_correction):
+        """Hook called after the collision pass (static agents ignore corrections)."""
         pass

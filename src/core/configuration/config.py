@@ -38,7 +38,7 @@ OBJECT_DIMENSION_CONSTRAINTS = {
 }
 
 ALLOWED_AGENT_SHAPES = {"sphere", "cube", "cylinder", "none"}
-AGENT_DIMENSION_CONSTRAINTS = OBJECT_DIMENSION_CONSTRAINTS
+AGENT_DIMENSION_CONSTRAINTS = {shape: set(dims) for shape, dims in OBJECT_DIMENSION_CONSTRAINTS.items()}
 
 RESULT_AGENT_SPECS = {"base", "spin_model"}
 RESULT_GROUP_SPECS = {"graph_messages", "graph_detection", "graphs", "heading"}
@@ -68,6 +68,9 @@ _ENTITY_HOOKS = {
     "object": [],
     "agent": []
 }
+
+# List-valued fields that describe per-entity data and never drive batch expansion.
+_NON_EXPANDED_LIST_FIELDS = {"position", "orientation", "strength", "uncertainty"}
 
 _ALL_DIMENSION_KEYS = {"width", "depth", "height", "side", "radius", "diameter", "length"}
 
@@ -379,6 +382,11 @@ def _validate_messages_block(messages_cfg):
 def _validate_arena_cfg(arena_cfg):
     if "_id" not in arena_cfg or arena_cfg["_id"] not in ALLOWED_ARENA_IDS:
         raise ValueError(f"Arena '_id' must be one of {sorted(ALLOWED_ARENA_IDS)}")
+    if arena_cfg["_id"] == "abstract":
+        raise NotImplementedError("Arena '_id': 'abstract' is not implemented yet")
+    if "hierarchy" in arena_cfg:
+        logger.warning("Arena 'hierarchy' is not implemented yet; the block is ignored")
+        arena_cfg.pop("hierarchy")
     _validate_dimensions_block(arena_cfg["_id"], arena_cfg.get("dimensions"), ARENA_DIMENSION_CONSTRAINTS, "arena")
 
 def _validate_object_cfg(object_cfg):
@@ -387,7 +395,7 @@ def _validate_object_cfg(object_cfg):
     shape = object_cfg.get("shape")
     if shape not in ALLOWED_OBJECT_SHAPES:
         raise ValueError(f"Object 'shape' must be one of {sorted(ALLOWED_OBJECT_SHAPES)}")
-        _validate_dimensions_block(shape, object_cfg.get("dimensions"), OBJECT_DIMENSION_CONSTRAINTS, "object")
+    _validate_dimensions_block(shape, object_cfg.get("dimensions"), OBJECT_DIMENSION_CONSTRAINTS, "object")
 
 def _validate_agent_cfg(agent_cfg):
     shape = agent_cfg.get("shape")
@@ -438,7 +446,7 @@ def register_message_timer_distribution(name: str):
 
 class Config:
     """Config."""
-    def __init__(self, config_path: str = "", new_data: dict = {}):
+    def __init__(self, config_path: str = "", new_data: dict | None = None):
         """Initialize the instance."""
         if config_path:
             self.config_path = config_path
@@ -453,7 +461,7 @@ class Config:
         with open(self.config_path, 'r') as file:
             return json.load(file)
 
-    def _expand_entity(self, entity: dict, required_fields: list, optional_fields: list):
+    def _expand_entity(self, entity: dict, required_fields: list):
         # required field check
         """Expand entity."""
         for field in required_fields:
@@ -467,44 +475,30 @@ class Config:
                 for n in entity[field]:
                     if not isinstance(n, int) or n <= 0:
                         raise ValueError(f"All elements in '{field}' must be positive integers in {entity.get('_id', 'entity')}")
-        if 'time_delay' in entity:
-            td = entity['time_delay']
-            if isinstance(td, list):
-                if not td:
-                    raise ValueError("Optional field 'time_delay' must not be an empty list in {}".format(entity.get('_id', 'entity')))
-                for v in td:
-                    if not isinstance(v, int) or v < 1:
-                        raise ValueError("All elements in optional field 'time_delay' must be integers >= 1 in {}".format(entity.get('_id', 'entity')))
-            else:
-                if not isinstance(td, int) or td < 1:
-                    raise ValueError("Optional field 'time_delay' must be an integer >= 1 in {}".format(entity.get('_id', 'entity')))
         _prepare_explicit_pose_fields(entity)
-        if 'strength' in entity:
-            tmp = entity['strength']
-            if not isinstance(tmp, list) and all(isinstance(t, (int,float)) for t in tmp):
-                raise ValueError(f"Optional field 'strength' must be a list of int|float in {entity.get('_id', 'entity')}")
-        if 'uncertainty' in entity:
-            tmp = entity['uncertainty']
-            if not isinstance(tmp, list) and all(isinstance(t, (int,float)) for t in tmp):
-                raise ValueError(f"Optional field 'strength' must be a list of int|float in {entity.get('_id', 'entity')}")
-        list_fields = [f for f in required_fields + optional_fields if f in entity and isinstance(entity[f], list) and f not in ("strength","uncertainty")]
+        for field in ("strength", "uncertainty"):
+            if field not in entity:
+                continue
+            tmp = entity[field]
+            if not isinstance(tmp, list) or not all(
+                isinstance(t, (int, float)) and not isinstance(t, bool) for t in tmp
+            ):
+                raise ValueError(f"Optional field '{field}' must be a list of int|float in {entity.get('_id', 'entity')}")
+        list_fields = [
+            f for f, v in entity.items() if isinstance(v, list) and f not in _NON_EXPANDED_LIST_FIELDS
+        ]
+        for f in list_fields:
+            if not entity[f]:
+                raise ValueError(f"Field '{f}' must not be an empty list in {entity.get('_id', 'entity')}")
         if not list_fields:
             return [entity]
-        values = []
-        for f in list_fields:
-            v = entity[f]
-            if not isinstance(v, list):
-                v = [v]
-            values.append(v)
+        values = [entity[f] for f in list_fields]
         combinations = list(itertools.product(*values))
         expanded = []
         for combo in combinations:
             new_entity = _clone_config_obj(entity)
             for idx, f in enumerate(list_fields):
                 new_entity[f] = combo[idx]
-            for k in list_fields:
-                if isinstance(entity[k], list) and len(entity[k]) == 1:
-                    new_entity[k] = entity[k][0]
             expanded.append(new_entity)
         return expanded
 
@@ -523,7 +517,7 @@ class Config:
             _validate_results_block(environment['results'])
         if 'logging' in environment:
             _validate_logging_block(environment['logging'])
-        if 'gui' in environment:
+        if environment.get('gui'):
             _validate_gui_block(environment['gui'])
 
         # Validate top-level ticks_per_second when provided: must be integer > 0
@@ -560,9 +554,6 @@ class Config:
             raise ValueError("The 'arenas' field is required with dictionary entries 'arena_#'")
 
         object_required_fields = ['_id', 'number']
-        object_optional_fields = [
-            'strength', 'uncertainty', 'hierarchy_node', 'hierarchy'
-        ]
         try:
             for k, v in environment['objects'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
@@ -577,27 +568,31 @@ class Config:
                     shape = object_cfg.get("shape")
                     allowed_dims = OBJECT_DIMENSION_CONSTRAINTS.get(shape, set())
                     _finalize_dimensions(object_cfg, allowed_dims)
-                    objects[k] = self._expand_entity(object_cfg, object_required_fields, object_optional_fields)
+                    objects[k] = self._expand_entity(object_cfg, object_required_fields)
                 else:
                     raise KeyError
         except KeyError:
             raise ValueError("The 'objects' field is required with dictionary entries 'static_#' or 'movable_#'")
 
         agent_required_fields = ['number']
-        agent_optional_fields = ['ticks_per_second', 'hierarchy_node']
         try:
             for k, v in environment['agents'].items():
                 if k.startswith('static_') or k.startswith('movable_'):
                     agent_cfg = _clone_config_obj(v)
                     # Validate per-agent ticks_per_second if present: must be integer > 0
                     if 'ticks_per_second' in agent_cfg:
-                        try:
-                            agent_tps = int(agent_cfg.get('ticks_per_second'))
-                        except Exception:
-                            raise ValueError(f"{k}.ticks_per_second must be an integer > 0")
-                        if agent_tps <= 0:
-                            raise ValueError(f"{k}.ticks_per_second must be greater than 0")
-                        agent_cfg['ticks_per_second'] = agent_tps
+                        raw_agent_tps = agent_cfg['ticks_per_second']
+                        tps_values = raw_agent_tps if isinstance(raw_agent_tps, list) else [raw_agent_tps]
+                        parsed_tps = []
+                        for raw_value in tps_values:
+                            try:
+                                agent_tps = int(raw_value)
+                            except Exception:
+                                raise ValueError(f"{k}.ticks_per_second must be an integer > 0")
+                            if agent_tps <= 0:
+                                raise ValueError(f"{k}.ticks_per_second must be greater than 0")
+                            parsed_tps.append(agent_tps)
+                        agent_cfg['ticks_per_second'] = parsed_tps if isinstance(raw_agent_tps, list) else parsed_tps[0]
                     if "spawn" not in agent_cfg and isinstance(agent_cfg.get("distribute"), dict):
                         agent_cfg["spawn"] = _clone_config_obj(agent_cfg["distribute"])
                     if "linear_velocity" in agent_cfg:
@@ -616,15 +611,11 @@ class Config:
                     shape = agent_cfg.get("shape")
                     allowed_dims = AGENT_DIMENSION_CONSTRAINTS.get(shape, set())
                     _finalize_dimensions(agent_cfg, allowed_dims)
-                    agents[k] = self._expand_entity(agent_cfg, agent_required_fields, agent_optional_fields)
+                    agents[k] = self._expand_entity(agent_cfg, agent_required_fields)
                 else:
                     raise KeyError
         except KeyError:
             raise ValueError("The 'agents' field is required with dictionary entries 'static_#' or 'movable_#'")
-
-        if 'gui' in environment:
-            if "_id" not in environment['gui']:
-                raise ValueError("The '_id' field is required in the gui")
 
         agent_keys = list(agents.keys())
         object_keys = list(objects.keys())
@@ -634,6 +625,12 @@ class Config:
 
         for arena_key, arena_value in arenas.items():
             for agent_combo in agent_combos:
+                # Managers advance every agent with one clock: groups cannot tick at different rates.
+                tick_rates = {cfg.get("ticks_per_second", 5) for cfg in agent_combo}
+                if len(tick_rates) > 1:
+                    raise ValueError(
+                        f"All agent groups must share the same ticks_per_second, found {sorted(tick_rates)}"
+                    )
                 for object_combo in object_combos:
                     experiment = {
                         "environment": {
@@ -661,11 +658,6 @@ class Config:
     def environment(self) -> dict[str, Any]:
         """Return the environment configuration."""
         return self.data.get('environment', {})
-
-    @property
-    def arenas(self) -> dict[str, Any]:
-        """Return the arena configuration."""
-        return self.data.get('environment', {}).get('arenas', {})
 
     @property
     def arena(self) -> dict[str, Any]:

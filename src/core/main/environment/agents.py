@@ -125,14 +125,23 @@ def _estimate_agents_per_process(
 def compute_agent_processes(
     agents: Dict[str, tuple[Dict[str, Any], list]],
     render_enabled: bool,
+    agents_per_process: int | None = None,
 ) -> int:
-    """Compute number of agent manager processes with internal heuristics."""
+    """
+    Compute number of agent manager processes.
+
+    `agents_per_process` (environment.auto_agents_per_proc_target) overrides the
+    workload heuristic; a value >= the population keeps everything in one process.
+    """
     available_cores = psutil.cpu_count(logical=True) or 1
     total_agents = _count_agents(agents)
     if total_agents <= 0:
         return 1
-    target = _estimate_agents_per_process(agents)
-    target = max(5, min(30, target))
+    if agents_per_process is not None:
+        target = max(1, agents_per_process)
+    else:
+        target = _estimate_agents_per_process(agents)
+        target = max(5, min(30, target))
 
     import math
     n_procs = math.ceil(total_agents / target)
